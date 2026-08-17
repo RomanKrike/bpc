@@ -34,7 +34,9 @@ jobs:
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - name: Run ShellCheck
-        run: find deploy scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+        run: |
+          find deploy scripts -type f -name '*.sh' -print0 | xargs -0 shellcheck
+          shellcheck install.sh
 
   build:
     runs-on: ubuntu-latest
@@ -46,7 +48,24 @@ jobs:
           python-version: "3.12"
       - run: pip install build
       - run: python -m build
+      - name: Build deployment bundle
+        run: |
+          VERSION="$(python - <<'PY'
+          import pathlib
+          import tomllib
+          data = tomllib.loads(pathlib.Path('pyproject.toml').read_text(encoding='utf-8'))
+          print(data['project']['version'])
+          PY
+          )"
+          chmod +x scripts/build-release.sh
+          ./scripts/build-release.sh "${VERSION}" release-dist
+          test -s release-dist/bpc-connect-deploy.tar.gz
+          test -s release-dist/SHA256SUMS
+          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './VERSION'
+          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './install.sh'
       - uses: actions/upload-artifact@v4
         with:
           name: bpc-connect-dist
-          path: dist/*
+          path: |
+            dist/*
+            release-dist/*
