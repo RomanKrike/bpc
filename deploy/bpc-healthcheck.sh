@@ -5,7 +5,7 @@ BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 ROLE="${BPC_ROLE:-}"
 
 if [[ -f "${BPC_STATE_DIR}/install.env" ]]; then
-  # shellcheck disable=SC1090
+  # shellcheck disable=SC1090,SC1091
   source "${BPC_STATE_DIR}/install.env"
   ROLE="${BPC_ROLE:-${ROLE}}"
 fi
