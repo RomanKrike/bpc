@@ -63,7 +63,7 @@ jobs:
           test -s release-dist/SHA256SUMS
           tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './VERSION'
           tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './install.sh'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bpc-connect-dist
           path: |
