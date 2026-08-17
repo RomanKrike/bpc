@@ -1,0 +1,15 @@
+[Unit]
+Description=BPC Connect fail-closed nftables rules
+Before=mihomo.service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/bpc-connect/nftables/bpc-killswitch.nft
+ExecReload=/usr/sbin/nft -f /etc/bpc-connect/nftables/bpc-killswitch.nft
+ExecStop=/usr/sbin/nft delete table inet bpc
+
+[Install]
+WantedBy=multi-user.target

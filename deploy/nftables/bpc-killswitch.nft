@@ -1,0 +1,21 @@
+#!/usr/sbin/nft -f
+# BPC Connect work-gateway kill switch.
+# This is intentionally conservative: forwarding from the work-LAN is only
+# permitted when packets egress through the Mihomo-managed TUN interface.
+# Interface names must be adapted to the actual gateway before enabling.
+
+flush table inet bpc
+
+table inet bpc {
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+
+    ct state established,related accept
+
+    # Work laptop/LAN -> Mihomo TUN only.
+    iifname "BPC_WORK_LAN" oifname "bpc0" accept
+
+    # Return traffic from the tunnel.
+    iifname "bpc0" oifname "BPC_WORK_LAN" ct state established,related accept
+  }
+}

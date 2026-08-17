@@ -1,0 +1,69 @@
+gateway:
+  name: bpc-ge-gateway
+  tun:
+    name: bpc0
+    address: 172.31.255.1/30
+    mtu: 1380
+  api:
+    listen: 127.0.0.1:9090
+    secret: CHANGE_ME_LONG_RANDOM_SECRET
+  health:
+    url: https://cp.cloudflare.com/generate_204
+    interval: 15
+
+# Keep priorities unique. Lower number = preferred transport.
+transports:
+  - name: RU-VLESS-01
+    type: vless-reality
+    priority: 10
+    enabled: true
+    settings:
+      server: RU_VPS_IP_OR_HOST
+      port: 443
+      uuid: REPLACE_WITH_UUID
+      servername: REPLACE_WITH_REALITY_SERVER_NAME
+      reality_public_key: REPLACE_WITH_REALITY_PUBLIC_KEY
+      short_id: REPLACE_WITH_SHORT_ID
+      client_fingerprint: chrome
+      network: tcp
+
+  - name: RU-AWG-01
+    type: amneziawg
+    priority: 20
+    enabled: true
+    settings:
+      server: RU_VPS_IP_OR_HOST
+      port: 51820
+      private_key: REPLACE_WITH_CLIENT_PRIVATE_KEY
+      public_key: REPLACE_WITH_SERVER_PUBLIC_KEY
+      client_ip: 10.77.0.2
+      mtu: 1380
+      persistent_keepalive: 25
+      awg:
+        version: 2
+        jc: 5
+        jmin: 50
+        jmax: 1000
+        s1: 0
+        s2: 0
+        h1: 1
+        h2: 2
+        h3: 3
+        h4: 4
+
+  - name: RU-TAILSCALE-01
+    type: tailscale
+    priority: 30
+    enabled: false
+    settings:
+      hostname: bpc-ge-gateway
+      auth_key: REPLACE_WITH_EPHEMERAL_OR_REUSABLE_AUTH_KEY
+      control_url: https://controlplane.tailscale.com
+      exit_node: 100.64.0.10
+      state_dir: /var/lib/mihomo/tailscale
+      allow_lan: true
+      ip_version: ipv4-prefer
+
+# Routed via the Russian node when home access is enabled in a later milestone.
+home_cidrs:
+  - 10.100.0.0/24
