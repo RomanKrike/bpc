@@ -3,17 +3,17 @@ set -euo pipefail
 
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
+role="unknown"
+
+if [[ -f "${BPC_STATE_DIR}/install.env" ]]; then
+  # shellcheck disable=SC1090,SC1091
+  source "${BPC_STATE_DIR}/install.env"
+  role="${BPC_ROLE:-unknown}"
+fi
 
 version="unknown"
 if [[ -f "${BPC_ROOT}/current/VERSION" ]]; then
   version="$(tr -d '[:space:]' < "${BPC_ROOT}/current/VERSION")"
-fi
-
-role="unknown"
-if [[ -f "${BPC_STATE_DIR}/install.env" ]]; then
-  # shellcheck disable=SC1090
-  source "${BPC_STATE_DIR}/install.env"
-  role="${BPC_ROLE:-unknown}"
 fi
 
 printf 'BPC version: %s\n' "${version}"
