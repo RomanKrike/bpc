@@ -24,12 +24,17 @@ stable="${OUT_DIR}/bpc-connect-deploy.tar.gz"
 tar -C "${staging}" -czf "${versioned}" .
 cp "${versioned}" "${stable}"
 
+mapfile -t artifacts < <(
+  find "${OUT_DIR}" -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort
+)
+if (( ${#artifacts[@]} == 0 )); then
+  echo "No release artifacts were created" >&2
+  exit 3
+fi
 (
   cd "${OUT_DIR}"
-  find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' \
-    | sort \
-    | xargs -r sha256sum > SHA256SUMS
-)
+  sha256sum "${artifacts[@]}"
+) > "${OUT_DIR}/SHA256SUMS"
 
 printf 'Created %s\n' "${versioned}"
 printf 'Created %s\n' "${stable}"
