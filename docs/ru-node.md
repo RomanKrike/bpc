@@ -19,8 +19,10 @@ The RU node is an application-level Russian egress proxy for the Georgia gateway
 REALITY_SERVER_NAME=www.example.com \
 XRAY_PORT=443 \
 XRAY_VERSION=v26.3.27 \
-sudo -E ./deploy/bootstrap-ru-node.sh
+sudo -E bash ./deploy/bootstrap-ru-node.sh
 ```
+
+Set `BPC_PUBLIC_HOST` if you want to force the public IP/FQDN written into the generated client files. Otherwise the bootstrap tries to discover the public IPv4 address and falls back to the system hostname.
 
 The bootstrap:
 
@@ -30,9 +32,10 @@ The bootstrap:
 4. renders `/etc/bpc-connect/ru-node/config.json`;
 5. validates it with `xray run -test` before restart;
 6. installs a systemd override and starts Xray;
-7. writes client-side values to `/etc/bpc-connect/ru-node/client.env`.
+7. writes client-side values to `/etc/bpc-connect/ru-node/client.env`;
+8. writes a ready-to-merge Mihomo transport fragment to `/etc/bpc-connect/ru-node/gateway-transport.yaml`.
 
-Both generated files are root-only and must never be committed.
+All generated credential/configuration files are root-only and must never be committed.
 
 ## Firewall
 
@@ -45,6 +48,7 @@ systemctl status xray --no-pager
 ss -ltnp | grep ':443'
 /usr/local/bin/xray run -test -config /etc/bpc-connect/ru-node/config.json
 cat /etc/bpc-connect/ru-node/client.env
+cat /etc/bpc-connect/ru-node/gateway-transport.yaml
 ```
 
 Before using the node for work, run the end-to-end tests from the Georgia gateway and verify that the observed public IP is the RU VPS address.
