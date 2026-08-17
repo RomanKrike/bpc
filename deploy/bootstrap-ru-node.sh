@@ -23,13 +23,13 @@ if ! [[ "${XRAY_PORT}" =~ ^[0-9]+$ ]] || (( XRAY_PORT < 1 || XRAY_PORT > 65535 )
   exit 2
 fi
 
+apt-get update
+apt-get install -y --no-install-recommends ca-certificates curl iproute2 openssl
+
 if ss -H -ltn "sport = :${XRAY_PORT}" | grep -q .; then
   echo "TCP port ${XRAY_PORT} is already in use; choose another XRAY_PORT" >&2
   exit 3
 fi
-
-apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl openssl
 
 install -d -m 0700 "${BPC_DIR}"
 installer="$(mktemp)"
