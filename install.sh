@@ -139,6 +139,7 @@ rollback_release() {
 
 if [[ -f "${BPC_STATE_DIR}/ru-node/config.json" ]]; then
   echo "Existing RU-node configuration found; keeping credentials and configuration."
+  "${BPC_ROOT}/current/deploy/bpc-migrate.sh"
   if ! "${BPC_ROOT}/current/deploy/bpc-healthcheck.sh"; then
     rollback_release
     echo "Health check failed; restored previous BPC release." >&2
