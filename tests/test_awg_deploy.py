@@ -1,7 +1,6 @@
-from pathlib import Path
+import pathlib
 
-
-SCRIPT = Path("deploy/bpc-enable-awg.sh").read_text(encoding="utf-8")
+SCRIPT = pathlib.Path("deploy/bpc-enable-awg.sh").read_text(encoding="utf-8")
 
 
 def test_awg_runtime_is_pinned() -> None:
