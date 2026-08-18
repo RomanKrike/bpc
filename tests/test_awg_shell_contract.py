@@ -1,10 +1,9 @@
-from pathlib import Path
+import pathlib
 
-
-INSTALL = Path("install.sh").read_text(encoding="utf-8")
-HEALTH = Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
-STATUS = Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
-UPDATE = Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
+INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
+HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
+STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
+UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
 def test_install_exposes_awg_switch_and_command() -> None:
