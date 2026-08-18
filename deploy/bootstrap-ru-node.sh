@@ -38,6 +38,19 @@ trap 'rm -f "${installer}"' EXIT
 curl --fail --location --proto '=https' --tlsv1.2 "${XRAY_INSTALL_URL}" -o "${installer}"
 bash "${installer}" install --version "${XRAY_VERSION}" --without-geodata
 
+# Xray-install runs xray.service as User=nobody by default. Keep client
+# credentials root-only, but grant the actual Xray service user read access to
+# the server config and traversal access to its containing directory.
+xray_service_user="$(systemctl show -p User --value xray.service 2>/dev/null || true)"
+xray_service_user="${xray_service_user:-root}"
+if ! id "${xray_service_user}" >/dev/null 2>&1; then
+  echo "Xray service user does not exist: ${xray_service_user}" >&2
+  exit 4
+fi
+xray_service_group="$(id -gn "${xray_service_user}")"
+chown root:"${xray_service_group}" "${BPC_DIR}"
+chmod 0750 "${BPC_DIR}"
+
 uuid="$(/usr/local/bin/xray uuid | tr -d '\r\n')"
 key_output="$(/usr/local/bin/xray x25519)"
 private_key="$(printf '%s\n' "${key_output}" | sed -n 's/^PrivateKey:[[:space:]]*//p' | head -n1)"
@@ -89,7 +102,8 @@ cat > "${BPC_DIR}/config.json" <<JSON
 }
 JSON
 
-chmod 0600 "${BPC_DIR}/config.json"
+chown root:"${xray_service_group}" "${BPC_DIR}/config.json"
+chmod 0640 "${BPC_DIR}/config.json"
 /usr/local/bin/xray run -test -config "${BPC_DIR}/config.json"
 
 install -d -m 0755 /etc/systemd/system/xray.service.d
@@ -107,6 +121,7 @@ BPC_REALITY_SERVER_NAME=${REALITY_SERVER_NAME}
 BPC_REALITY_PUBLIC_KEY=${public_key}
 BPC_REALITY_SHORT_ID=${short_id}
 EOF
+chown root:root "${BPC_DIR}/client.env"
 chmod 0600 "${BPC_DIR}/client.env"
 
 cat > "${BPC_DIR}/gateway-transport.yaml" <<EOF
@@ -124,6 +139,7 @@ cat > "${BPC_DIR}/gateway-transport.yaml" <<EOF
     flow: xtls-rprx-vision
     network: tcp
 EOF
+chown root:root "${BPC_DIR}/gateway-transport.yaml"
 chmod 0600 "${BPC_DIR}/gateway-transport.yaml"
 
 systemctl daemon-reload
