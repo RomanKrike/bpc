@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+### Fixed
+- Allow the Xray systemd service user to traverse the RU-node configuration directory and read `config.json`.
+- Keep client credentials and generated Mihomo transport fragments root-only.
+
 ## 0.1.0
 
 ### Added
