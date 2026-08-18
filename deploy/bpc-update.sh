@@ -16,8 +16,30 @@ if [[ ! -L "${BPC_ROOT}/current" || ! -f "${BPC_ROOT}/current/VERSION" ]]; then
   exit 2
 fi
 
+reconcile_command_links() {
+  local release_root="$1"
+  local spec name script
+
+  for spec in \
+    "bpc-update:bpc-update.sh" \
+    "bpc-status:bpc-status.sh" \
+    "bpc-enable-awg:bpc-enable-awg.sh"; do
+    name="${spec%%:*}"
+    script="${spec#*:}"
+    if [[ -f "${release_root}/deploy/${script}" ]]; then
+      chmod 0755 "${release_root}/deploy/${script}"
+      ln -sfn "${release_root}/deploy/${script}" "/usr/local/sbin/${name}"
+    fi
+  done
+}
+
 current_target="$(readlink -f "${BPC_ROOT}/current")"
 current_version="$(tr -d '[:space:]' < "${BPC_ROOT}/current/VERSION")"
+
+# Repair command links on every invocation, even when the installed version is
+# already the latest. This also exposes commands that were introduced by the
+# release being installed by an older updater.
+reconcile_command_links "${BPC_ROOT}/current"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
@@ -66,6 +88,7 @@ chmod 0755 "${new_target}/deploy/"*.sh
 rollback() {
   echo "Update health check failed. Rolling back to BPC ${current_version}." >&2
   ln -sfn "${current_target}" "${BPC_ROOT}/current"
+  reconcile_command_links "${BPC_ROOT}/current"
   if [[ -f "${backup}" ]]; then
     rm -rf "${BPC_STATE_DIR}"
     tar -C /etc -xzf "${backup}"
@@ -78,9 +101,7 @@ rollback() {
 }
 
 ln -sfn "${new_target}" "${BPC_ROOT}/current"
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-update.sh" /usr/local/sbin/bpc-update
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
+reconcile_command_links "${BPC_ROOT}/current"
 
 "${BPC_ROOT}/current/deploy/bpc-migrate.sh"
 
