@@ -8,6 +8,8 @@ ROLE="ru-node"
 REALITY_SERVER_NAME=""
 XRAY_PORT="443"
 BPC_PUBLIC_HOST=""
+WITH_AWG="false"
+AWG_PORT="443"
 
 usage() {
   cat <<'USAGE'
@@ -16,8 +18,10 @@ Usage: install.sh [options]
 Options:
   --role ru-node                 Node role (currently only ru-node)
   --reality-server-name HOST     Required REALITY target hostname
-  --port PORT                    Xray listen port (default: 443)
+  --port PORT                    Xray TCP listen port (default: 443)
   --public-host HOST             Public VPS IPv4/FQDN (auto-detected by default)
+  --with-awg                     Also enable AmneziaWG 2.0
+  --awg-port PORT                AmneziaWG UDP listen port (default: 443)
   -h, --help                     Show this help
 USAGE
 }
@@ -38,6 +42,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --public-host)
       BPC_PUBLIC_HOST="${2:-}"
+      shift 2
+      ;;
+    --with-awg)
+      WITH_AWG="true"
+      shift
+      ;;
+    --awg-port)
+      AWG_PORT="${2:-}"
       shift 2
       ;;
     -h|--help)
@@ -67,10 +79,14 @@ if [[ -z "${REALITY_SERVER_NAME}" && ! -f "${BPC_STATE_DIR}/ru-node/config.json"
   exit 2
 fi
 
-if ! [[ "${XRAY_PORT}" =~ ^[0-9]+$ ]] || (( XRAY_PORT < 1 || XRAY_PORT > 65535 )); then
-  echo "--port must be between 1 and 65535" >&2
-  exit 2
-fi
+for port_spec in "XRAY_PORT:${XRAY_PORT}" "AWG_PORT:${AWG_PORT}"; do
+  name="${port_spec%%:*}"
+  value="${port_spec#*:}"
+  if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 || value > 65535 )); then
+    echo "${name} must be between 1 and 65535" >&2
+    exit 2
+  fi
+done
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -122,6 +138,7 @@ chmod 0755 "${release_dir}/deploy/"*.sh
 ln -sfn "${release_dir}" "${BPC_ROOT}/current"
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-update.sh" /usr/local/sbin/bpc-update
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
+ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
 
 cat > "${BPC_STATE_DIR}/install.env" <<STATE
 BPC_ROLE=${ROLE}
@@ -154,6 +171,10 @@ else
   fi
 fi
 
+if [[ "${WITH_AWG}" == "true" ]]; then
+  AWG_PORT="${AWG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh"
+fi
+
 cat <<DONE
 BPC ${version} installed successfully.
 
@@ -164,7 +185,15 @@ Current: ${BPC_ROOT}/current
 Commands:
   bpc-status
   bpc-update
+  bpc-enable-awg
 
-Client transport configuration:
+VLESS transport configuration:
   ${BPC_STATE_DIR}/ru-node/gateway-transport.yaml
 DONE
+
+if [[ -f "${BPC_STATE_DIR}/ru-node/awg/enabled" ]]; then
+  cat <<DONE
+AmneziaWG Clash Verge Rev profile:
+  ${BPC_STATE_DIR}/ru-node/awg/clash-verge.yaml
+DONE
+fi
