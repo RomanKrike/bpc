@@ -70,6 +70,8 @@ rollback() {
     rm -rf "${BPC_STATE_DIR}"
     tar -C /etc -xzf "${backup}"
   fi
+  # Preserve the permission repair even when rolling back to a pre-migration release.
+  "${new_target}/deploy/bpc-migrate.sh" || true
   if [[ -f "${BPC_STATE_DIR}/ru-node/config.json" && -x /usr/local/bin/xray ]]; then
     /usr/local/bin/xray run -test -config "${BPC_STATE_DIR}/ru-node/config.json" >/dev/null || true
     systemctl restart xray || true
@@ -79,6 +81,10 @@ rollback() {
 ln -sfn "${new_target}" "${BPC_ROOT}/current"
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-update.sh" /usr/local/sbin/bpc-update
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
+
+# Apply state migrations before validating the upgraded release. This makes
+# 0.1.0 -> 0.1.1 self-healing for RU-node Xray permissions.
+"${BPC_ROOT}/current/deploy/bpc-migrate.sh"
 
 if ! "${BPC_ROOT}/current/deploy/bpc-healthcheck.sh"; then
   rollback
