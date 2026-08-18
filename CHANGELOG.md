@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.0
+
+### Added
+- Optional AmneziaWG 2.0 transport on UDP/443 alongside Xray VLESS/REALITY on TCP/443.
+- Pinned official AmneziaWG userspace runtime with generated server/client keys and a persistent container.
+- RU-node IPv4 forwarding, NAT and AmneziaWG health checks.
+- Ready-to-import Clash Verge Rev AWG2 profile and native AmneziaWG client configuration.
+- `bpc-enable-awg` command and `--with-awg` installer option.
+
 ## 0.1.1
 
 ### Fixed
