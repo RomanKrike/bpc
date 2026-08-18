@@ -12,8 +12,12 @@ def test_install_exposes_awg_switch_and_command() -> None:
     assert "/usr/local/sbin/bpc-enable-awg" in INSTALL
 
 
-def test_update_preserves_awg_command() -> None:
-    assert "/usr/local/sbin/bpc-enable-awg" in UPDATE
+def test_update_reconciles_command_links_before_same_version_exit() -> None:
+    assert "reconcile_command_links" in UPDATE
+    assert "/usr/local/sbin/${name}" in UPDATE
+    reconcile_pos = UPDATE.index('reconcile_command_links "${BPC_ROOT}/current"')
+    same_version_pos = UPDATE.index('if [[ "${latest_version}" == "${current_version}" ]]')
+    assert reconcile_pos < same_version_pos
 
 
 def test_healthcheck_only_requires_awg_after_enable_marker() -> None:
