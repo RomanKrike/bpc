@@ -4,7 +4,7 @@ set -euo pipefail
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 AWG_DIR="${AWG_DIR:-${BPC_STATE_DIR}/ru-node/awg}"
 AWG_PORT="${AWG_PORT:-443}"
-AWG_INTERFACE="${AWG_INTERFACE:-awg0}"
+AWG_INTERFACE="awg0"
 AWG_SUBNET="${AWG_SUBNET:-10.251.0.0/24}"
 AWG_SERVER_ADDRESS="${AWG_SERVER_ADDRESS:-10.251.0.1/24}"
 AWG_CLIENT_ADDRESS="${AWG_CLIENT_ADDRESS:-10.251.0.2/32}"
@@ -12,8 +12,8 @@ AWG_MTU="${AWG_MTU:-1280}"
 AWG_CONTAINER="${AWG_CONTAINER:-bpc-awg}"
 AWG_IMAGE="${AWG_IMAGE:-amneziavpn/amneziawg-go:2.0.0@sha256:4ada4adcf55142c55239f7ae4d683745f6f2d7ad707c758af8f250c5f1cd368e}"
 
-# Conservative AWG2 profile for first interoperability tests. CPS/I1-I5 are
-# intentionally left empty; they can be layered on after the base transport is proven.
+# Conservative AWG2 profile for the first interoperability test. CPS/I1-I5
+# are intentionally left empty until the base transport is proven end to end.
 AWG_JC="${AWG_JC:-7}"
 AWG_JMIN="${AWG_JMIN:-20}"
 AWG_JMAX="${AWG_JMAX:-70}"
@@ -29,11 +29,6 @@ AWG_H4="${AWG_H4:-400000000-400000999}"
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run bpc-enable-awg as root" >&2
   exit 1
-fi
-
-if ! [[ "${AWG_PORT}" =~ ^[0-9]+$ ]] || (( AWG_PORT < 1 || AWG_PORT > 65535 )); then
-  echo "AWG_PORT must be between 1 and 65535" >&2
-  exit 2
 fi
 
 case "$(uname -m)" in
@@ -52,6 +47,19 @@ fi
 BPC_RU_HOST="$(sed -n 's/^BPC_RU_HOST=//p' "${BPC_STATE_DIR}/ru-node/client.env" | head -n1)"
 if [[ -z "${BPC_RU_HOST}" ]]; then
   echo "BPC_RU_HOST is missing from client.env" >&2
+  exit 2
+fi
+
+# On repeated runs, persisted runtime values win. This prevents accidental
+# endpoint/image changes without regenerating the matching client config.
+if [[ -f "${AWG_DIR}/enabled" && -f "${AWG_DIR}/runtime.env" ]]; then
+  # shellcheck disable=SC1090,SC1091
+  source "${AWG_DIR}/runtime.env"
+  AWG_INTERFACE="awg0"
+fi
+
+if ! [[ "${AWG_PORT}" =~ ^[0-9]+$ ]] || (( AWG_PORT < 1 || AWG_PORT > 65535 )); then
+  echo "AWG_PORT must be between 1 and 65535" >&2
   exit 2
 fi
 
