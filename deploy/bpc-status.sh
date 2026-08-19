@@ -139,6 +139,36 @@ if [[ "${role}" == "ru-node" ]]; then
     echo 'WireGuard: disabled'
   fi
 
+  mihomo_dir="${BPC_STATE_DIR}/ru-node/mihomo-server"
+  if [[ -f "${mihomo_dir}/enabled" && -f "${mihomo_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${mihomo_dir}/runtime.env"
+    mihomo_state="$(systemctl is-active bpc-mihomo-transports.service 2>/dev/null || true)"
+    printf 'Mihomo transport pack: %s (%s)\n' \
+      "${mihomo_state:-unknown}" "${MIHOMO_VERSION:-unknown}"
+    printf 'Hysteria2 endpoint: %s:%s/udp\n' "${host:-unknown}" "${HY2_PORT:-8443}"
+    printf 'TUIC endpoint: %s:%s/udp\n' "${host:-unknown}" "${TUIC_PORT:-10443}"
+    printf 'AnyTLS endpoint: %s:%s/tcp\n' "${host:-unknown}" "${ANYTLS_PORT:-10443}"
+    printf 'ShadowTLS endpoint: %s:%s/tcp\n' "${host:-unknown}" "${SHADOWTLS_PORT:-9443}"
+    printf 'Trojan endpoint: %s:%s/tcp\n' "${host:-unknown}" "${TROJAN_PORT:-12443}"
+    printf 'Mieru endpoint: %s:%s/tcp\n' "${host:-unknown}" "${MIERU_PORT:-2999}"
+    printf 'TrustTunnel endpoint: %s:%s/tcp+udp\n' \
+      "${host:-unknown}" "${TRUSTTUNNEL_PORT:-11443}"
+  else
+    echo 'Mihomo transport pack: disabled'
+  fi
+
+  ssh_dir="${BPC_STATE_DIR}/ru-node/ssh-rescue"
+  if [[ -f "${ssh_dir}/enabled" && -f "${ssh_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${ssh_dir}/runtime.env"
+    ssh_state="$(systemctl is-active "${SSH_RESCUE_SERVICE:-ssh.service}" 2>/dev/null || true)"
+    printf 'SSH rescue: %s (%s:%s/tcp; manual only)\n' \
+      "${ssh_state:-unknown}" "${host:-unknown}" "${SSH_RESCUE_PORT:-22}"
+  else
+    echo 'SSH rescue: disabled'
+  fi
+
   auto_profile="${BPC_STATE_DIR}/ru-node/clash-verge-auto.yaml"
   if [[ -s "${auto_profile}" ]]; then
     printf 'Clash auto profile: ready (%s)\n' "${auto_profile}"

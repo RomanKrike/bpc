@@ -82,6 +82,75 @@ check_wg() {
   fi
 }
 
+check_mihomo_transports() {
+  local server_dir="${BPC_STATE_DIR}/ru-node/mihomo-server"
+  local runtime_env="${server_dir}/runtime.env"
+  local config="${server_dir}/config.yaml"
+  local transport
+
+  [[ -f "${server_dir}/enabled" ]] || return 0
+  if [[ ! -s "${runtime_env}" || ! -s "${config}" ]]; then
+    fail_health "Mihomo transport-pack runtime metadata or config is missing"
+    return 1
+  fi
+  if [[ ! -x /usr/local/bin/bpc-mihomo ]]; then
+    fail_health "bpc-mihomo binary is missing for enabled transport pack"
+    return 1
+  fi
+
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  if [[ ! -s "${TLS_CERT:-}" || ! -s "${TLS_KEY:-}" ]]; then
+    fail_health "Mihomo transport-pack TLS certificate or key is missing"
+    return 1
+  fi
+  if ! /usr/local/bin/bpc-mihomo -t -d "${server_dir}/home" -f "${config}" >/dev/null 2>&1; then
+    fail_health "Mihomo transport-pack configuration validation failed"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-mihomo-transports.service; then
+    fail_health "bpc-mihomo-transports.service is not active"
+    return 1
+  fi
+
+  for transport in hy2 tuic anytls shadowtls trojan mieru trusttunnel; do
+    if [[ ! -f "${BPC_STATE_DIR}/ru-node/${transport}/enabled" || \
+      ! -s "${BPC_STATE_DIR}/ru-node/${transport}/clash-verge.yaml" ]]; then
+      fail_health "Mihomo transport profile is missing or disabled: ${transport}"
+      return 1
+    fi
+  done
+}
+
+check_ssh_rescue() {
+  local ssh_dir="${BPC_STATE_DIR}/ru-node/ssh-rescue"
+  local runtime_env="${ssh_dir}/runtime.env"
+  local service user
+
+  [[ -f "${ssh_dir}/enabled" ]] || return 0
+  if [[ ! -s "${runtime_env}" || ! -s "${ssh_dir}/client.key" || \
+    ! -s "${ssh_dir}/clash-verge.yaml" ]]; then
+    fail_health "SSH rescue state is incomplete"
+    return 1
+  fi
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  service="${SSH_RESCUE_SERVICE:-ssh.service}"
+  user="${SSH_RESCUE_USER:-bpc-rescue}"
+  if ! id "${user}" >/dev/null 2>&1; then
+    fail_health "SSH rescue account ${user} is missing"
+    return 1
+  fi
+  if ! systemctl --quiet is-active "${service}"; then
+    fail_health "SSH rescue service ${service} is not active"
+    return 1
+  fi
+  if command -v sshd >/dev/null 2>&1 && ! sshd -t; then
+    fail_health "OpenSSH configuration validation failed"
+    return 1
+  fi
+}
+
 check_subscription() {
   local sub_dir="${BPC_STATE_DIR}/ru-node/subscription"
   local runtime_env="${sub_dir}/runtime.env"
@@ -133,6 +202,8 @@ case "${ROLE}" in
     fi
     check_awg
     check_wg
+    check_mihomo_transports
+    check_ssh_rescue
     check_subscription
     ;;
   *)

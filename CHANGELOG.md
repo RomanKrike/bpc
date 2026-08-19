@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+- Optional RU-node Mihomo transport pack, pinned to Mihomo v1.19.29 and verified against the SHA-256 digest published on the official GitHub Release.
+- Hysteria2 with Salamander obfuscation on UDP/8443 by default.
+- TUIC v5 on UDP/10443 by default.
+- AnyTLS on TCP/10443 by default; TCP and UDP intentionally reuse the numeric port without conflict.
+- Shadowsocks 2022 with ShadowTLS v2 on TCP/9443 by default.
+- Trojan on TCP/12443, Mieru on TCP/2999 and TrustTunnel HTTP2/HTTP3 on TCP+UDP/11443 by default.
+- `bpc-enable-mihomo-transports --hostname HOST` to provision all supported Mihomo server listeners, trusted TLS, random root-only credentials, client fragments and a persistent systemd service.
+- `bpc-enable-ssh-rescue` to provision a key-only, forwarding-only OpenSSH account and a manual Mihomo SSH rescue proxy.
+- Health and status reporting for the new transport pack and SSH rescue channel.
+
+### Changed
+- `BPC-AUTO` can now fail over across AWG, WireGuard, Hysteria2, TUIC, VLESS/REALITY, AnyTLS, ShadowTLS, Trojan, Mieru and TrustTunnel when those transports are enabled.
+- SSH rescue is deliberately excluded from automatic failover because Mihomo SSH is TCP-only; when enabled the aggregate profile exposes `BPC-ROUTE` for an explicit manual switch from `BPC-AUTO` to SSH rescue.
+- Secure Clash subscription automatically serves the newly rendered multi-protocol profile without changing the subscription URL.
+
+### Security
+- Multi-protocol credentials and generated client profiles remain root-only under `/etc/bpc-connect/ru-node` and are never printed by status commands.
+- TLS listeners reuse or obtain a trusted Let's Encrypt certificate; certificate renewal restarts the Mihomo transport service.
+- SSH rescue disables password authentication, shell/TTY, agent forwarding and X11 forwarding for the dedicated account while allowing only TCP forwarding.
+
 ## 0.5.1
 
 ### Fixed

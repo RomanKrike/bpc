@@ -19,7 +19,7 @@ def test_dns_repair_has_resolved_and_static_fallbacks() -> None:
 
 
 def test_dns_command_is_exposed_and_reconciled() -> None:
-    assert "/usr/local/sbin/bpc-ensure-dns" in INSTALL
+    assert '"bpc-ensure-dns:bpc-ensure-dns.sh"' in INSTALL
     assert '"bpc-ensure-dns:bpc-ensure-dns.sh"' in UPDATE
     assert '"bpc-ensure-dns:bpc-ensure-dns.sh"' in MIGRATE
 

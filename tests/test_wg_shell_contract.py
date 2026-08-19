@@ -10,7 +10,7 @@ UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 def test_install_exposes_wireguard_switch_and_command() -> None:
     assert "--with-wg" in INSTALL
     assert "--wg-port PORT" in INSTALL
-    assert "/usr/local/sbin/bpc-enable-wg" in INSTALL
+    assert '"bpc-enable-wg:bpc-enable-wg.sh"' in INSTALL
 
 
 def test_update_reconciles_wireguard_command() -> None:
