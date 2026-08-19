@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.1
+
+### Added
+- `bpc-ensure-dns` command with automatic `systemd-resolved` repair and a static `resolv.conf` fallback when name resolution is unavailable.
+- DNS diagnostics in `bpc-status`.
+- WireGuard and AmneziaWG peer handshake/traffic diagnostics in `bpc-status`.
+
+### Fixed
+- Fresh installs now repair broken DNS before package and release downloads.
+- RU-node public endpoint detection prefers the public source IPv4 and no longer silently falls back to the machine hostname.
+- AWG, WireGuard and update flows repair DNS before network-dependent package/download operations.
+
 ## 0.3.0
 
 ### Added
