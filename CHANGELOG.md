@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0
+
+### Added
+- Tokenized HTTPS endpoint for the generated aggregate Clash Verge Rev profile.
+- `bpc-enable-subscription --hostname HOST` to obtain a trusted Let's Encrypt certificate, generate a 256-bit secret URL token and start the subscription service on TCP/8443 by default.
+- `bpc-subscription-url` to print the secret subscription URL on demand.
+- Automatic certificate renewal through `certbot.timer` with a deploy hook that restarts the subscription service after renewal.
+- Subscription health/status reporting without exposing the secret URL token.
+
+### Security
+- Subscription profiles are served only over TLS and only from the exact tokenized path.
+- Request paths are not written to the subscription service logs because the path contains the access token.
+- Subscription state and token files remain root-only under `/etc/bpc-connect/ru-node/subscription`.
+
 ## 0.4.1
 
 ### Fixed
