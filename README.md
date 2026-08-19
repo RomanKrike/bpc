@@ -7,8 +7,9 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Russian exit node based on Xray VLESS + REALITY.
 - Optional AmneziaWG 2.0 transport on UDP/443.
 - Optional native WireGuard transport on UDP/51820.
-- Mihomo gateway config generator.
-- Automatic Clash Verge Rev failover profile for AWG, WireGuard and VLESS/REALITY.
+- Optional Mihomo server transport pack: Hysteria2, TUIC v5, AnyTLS, Shadowsocks 2022 + ShadowTLS, Trojan, Mieru and TrustTunnel.
+- Optional key-only SSH rescue transport for manual TCP fallback.
+- Automatic Clash Verge Rev failover profile across enabled UDP/TCP proxy transports.
 - Optional tokenized HTTPS subscription endpoint for the aggregate Clash profile.
 - REALITY target compatibility preflight before fresh Xray provisioning.
 - Config generator with safety validation.
@@ -22,22 +23,33 @@ This repository intentionally separates the BPC underlay from the corporate VPN.
 ## RU node network layout
 
 ```text
-TCP/443    -> Xray VLESS + REALITY
-UDP/443    -> AmneziaWG 2.0
-UDP/51820  -> native WireGuard
-TCP/8443   -> optional HTTPS Clash subscription
-TCP/80     -> Let's Encrypt HTTP-01 validation/renewal when subscription is enabled
+TCP/443     -> Xray VLESS + REALITY
+UDP/443     -> AmneziaWG 2.0
+UDP/51820   -> native WireGuard
+UDP/8443    -> Hysteria2
+TCP/8443    -> optional HTTPS Clash subscription
+UDP/10443   -> TUIC v5
+TCP/10443   -> AnyTLS
+TCP/9443    -> Shadowsocks 2022 + ShadowTLS v2
+TCP/12443   -> Trojan
+TCP/2999    -> Mieru
+TCP+UDP/11443 -> TrustTunnel HTTP2/HTTP3
+TCP/22      -> optional SSH rescue (existing OpenSSH service)
+TCP/80      -> Let's Encrypt HTTP-01 validation/renewal
 ```
 
-The transports are independent. Enabling or disabling one does not replace the others.
+TCP and UDP are separate namespaces, so Hysteria2 can share numeric port 8443 with the HTTPS subscription and TUIC can share numeric port 10443 with AnyTLS.
 
-The generated aggregate Clash profile uses Mihomo's `fallback` group. The default order is:
+The generated aggregate Clash profile uses Mihomo's `fallback` group. The default automatic order is:
 
 ```text
-AmneziaWG -> WireGuard -> VLESS/REALITY
+AmneziaWG -> WireGuard -> Hysteria2 -> TUIC -> VLESS/REALITY
+          -> AnyTLS -> ShadowTLS -> Trojan -> Mieru -> TrustTunnel
 ```
 
-Mihomo continuously health-checks the transports and selects the first healthy option in that order. There is no `DIRECT` fallback, so if all BPC transports are unavailable the profile fails closed.
+Only transports that are actually enabled are included. Mihomo continuously health-checks them and selects the first healthy option. There is no `DIRECT` fallback, so if all automatic BPC transports are unavailable the profile fails closed.
+
+SSH rescue is intentionally not part of `BPC-AUTO` because Mihomo's SSH outbound is TCP-only. When SSH rescue is enabled, the aggregate profile adds `BPC-ROUTE`, which defaults to `BPC-AUTO` but can be switched manually to `BPC-RU-SSH-RESCUE`.
 
 ## One-command RU node install
 
@@ -48,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
   | sudo bash -s -- --role ru-node --reality-server-name www.bing.com
 ```
 
-To provision all currently implemented RU transports immediately:
+To provision AWG and native WireGuard immediately:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
@@ -90,24 +102,53 @@ sudo bpc-render-clash
 Enable additional transports later on an existing node:
 
 ```bash
-sudo bpc-update
 sudo bpc-enable-awg
 sudo bpc-enable-wg
+sudo bpc-enable-mihomo-transports --hostname sub.example.com
+sudo bpc-enable-ssh-rescue
 sudo bpc-render-clash
 sudo bpc-status
 ```
 
 `bpc-update` downloads the latest release, backs up `/etc/bpc-connect`, atomically switches `/opt/bpc/current`, validates managed services, and rolls back to the previous release if the health check fails.
 
-`bpc-status` reports local service health plus DNS state and the latest WireGuard/AmneziaWG peer handshake and traffic counters when those transports are enabled.
+`bpc-status` reports service health, enabled transport endpoints and WireGuard/AmneziaWG peer handshake and traffic counters without printing credentials.
 
 `bpc-render-clash` creates a root-only aggregate profile at `/etc/bpc-connect/ru-node/clash-verge-auto.yaml`. Existing installations automatically receive this profile during migration. The default preference can be overridden, for example:
 
 ```bash
-BPC_CLASH_TRANSPORT_ORDER="wg awg vless" sudo -E bpc-render-clash
+BPC_CLASH_TRANSPORT_ORDER="hy2 tuic awg wg vless anytls" sudo -E bpc-render-clash
 ```
 
 Health-check behavior can be tuned through `BPC_CLASH_HEALTH_URL`, `BPC_CLASH_HEALTH_INTERVAL`, `BPC_CLASH_HEALTH_TIMEOUT` and `BPC_CLASH_MAX_FAILED_TIMES`.
+
+## Mihomo multi-protocol transport pack
+
+Create or reuse a DNS A record pointing directly to the RU node. The same trusted hostname used by the secure Clash subscription can be reused. Then run:
+
+```bash
+sudo bpc-enable-mihomo-transports --hostname sub.example.com
+```
+
+BPC pins the official Mihomo v1.19.29 server binary, downloads it from the MetaCubeX GitHub Release, verifies the asset against GitHub's published SHA-256 digest, generates independent random credentials for every listener, validates the complete Mihomo server configuration and starts `bpc-mihomo-transports.service`.
+
+The command creates Hysteria2, TUIC v5, AnyTLS, Shadowsocks 2022 + ShadowTLS v2, Trojan, Mieru and TrustTunnel client fragments under `/etc/bpc-connect/ru-node/<transport>/clash-verge.yaml`. Credentials and profiles are root-only. Re-running the command preserves existing credentials.
+
+Default ports can be overridden during first provisioning with `--hy2-port`, `--tuic-port`, `--anytls-port`, `--shadowtls-port`, `--trojan-port`, `--mieru-port` and `--trust-port`.
+
+The TLS listeners use a trusted Let's Encrypt certificate. If the selected certificate already exists, BPC reuses it. Otherwise TCP/80 must be reachable for the initial HTTP-01 issuance and future renewals.
+
+## SSH rescue
+
+Enable the manual rescue channel with:
+
+```bash
+sudo bpc-enable-ssh-rescue
+```
+
+BPC creates a dedicated `bpc-rescue` system account with a generated Ed25519 client key. Password authentication, shell/TTY, X11 and agent forwarding are disabled for the account; TCP forwarding remains enabled. The current SSH host public key is pinned into the generated Mihomo client fragment.
+
+Because SSH does not carry UDP in Mihomo, it is never inserted into `BPC-AUTO`. It is available only through the manual `BPC-ROUTE` selector.
 
 ## Secure Clash subscription
 
@@ -129,7 +170,7 @@ sudo bpc-subscription-url
 
 Let's Encrypt renewal is handled by `certbot.timer`. TCP/80 must remain reachable for HTTP-01 renewals unless certificate management is replaced with another supported method.
 
-Generated client files:
+Generated client/state files include:
 
 ```text
 /etc/bpc-connect/ru-node/gateway-transport.yaml
@@ -138,11 +179,22 @@ Generated client files:
 /etc/bpc-connect/ru-node/awg/clash-verge.yaml
 /etc/bpc-connect/ru-node/wg/client.conf
 /etc/bpc-connect/ru-node/wg/clash-verge.yaml
+/etc/bpc-connect/ru-node/mihomo-server/config.yaml
+/etc/bpc-connect/ru-node/mihomo-server/runtime.env
+/etc/bpc-connect/ru-node/hy2/clash-verge.yaml
+/etc/bpc-connect/ru-node/tuic/clash-verge.yaml
+/etc/bpc-connect/ru-node/anytls/clash-verge.yaml
+/etc/bpc-connect/ru-node/shadowtls/clash-verge.yaml
+/etc/bpc-connect/ru-node/trojan/clash-verge.yaml
+/etc/bpc-connect/ru-node/mieru/clash-verge.yaml
+/etc/bpc-connect/ru-node/trusttunnel/clash-verge.yaml
+/etc/bpc-connect/ru-node/ssh-rescue/client.key
+/etc/bpc-connect/ru-node/ssh-rescue/clash-verge.yaml
 /etc/bpc-connect/ru-node/subscription/token
 /etc/bpc-connect/ru-node/subscription/runtime.env
 ```
 
-The aggregate Clash profile, AWG profile, WireGuard client files and subscription URL contain or grant access to private credentials and must be treated as secrets.
+The aggregate Clash profile, transport profiles, SSH private key and subscription URL contain or grant access to private credentials and must be treated as secrets.
 
 See `docs/install-update.md`, `docs/ru-node.md`, `docs/amneziawg.md`, `docs/wireguard.md` and `docs/subscription.md`.
 
@@ -165,8 +217,8 @@ bpc-connect render config/gateway.example.yaml -o build/mihomo/config.yaml
 
 ## Security
 
-- Never commit production UUIDs, private keys, WireGuard PSKs, Tailscale auth keys, Mihomo API secrets, subscription URLs or real infrastructure credentials.
-- Treat generated gateway, Xray, AmneziaWG, WireGuard and aggregate Clash configurations as secrets.
+- Never commit production UUIDs, private keys, WireGuard PSKs, transport passwords, SSH rescue keys, Mihomo API secrets, subscription URLs or real infrastructure credentials.
+- Treat generated gateway, Xray, AmneziaWG, WireGuard, Mihomo transport and aggregate Clash configurations as secrets.
 - Treat the tokenized subscription URL like a password; anyone holding it can download the client profile and its credentials.
 - The work gateway must fail closed: transport failure must not expose the work laptop directly through the Georgia ISP.
 - Release checksums detect corrupted or mismatched artifacts; stronger signed-release verification can be added in a later milestone.
