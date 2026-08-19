@@ -39,3 +39,9 @@ def test_aggregate_profile_is_root_only_and_reported() -> None:
     assert 'chmod 0600 "${tmp}"' in RENDER
     assert "clash-verge-auto.yaml" in RENDER
     assert "Clash auto profile: ready" in STATUS
+
+
+def test_renderer_never_changes_live_ru_node_directory_permissions() -> None:
+    assert 'install -d -m 0700 "${RU_DIR}"' not in RENDER
+    assert 'chmod 0700 "${RU_DIR}"' not in RENDER
+    assert "Never chmod or" in RENDER

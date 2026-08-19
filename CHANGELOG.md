@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1
+
+### Fixed
+- `bpc-render-clash` no longer changes ownership or permissions of `/etc/bpc-connect/ru-node` while generating the aggregate Clash profile.
+- Prevent an update-time Xray restart failure caused by the renderer making the RU-node state directory root-only.
+- Health checks now report the specific failing component before automatic rollback.
+
 ## 0.4.0
 
 ### Added
