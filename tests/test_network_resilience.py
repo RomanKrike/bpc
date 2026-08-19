@@ -39,7 +39,7 @@ def test_public_host_detection_does_not_fallback_to_hostname() -> None:
 def test_status_reports_dns_and_peer_handshakes() -> None:
     assert "DNS: OK" in STATUS
     assert "DNS: FAILED" in STATUS
-    assert "AWG peer:" in STATUS
-    assert "WG peer:" in STATUS
+    assert 'print_peer_line "AWG"' in STATUS
+    assert 'print_peer_line "WG"' in STATUS
     assert "latest-handshakes" in STATUS
     assert "transfer" in STATUS
