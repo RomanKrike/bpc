@@ -223,22 +223,24 @@ if [[ ! -d "${release_dir}" ]]; then
 fi
 chmod 0755 "${release_dir}/deploy/"*.sh
 ln -sfn "${release_dir}" "${BPC_ROOT}/current"
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-update.sh" /usr/local/sbin/bpc-update
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
-if [[ -f "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
-  ln -sfn "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" /usr/local/sbin/bpc-ensure-dns
-fi
-if [[ -f "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
-  ln -sfn "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" /usr/local/sbin/bpc-render-clash
-fi
-if [[ -f "${BPC_ROOT}/current/deploy/bpc-enable-subscription.sh" ]]; then
-  ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-subscription.sh" /usr/local/sbin/bpc-enable-subscription
-fi
-if [[ -f "${BPC_ROOT}/current/deploy/bpc-subscription-url.sh" ]]; then
-  ln -sfn "${BPC_ROOT}/current/deploy/bpc-subscription-url.sh" /usr/local/sbin/bpc-subscription-url
-fi
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh" /usr/local/sbin/bpc-enable-wg
+
+for spec in \
+  "bpc-update:bpc-update.sh" \
+  "bpc-status:bpc-status.sh" \
+  "bpc-ensure-dns:bpc-ensure-dns.sh" \
+  "bpc-render-clash:bpc-render-clash.sh" \
+  "bpc-enable-subscription:bpc-enable-subscription.sh" \
+  "bpc-subscription-url:bpc-subscription-url.sh" \
+  "bpc-enable-awg:bpc-enable-awg.sh" \
+  "bpc-enable-wg:bpc-enable-wg.sh" \
+  "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
+  "bpc-enable-ssh-rescue:bpc-enable-ssh-rescue.sh"; do
+  name="${spec%%:*}"
+  script="${spec#*:}"
+  if [[ -f "${BPC_ROOT}/current/deploy/${script}" ]]; then
+    ln -sfn "${BPC_ROOT}/current/deploy/${script}" "/usr/local/sbin/${name}"
+  fi
+done
 
 cat > "${BPC_STATE_DIR}/install.env" <<STATE
 BPC_ROLE=${ROLE}
@@ -304,6 +306,8 @@ Commands:
   bpc-subscription-url
   bpc-enable-awg
   bpc-enable-wg
+  bpc-enable-mihomo-transports
+  bpc-enable-ssh-rescue
 
 VLESS transport configuration:
   ${BPC_STATE_DIR}/ru-node/gateway-transport.yaml
