@@ -28,6 +28,7 @@ fi
 
 if [[ "${role}" == "ru-node" ]]; then
   printf 'Xray: %s\n' "$(systemctl is-active xray 2>/dev/null || true)"
+  host="unknown"
   if [[ -f "${BPC_STATE_DIR}/ru-node/client.env" ]]; then
     host="$(sed -n 's/^BPC_RU_HOST=//p' "${BPC_STATE_DIR}/ru-node/client.env" | head -n1)"
     port="$(sed -n 's/^BPC_RU_PORT=//p' "${BPC_STATE_DIR}/ru-node/client.env" | head -n1)"
@@ -49,5 +50,23 @@ if [[ "${role}" == "ru-node" ]]; then
     printf 'AWG endpoint: %s:%s/udp\n' "${host:-unknown}" "${awg_port}"
   else
     echo 'AmneziaWG: disabled'
+  fi
+
+  wg_dir="${BPC_STATE_DIR}/ru-node/wg"
+  if [[ -f "${wg_dir}/enabled" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${wg_dir}/runtime.env"
+    wg_interface="${WG_INTERFACE:-bpcwg0}"
+    wg_port="${WG_PORT:-51820}"
+    if systemctl --quiet is-active "wg-quick@${wg_interface}.service" && \
+      wg show "${wg_interface}" >/dev/null 2>&1; then
+      wg_state="active"
+    else
+      wg_state="inactive"
+    fi
+    printf 'WireGuard: %s\n' "${wg_state}"
+    printf 'WG endpoint: %s:%s/udp\n' "${host:-unknown}" "${wg_port}"
+  else
+    echo 'WireGuard: disabled'
   fi
 fi

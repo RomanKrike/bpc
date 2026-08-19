@@ -9,7 +9,7 @@ import yaml
 
 from .errors import BPCConfigError
 
-SUPPORTED_TRANSPORTS = {"vless-reality", "amneziawg", "tailscale"}
+SUPPORTED_TRANSPORTS = {"vless-reality", "amneziawg", "wireguard", "tailscale"}
 
 
 @dataclass(frozen=True)

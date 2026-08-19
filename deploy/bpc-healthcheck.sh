@@ -35,6 +35,30 @@ check_awg() {
   systemctl --quiet is-active bpc-awg-firewall.service
 }
 
+check_wg() {
+  local wg_dir="${BPC_STATE_DIR}/ru-node/wg"
+  local runtime_env="${wg_dir}/runtime.env"
+  local interface
+
+  [[ -f "${wg_dir}/enabled" ]] || return 0
+  if [[ ! -f "${runtime_env}" ]]; then
+    echo "WireGuard runtime metadata is missing" >&2
+    return 1
+  fi
+  if ! command -v wg >/dev/null 2>&1; then
+    echo "wg is missing for enabled WireGuard transport" >&2
+    return 1
+  fi
+
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  interface="${WG_INTERFACE:-bpcwg0}"
+
+  systemctl --quiet is-active "wg-quick@${interface}.service"
+  wg show "${interface}" >/dev/null
+  systemctl --quiet is-active bpc-wg-firewall.service
+}
+
 case "${ROLE}" in
   ru-node)
     config="${BPC_STATE_DIR}/ru-node/config.json"
@@ -49,6 +73,7 @@ case "${ROLE}" in
     /usr/local/bin/xray run -test -config "${config}" >/dev/null
     systemctl --quiet is-active xray
     check_awg
+    check_wg
     ;;
   *)
     echo "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}" >&2

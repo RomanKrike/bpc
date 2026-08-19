@@ -1,4 +1,4 @@
-# BPC Connect v0.1 architecture
+# BPC Connect architecture
 
 ## Goal
 
@@ -14,11 +14,22 @@ Work laptop
 GE Gateway (Mihomo TUN)
     |
     +-- VLESS + REALITY ------+
-    +-- AmneziaWG ------------+--> RU Exit --> Russian Internet --> corporate VPN endpoint
+    +-- AmneziaWG 2.0 --------+
+    +-- WireGuard ------------+--> RU Exit --> Russian Internet --> corporate VPN endpoint
     +-- Tailscale / DERP -----+
 ```
 
 The corporate VPN remains installed only on the work laptop. BPC changes the underlay, not the corporate overlay.
+
+## RU-node transport isolation
+
+```text
+TCP/443    Xray VLESS/REALITY
+UDP/443    AmneziaWG 2.0, awg0, 10.251.0.0/24
+UDP/51820  native WireGuard, bpcwg0, 10.252.0.0/24
+```
+
+The transports use independent protocol stacks, interfaces, credentials and state directories. A failure in one transport must not require deleting or rotating another transport.
 
 ## Safety invariant
 
@@ -29,6 +40,7 @@ The work gateway is **fail closed**. There is no `DIRECT` member in `BPC-RUSSIA`
 1. Repository, renderer, CI and fail-closed tests.
 2. RU VLESS/REALITY node + GE gateway deployment.
 3. AWG secondary transport.
-4. Tailscale/DERP emergency transport.
-5. HOME routes and independent home fallback.
-6. Real GE <-> RU E2E tests and corporate VPN validation.
+4. Native WireGuard control/fallback transport.
+5. Tailscale/DERP emergency transport.
+6. HOME routes and independent home fallback.
+7. Real GE <-> RU E2E tests and corporate VPN validation.

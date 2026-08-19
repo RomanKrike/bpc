@@ -7,8 +7,7 @@ BPC nodes are installed from versioned GitHub Release bundles rather than direct
 ```text
 /opt/bpc/
   releases/
-    0.1.0/
-    0.1.1/
+    <version>/
   current -> /opt/bpc/releases/<active-version>
 
 /etc/bpc-connect/
@@ -17,12 +16,18 @@ BPC nodes are installed from versioned GitHub Release bundles rather than direct
     config.json
     client.env
     gateway-transport.yaml
+    awg/
+      client.conf
+      clash-verge.yaml
+    wg/
+      client.conf
+      clash-verge.yaml
 
 /var/backups/bpc/
   state-<timestamp>-<version>.tar.gz
 ```
 
-Application releases are immutable directories under `/opt/bpc/releases`. Runtime credentials and generated configuration live outside the release tree under `/etc/bpc-connect`, so an application update does not regenerate VLESS/REALITY credentials.
+Application releases are immutable directories under `/opt/bpc/releases`. Runtime credentials and generated configuration live outside the release tree under `/etc/bpc-connect`, so an application update does not regenerate transport credentials.
 
 ## Fresh RU-node installation
 
@@ -31,7 +36,7 @@ curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
   | sudo bash -s -- --role ru-node --reality-server-name YOUR_REALITY_TARGET
 ```
 
-You may explicitly specify the public address and Xray port:
+You may provision AWG and native WireGuard in the same install:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
@@ -39,7 +44,11 @@ curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
       --role ru-node \
       --reality-server-name YOUR_REALITY_TARGET \
       --public-host 203.0.113.10 \
-      --port 443
+      --port 443 \
+      --with-awg \
+      --awg-port 443 \
+      --with-wg \
+      --wg-port 51820
 ```
 
 The installer performs these steps:
@@ -50,7 +59,17 @@ The installer performs these steps:
 4. extracts the version into `/opt/bpc/releases/<version>`;
 5. atomically points `/opt/bpc/current` at that release;
 6. provisions the requested role on first install;
-7. installs `bpc-status` and `bpc-update` commands.
+7. reconciles the available BPC commands under `/usr/local/sbin`;
+8. optionally provisions the selected secondary transports.
+
+Installed commands include:
+
+```text
+bpc-status
+bpc-update
+bpc-enable-awg
+bpc-enable-wg
+```
 
 ## Status
 
@@ -58,7 +77,7 @@ The installer performs these steps:
 sudo bpc-status
 ```
 
-The status command intentionally does not print VLESS UUIDs, REALITY keys, or other client credentials.
+The status command intentionally does not print UUIDs, private keys, PSKs, or other client credentials. Optional transports report `disabled`, `active` or a failed health state without exposing secrets.
 
 ## Update
 
@@ -68,15 +87,18 @@ sudo bpc-update
 
 The updater:
 
-1. downloads and verifies the latest release bundle;
-2. exits without changes if the active version is already current;
-3. creates a backup of `/etc/bpc-connect`;
-4. installs the new release into a new immutable release directory;
-5. switches `/opt/bpc/current` to the new version;
-6. validates the existing managed Xray configuration;
-7. restarts Xray and runs the health check again.
+1. repairs command symlinks for the active release before checking the remote version;
+2. downloads and verifies the latest release bundle;
+3. exits without changing the release if the active version is already current;
+4. creates a backup of `/etc/bpc-connect` when switching versions;
+5. installs the new release into a new immutable release directory;
+6. switches `/opt/bpc/current` to the new version and reconciles command links;
+7. validates all currently enabled managed transports;
+8. restarts Xray and runs the health check again.
 
-If either health check fails, the updater restores the previous release pointer and BPC state backup, then attempts to restart the previous Xray service configuration.
+Optional transports are not enabled implicitly by an update. Existing AWG/WireGuard state remains under `/etc/bpc-connect` and is health-checked only when its `enabled` marker exists.
+
+If either health check fails, the updater restores the previous release pointer and BPC state backup, repairs command links for the restored release, then attempts to restore the prior runtime.
 
 ## Release pipeline
 

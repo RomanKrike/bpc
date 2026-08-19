@@ -1,11 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 ru_dir="${BPC_STATE_DIR}/ru-node"
 config="${ru_dir}/config.json"
 
-# Nothing to migrate on nodes that do not have an RU Xray configuration.
+# Migration hooks are executed by older updaters after they switch
+# /opt/bpc/current. Reconcile commands here as well so a release can expose new
+# commands even when the updater that installed it did not know their names.
+if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
+  for spec in \
+    "bpc-update:bpc-update.sh" \
+    "bpc-status:bpc-status.sh" \
+    "bpc-enable-awg:bpc-enable-awg.sh" \
+    "bpc-enable-wg:bpc-enable-wg.sh"; do
+    name="${spec%%:*}"
+    script="${spec#*:}"
+    if [[ -f "${BPC_ROOT}/current/deploy/${script}" ]]; then
+      chmod 0755 "${BPC_ROOT}/current/deploy/${script}"
+      ln -sfn "${BPC_ROOT}/current/deploy/${script}" "/usr/local/sbin/${name}"
+    fi
+  done
+fi
+
+# Nothing else to migrate on nodes that do not have an RU Xray configuration.
 if [[ ! -f "${config}" ]]; then
   exit 0
 fi

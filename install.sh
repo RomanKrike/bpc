@@ -10,6 +10,8 @@ XRAY_PORT="443"
 BPC_PUBLIC_HOST=""
 WITH_AWG="false"
 AWG_PORT="443"
+WITH_WG="false"
+WG_PORT="51820"
 
 usage() {
   cat <<'USAGE'
@@ -22,6 +24,8 @@ Options:
   --public-host HOST             Public VPS IPv4/FQDN (auto-detected by default)
   --with-awg                     Also enable AmneziaWG 2.0
   --awg-port PORT                AmneziaWG UDP listen port (default: 443)
+  --with-wg                      Also enable native WireGuard
+  --wg-port PORT                 WireGuard UDP listen port (default: 51820)
   -h, --help                     Show this help
 USAGE
 }
@@ -52,6 +56,14 @@ while [[ $# -gt 0 ]]; do
       AWG_PORT="${2:-}"
       shift 2
       ;;
+    --with-wg)
+      WITH_WG="true"
+      shift
+      ;;
+    --wg-port)
+      WG_PORT="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -79,7 +91,7 @@ if [[ -z "${REALITY_SERVER_NAME}" && ! -f "${BPC_STATE_DIR}/ru-node/config.json"
   exit 2
 fi
 
-for port_spec in "XRAY_PORT:${XRAY_PORT}" "AWG_PORT:${AWG_PORT}"; do
+for port_spec in "XRAY_PORT:${XRAY_PORT}" "AWG_PORT:${AWG_PORT}" "WG_PORT:${WG_PORT}"; do
   name="${port_spec%%:*}"
   value="${port_spec#*:}"
   if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1 || value > 65535 )); then
@@ -94,8 +106,8 @@ apt-get install -y --no-install-recommends ca-certificates curl tar
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
-
 asset_base="https://github.com/${REPO}/releases/latest/download"
+
 curl --fail --location --proto '=https' --tlsv1.2 \
   "${asset_base}/bpc-connect-deploy.tar.gz" -o "${tmp}/bpc-connect-deploy.tar.gz"
 curl --fail --location --proto '=https' --tlsv1.2 \
@@ -139,6 +151,7 @@ ln -sfn "${release_dir}" "${BPC_ROOT}/current"
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-update.sh" /usr/local/sbin/bpc-update
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
+ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh" /usr/local/sbin/bpc-enable-wg
 
 cat > "${BPC_STATE_DIR}/install.env" <<STATE
 BPC_ROLE=${ROLE}
@@ -174,6 +187,9 @@ fi
 if [[ "${WITH_AWG}" == "true" ]]; then
   AWG_PORT="${AWG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh"
 fi
+if [[ "${WITH_WG}" == "true" ]]; then
+  WG_PORT="${WG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh"
+fi
 
 cat <<DONE
 BPC ${version} installed successfully.
@@ -186,6 +202,7 @@ Commands:
   bpc-status
   bpc-update
   bpc-enable-awg
+  bpc-enable-wg
 
 VLESS transport configuration:
   ${BPC_STATE_DIR}/ru-node/gateway-transport.yaml
@@ -195,5 +212,14 @@ if [[ -f "${BPC_STATE_DIR}/ru-node/awg/enabled" ]]; then
   cat <<DONE
 AmneziaWG Clash Verge Rev profile:
   ${BPC_STATE_DIR}/ru-node/awg/clash-verge.yaml
+DONE
+fi
+
+if [[ -f "${BPC_STATE_DIR}/ru-node/wg/enabled" ]]; then
+  cat <<DONE
+WireGuard native client config:
+  ${BPC_STATE_DIR}/ru-node/wg/client.conf
+WireGuard Clash Verge Rev profile:
+  ${BPC_STATE_DIR}/ru-node/wg/clash-verge.yaml
 DONE
 fi

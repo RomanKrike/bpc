@@ -33,27 +33,43 @@ transports:
     enabled: true
     settings:
       server: RU_VPS_IP_OR_HOST
-      port: 51820
+      port: 443
       private_key: REPLACE_WITH_CLIENT_PRIVATE_KEY
       public_key: REPLACE_WITH_SERVER_PUBLIC_KEY
-      client_ip: 10.77.0.2
-      mtu: 1380
+      client_ip: 10.251.0.2
+      mtu: 1280
       persistent_keepalive: 25
       awg:
         version: 2
-        jc: 5
-        jmin: 50
-        jmax: 1000
-        s1: 0
-        s2: 0
-        h1: 1
-        h2: 2
-        h3: 3
-        h4: 4
+        jc: 7
+        jmin: 20
+        jmax: 70
+        s1: 30
+        s2: 40
+        s3: 50
+        s4: 8
+        h1: 100000000-100000999
+        h2: 200000000-200000999
+        h3: 300000000-300000999
+        h4: 400000000-400000999
+
+  - name: RU-WG-01
+    type: wireguard
+    priority: 30
+    enabled: true
+    settings:
+      server: RU_VPS_IP_OR_HOST
+      port: 51820
+      private_key: REPLACE_WITH_CLIENT_PRIVATE_KEY
+      public_key: REPLACE_WITH_SERVER_PUBLIC_KEY
+      preshared_key: REPLACE_WITH_PRESHARED_KEY
+      client_ip: 10.252.0.2
+      mtu: 1380
+      persistent_keepalive: 25
 
   - name: RU-TAILSCALE-01
     type: tailscale
-    priority: 30
+    priority: 40
     enabled: false
     settings:
       hostname: bpc-ge-gateway

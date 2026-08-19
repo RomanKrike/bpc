@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0
+
+### Added
+- Native WireGuard transport on UDP/51820 alongside VLESS/REALITY and AmneziaWG.
+- `bpc-enable-wg` command and `--with-wg` / `--wg-port` installer options.
+- Dedicated `bpcwg0` interface and `10.252.0.0/24` transport subnet.
+- Persistent `wg-quick` systemd service, IPv4 forwarding, NAT and WireGuard health checks.
+- Root-only native WireGuard client configuration and ready-to-import Clash Verge Rev profile.
+- Native WireGuard support in the BPC gateway transport model and Mihomo fallback renderer.
+
+## 0.2.1
+
+### Fixed
+- Reconcile installed BPC command symlinks before the same-version updater exit, allowing commands introduced by a new release to self-heal after an upgrade performed by an older updater.
+
 ## 0.2.0
 
 ### Added
