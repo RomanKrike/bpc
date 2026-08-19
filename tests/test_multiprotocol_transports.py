@@ -11,8 +11,8 @@ STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
-def test_release_version_is_070() -> None:
-    assert 'version = "0.7.0"' in PYPROJECT
+def test_release_version_is_071() -> None:
+    assert 'version = "0.7.1"' in PYPROJECT
 
 
 def test_mihomo_transport_pack_is_pinned_and_digest_verified() -> None:
@@ -57,12 +57,21 @@ def test_client_pack_contains_all_proxy_types_and_names() -> None:
         assert name in RENDER
 
 
+def test_client_profile_credentials_are_normalized_and_repaired() -> None:
+    assert "SS2022 then fails Base64 decoding at byte 0" in ENABLE
+    assert "sed 's/\\\\\"/\"/g'" in ENABLE
+    assert "for transport in hy2 tuic anytls shadowtls trojan mieru trusttunnel" in MIGRATE
+    assert "grep -Fq '\\\"'" in MIGRATE
+    assert "sed -i 's/\\\\\"/\"/g'" in MIGRATE
+
+
 def test_transport_pack_is_secret_safe_and_health_checked() -> None:
     assert 'chmod 0600 "${state_env}"' in ENABLE
     assert 'chmod 0600 "${server_config}"' in ENABLE
     assert "Credentials are stored root-only" in ENABLE
     assert "check_mihomo_transports" in HEALTH
     assert "bpc-mihomo-transports.service" in HEALTH
+    assert "aggregate Clash profile validation failed" in HEALTH
     assert "Mihomo transport pack:" in STATUS
 
 

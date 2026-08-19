@@ -79,6 +79,22 @@ if [[ -f "${client_env}" && -f "${gateway_transport}" ]]; then
   fi
 fi
 
+# BPC 0.6.0/0.7.0 generated the Mihomo client fragments with literal escaped
+# quote characters around credentials. Generic password transports tolerated
+# the malformed scalar until authentication, while Shadowsocks 2022 rejected
+# it immediately because its key must be valid Base64. Repair only BPC-managed
+# transport fragments; credentials themselves are not changed or regenerated.
+if [[ -f "${ru_dir}/mihomo-server/enabled" ]]; then
+  for transport in hy2 tuic anytls shadowtls trojan mieru trusttunnel; do
+    profile="${ru_dir}/${transport}/clash-verge.yaml"
+    if [[ -s "${profile}" ]] && grep -Fq '\"' "${profile}"; then
+      sed -i 's/\\"/"/g' "${profile}"
+      chown root:root "${profile}"
+      chmod 0600 "${profile}"
+    fi
+  done
+fi
+
 # Rebuild the aggregate client profile from the transports already enabled on
 # the node. This also reconciles optional manual Clash fallbacks such as OpenVPN
 # and SSH rescue without rotating any credentials.

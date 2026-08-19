@@ -86,6 +86,7 @@ check_mihomo_transports() {
   local server_dir="${BPC_STATE_DIR}/ru-node/mihomo-server"
   local runtime_env="${server_dir}/runtime.env"
   local config="${server_dir}/config.yaml"
+  local auto_profile="${BPC_STATE_DIR}/ru-node/clash-verge-auto.yaml"
   local transport
 
   [[ -f "${server_dir}/enabled" ]] || return 0
@@ -120,6 +121,15 @@ check_mihomo_transports() {
       return 1
     fi
   done
+
+  # Validate the same aggregate profile served by the subscription. This catches
+  # client-only schema/credential errors that a healthy server configuration
+  # cannot detect, such as malformed Shadowsocks 2022 Base64 keys.
+  if [[ -s "${auto_profile}" ]] && \
+    ! /usr/local/bin/bpc-mihomo -t -d "${server_dir}/home" -f "${auto_profile}" >/dev/null 2>&1; then
+    fail_health "aggregate Clash profile validation failed"
+    return 1
+  fi
 }
 
 check_openvpn() {
