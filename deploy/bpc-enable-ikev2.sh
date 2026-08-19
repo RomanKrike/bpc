@@ -11,6 +11,7 @@ IKE_POOL="${BPC_IKEV2_POOL:-10.254.0.0/24}"
 SWANCTL_MAIN="/etc/swanctl/swanctl.conf"
 SWANCTL_DROPIN="/etc/swanctl/conf.d/bpc-ikev2.conf"
 SWAN_CERT="/etc/swanctl/x509/bpc-ikev2-cert.pem"
+SWAN_CA="/etc/swanctl/x509ca/bpc-ikev2-chain.pem"
 SWAN_KEY="/etc/swanctl/private/bpc-ikev2-key.pem"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -88,9 +89,10 @@ if [[ "${BPC_RU_HOST}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && \
   exit 3
 fi
 
-cert="/etc/letsencrypt/live/${TLS_HOST}/fullchain.pem"
+cert_leaf="/etc/letsencrypt/live/${TLS_HOST}/cert.pem"
+cert_chain="/etc/letsencrypt/live/${TLS_HOST}/chain.pem"
 key="/etc/letsencrypt/live/${TLS_HOST}/privkey.pem"
-if [[ ! -s "${cert}" || ! -s "${key}" ]]; then
+if [[ ! -s "${cert_leaf}" || ! -s "${cert_chain}" || ! -s "${key}" ]]; then
   if ss -H -ltn 'sport = :80' | grep -q .; then
     echo "TCP/80 is in use; Certbot standalone HTTP-01 cannot obtain the certificate" >&2
     exit 3
@@ -103,13 +105,14 @@ if [[ ! -s "${cert}" || ! -s "${key}" ]]; then
   fi
   certbot "${certbot_args[@]}"
 fi
-if [[ ! -s "${cert}" || ! -s "${key}" ]]; then
+if [[ ! -s "${cert_leaf}" || ! -s "${cert_chain}" || ! -s "${key}" ]]; then
   echo "TLS certificate provisioning failed for ${TLS_HOST}" >&2
   exit 3
 fi
 
 install -d -m 0700 "${IKE_DIR}"
-install -d -m 0755 /etc/swanctl/conf.d /etc/swanctl/x509 /etc/swanctl/private
+install -d -m 0755 \
+  /etc/swanctl/conf.d /etc/swanctl/x509 /etc/swanctl/x509ca /etc/swanctl/private
 
 if [[ -f "${IKE_DIR}/enabled" ]]; then
   if [[ ! -s "${IKE_DIR}/runtime.env" ]]; then
@@ -136,10 +139,16 @@ TLS_HOST="${IKEV2_HOST}"
 IKE_USER="${IKEV2_USER}"
 IKE_PASSWORD="${IKEV2_PASSWORD}"
 IKE_POOL="${IKEV2_POOL}"
-cert="/etc/letsencrypt/live/${TLS_HOST}/fullchain.pem"
+cert_leaf="/etc/letsencrypt/live/${TLS_HOST}/cert.pem"
+cert_chain="/etc/letsencrypt/live/${TLS_HOST}/chain.pem"
 key="/etc/letsencrypt/live/${TLS_HOST}/privkey.pem"
 
-install -m 0644 "${cert}" "${SWAN_CERT}"
+if [[ ! -s "${cert_leaf}" || ! -s "${cert_chain}" || ! -s "${key}" ]]; then
+  echo "Persisted IKEv2 certificate state is missing for ${TLS_HOST}" >&2
+  exit 4
+fi
+install -m 0644 "${cert_leaf}" "${SWAN_CERT}"
+install -m 0644 "${cert_chain}" "${SWAN_CA}"
 install -m 0600 "${key}" "${SWAN_KEY}"
 
 if [[ ! -f "${SWANCTL_MAIN}" ]]; then
@@ -273,7 +282,8 @@ install -d -m 0755 /etc/letsencrypt/renewal-hooks/deploy
 cat > /etc/letsencrypt/renewal-hooks/deploy/bpc-ikev2 <<HOOK
 #!/usr/bin/env bash
 set -euo pipefail
-install -m 0644 /etc/letsencrypt/live/${TLS_HOST}/fullchain.pem ${SWAN_CERT}
+install -m 0644 /etc/letsencrypt/live/${TLS_HOST}/cert.pem ${SWAN_CERT}
+install -m 0644 /etc/letsencrypt/live/${TLS_HOST}/chain.pem ${SWAN_CA}
 install -m 0600 /etc/letsencrypt/live/${TLS_HOST}/privkey.pem ${SWAN_KEY}
 if systemctl --quiet is-enabled strongswan.service 2>/dev/null; then
   systemctl restart strongswan.service
