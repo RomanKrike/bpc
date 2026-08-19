@@ -127,9 +127,30 @@ EXT
   rm -f "${OVPN_DIR}/server.csr" "${OVPN_DIR}/server.ext" \
     "${OVPN_DIR}/client.csr" "${OVPN_DIR}/client.ext" "${OVPN_DIR}/ca.srl"
 
-  cat > "${OVPN_DIR}/server.conf" <<CONF
+  cat > "${OVPN_DIR}/runtime.env" <<STATE
+OPENVPN_PORT=${OVPN_PORT}
+OPENVPN_PROTO=${OVPN_PROTO}
+OPENVPN_INTERFACE=${OVPN_INTERFACE}
+OPENVPN_SUBNET=${OVPN_SUBNET}
+OPENVPN_CLIENT_IP=${OVPN_CLIENT_IP}
+STATE
+  chmod 0600 "${OVPN_DIR}/runtime.env"
+fi
+
+# Reuse the persisted transport settings on repeat runs.
+# shellcheck disable=SC1090,SC1091
+source "${OVPN_DIR}/runtime.env"
+if [[ "${OVPN_PROTO}" == "tcp" ]]; then
+  server_proto="tcp-server"
+  client_proto="tcp-client"
+else
+  server_proto="udp"
+  client_proto="udp"
+fi
+
+cat > "${OVPN_DIR}/server.conf" <<CONF
 port ${OVPN_PORT}
-proto ${OVPN_PROTO}
+proto ${server_proto}
 dev ${OVPN_INTERFACE}
 dev-type tun
 topology subnet
@@ -148,19 +169,21 @@ persist-key
 persist-tun
 user nobody
 group nogroup
-explicit-exit-notify 1
 verb 3
 CONF
+if [[ "${OVPN_PROTO}" == "udp" ]]; then
+  printf 'explicit-exit-notify 1\n' >> "${OVPN_DIR}/server.conf"
+fi
 
-  ca_pem="$(cat "${OVPN_DIR}/ca.crt")"
-  client_cert="$(cat "${OVPN_DIR}/client.crt")"
-  client_key="$(cat "${OVPN_DIR}/client.key")"
-  tls_crypt="$(cat "${OVPN_DIR}/tls-crypt.key")"
+ca_pem="$(cat "${OVPN_DIR}/ca.crt")"
+client_cert="$(cat "${OVPN_DIR}/client.crt")"
+client_key="$(cat "${OVPN_DIR}/client.key")"
+tls_crypt="$(cat "${OVPN_DIR}/tls-crypt.key")"
 
-  cat > "${OVPN_DIR}/client.ovpn" <<CONF
+cat > "${OVPN_DIR}/client.ovpn" <<CONF
 client
 dev tun
-proto ${OVPN_PROTO}
+proto ${client_proto}
 remote ${BPC_RU_HOST} ${OVPN_PORT}
 remote-cert-tls server
 nobind
@@ -185,11 +208,11 @@ ${tls_crypt}
 </tls-crypt>
 CONF
 
-  indent_pem() {
-    sed 's/^/      /' "$1"
-  }
+indent_pem() {
+  sed 's/^/      /' "$1"
+}
 
-  cat > "${OVPN_DIR}/clash-verge.yaml" <<CONF
+cat > "${OVPN_DIR}/clash-verge.yaml" <<CONF
 proxies:
   - name: BPC-RU-OPENVPN-01
     type: openvpn
@@ -212,18 +235,9 @@ $(indent_pem "${OVPN_DIR}/client.key")
 $(indent_pem "${OVPN_DIR}/tls-crypt.key")
 CONF
 
-  cat > "${OVPN_DIR}/runtime.env" <<STATE
-OPENVPN_PORT=${OVPN_PORT}
-OPENVPN_PROTO=${OVPN_PROTO}
-OPENVPN_INTERFACE=${OVPN_INTERFACE}
-OPENVPN_SUBNET=${OVPN_SUBNET}
-OPENVPN_CLIENT_IP=${OVPN_CLIENT_IP}
-STATE
-
-  chmod 0600 "${OVPN_DIR}"/*
-  touch "${OVPN_DIR}/enabled"
-  chmod 0600 "${OVPN_DIR}/enabled"
-fi
+chmod 0600 "${OVPN_DIR}"/*
+touch "${OVPN_DIR}/enabled"
+chmod 0600 "${OVPN_DIR}/enabled"
 
 install -m 0600 "${OVPN_DIR}/server.conf" /etc/openvpn/server/bpc.conf
 
