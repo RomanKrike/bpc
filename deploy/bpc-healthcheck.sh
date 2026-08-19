@@ -10,6 +10,11 @@ if [[ -f "${BPC_STATE_DIR}/install.env" ]]; then
   ROLE="${BPC_ROLE:-${ROLE}}"
 fi
 
+fail_health() {
+  echo "Health check FAILED: $*" >&2
+  return 1
+}
+
 check_awg() {
   local awg_dir="${BPC_STATE_DIR}/ru-node/awg"
   local runtime_env="${awg_dir}/runtime.env"
@@ -17,11 +22,11 @@ check_awg() {
 
   [[ -f "${awg_dir}/enabled" ]] || return 0
   if [[ ! -f "${runtime_env}" ]]; then
-    echo "AmneziaWG runtime metadata is missing" >&2
+    fail_health "AmneziaWG runtime metadata is missing"
     return 1
   fi
   if ! command -v docker >/dev/null 2>&1; then
-    echo "docker is missing for enabled AmneziaWG transport" >&2
+    fail_health "docker is missing for enabled AmneziaWG transport"
     return 1
   fi
 
@@ -30,9 +35,18 @@ check_awg() {
   container="${AWG_CONTAINER:-bpc-awg}"
   interface="${AWG_INTERFACE:-awg0}"
 
-  docker ps --format '{{.Names}}' | grep -Fxq "${container}"
-  docker exec "${container}" awg show "${interface}" >/dev/null
-  systemctl --quiet is-active bpc-awg-firewall.service
+  if ! docker ps --format '{{.Names}}' | grep -Fxq "${container}"; then
+    fail_health "AmneziaWG container ${container} is not running"
+    return 1
+  fi
+  if ! docker exec "${container}" awg show "${interface}" >/dev/null 2>&1; then
+    fail_health "AmneziaWG interface ${interface} is unavailable in ${container}"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-awg-firewall.service; then
+    fail_health "bpc-awg-firewall.service is not active"
+    return 1
+  fi
 }
 
 check_wg() {
@@ -42,11 +56,11 @@ check_wg() {
 
   [[ -f "${wg_dir}/enabled" ]] || return 0
   if [[ ! -f "${runtime_env}" ]]; then
-    echo "WireGuard runtime metadata is missing" >&2
+    fail_health "WireGuard runtime metadata is missing"
     return 1
   fi
   if ! command -v wg >/dev/null 2>&1; then
-    echo "wg is missing for enabled WireGuard transport" >&2
+    fail_health "wg is missing for enabled WireGuard transport"
     return 1
   fi
 
@@ -54,29 +68,44 @@ check_wg() {
   source "${runtime_env}"
   interface="${WG_INTERFACE:-bpcwg0}"
 
-  systemctl --quiet is-active "wg-quick@${interface}.service"
-  wg show "${interface}" >/dev/null
-  systemctl --quiet is-active bpc-wg-firewall.service
+  if ! systemctl --quiet is-active "wg-quick@${interface}.service"; then
+    fail_health "wg-quick@${interface}.service is not active"
+    return 1
+  fi
+  if ! wg show "${interface}" >/dev/null 2>&1; then
+    fail_health "WireGuard interface ${interface} is unavailable"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-wg-firewall.service; then
+    fail_health "bpc-wg-firewall.service is not active"
+    return 1
+  fi
 }
 
 case "${ROLE}" in
   ru-node)
     config="${BPC_STATE_DIR}/ru-node/config.json"
     if [[ ! -x /usr/local/bin/xray ]]; then
-      echo "xray binary is missing" >&2
+      fail_health "xray binary is missing"
       exit 1
     fi
     if [[ ! -s "${config}" ]]; then
-      echo "RU-node Xray configuration is missing" >&2
+      fail_health "RU-node Xray configuration is missing"
       exit 1
     fi
-    /usr/local/bin/xray run -test -config "${config}" >/dev/null
-    systemctl --quiet is-active xray
+    if ! /usr/local/bin/xray run -test -config "${config}" >/dev/null 2>&1; then
+      fail_health "Xray configuration validation failed: ${config}"
+      exit 1
+    fi
+    if ! systemctl --quiet is-active xray; then
+      fail_health "xray.service is not active"
+      exit 1
+    fi
     check_awg
     check_wg
     ;;
   *)
-    echo "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}" >&2
+    fail_health "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}"
     exit 1
     ;;
 esac
