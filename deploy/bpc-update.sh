@@ -23,6 +23,7 @@ reconcile_command_links() {
   for spec in \
     "bpc-update:bpc-update.sh" \
     "bpc-status:bpc-status.sh" \
+    "bpc-ensure-dns:bpc-ensure-dns.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh"; do
     name="${spec%%:*}"
@@ -41,6 +42,10 @@ current_version="$(tr -d '[:space:]' < "${BPC_ROOT}/current/VERSION")"
 # already the latest. This also exposes commands that were introduced by the
 # release being installed by an older updater.
 reconcile_command_links "${BPC_ROOT}/current"
+
+if [[ -x "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
+  "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
