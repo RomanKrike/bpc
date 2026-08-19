@@ -117,7 +117,9 @@ if [[ -z "${ssh_service}" ]]; then
 fi
 if ! systemctl reload "${ssh_service}"; then
   restore_dropin
-  sshd -t && systemctl reload "${ssh_service}" || true
+  if sshd -t; then
+    systemctl reload "${ssh_service}" || true
+  fi
   echo "OpenSSH reload failed; restored prior configuration" >&2
   exit 5
 fi
