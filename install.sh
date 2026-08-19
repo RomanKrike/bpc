@@ -228,6 +228,9 @@ ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
 if [[ -f "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
   ln -sfn "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" /usr/local/sbin/bpc-ensure-dns
 fi
+if [[ -f "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
+  ln -sfn "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" /usr/local/sbin/bpc-render-clash
+fi
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh" /usr/local/sbin/bpc-enable-wg
 
@@ -275,6 +278,10 @@ if [[ "${WITH_WG}" == "true" ]]; then
   WG_PORT="${WG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh"
 fi
 
+if [[ -x "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
+  "${BPC_ROOT}/current/deploy/bpc-render-clash.sh"
+fi
+
 cat <<DONE
 BPC ${version} installed successfully.
 
@@ -286,11 +293,14 @@ Commands:
   bpc-status
   bpc-update
   bpc-ensure-dns
+  bpc-render-clash
   bpc-enable-awg
   bpc-enable-wg
 
 VLESS transport configuration:
   ${BPC_STATE_DIR}/ru-node/gateway-transport.yaml
+Automatic Clash Verge Rev profile:
+  ${BPC_STATE_DIR}/ru-node/clash-verge-auto.yaml
 DONE
 
 if [[ -f "${BPC_STATE_DIR}/ru-node/awg/enabled" ]]; then
