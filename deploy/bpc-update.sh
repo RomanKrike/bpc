@@ -28,7 +28,9 @@ reconcile_command_links() {
     "bpc-enable-subscription:bpc-enable-subscription.sh" \
     "bpc-subscription-url:bpc-subscription-url.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
-    "bpc-enable-wg:bpc-enable-wg.sh"; do
+    "bpc-enable-wg:bpc-enable-wg.sh" \
+    "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
+    "bpc-enable-ssh-rescue:bpc-enable-ssh-rescue.sh"; do
     name="${spec%%:*}"
     script="${spec#*:}"
     if [[ -f "${release_root}/deploy/${script}" ]]; then
