@@ -23,7 +23,8 @@ reconcile_command_links() {
   for spec in \
     "bpc-update:bpc-update.sh" \
     "bpc-status:bpc-status.sh" \
-    "bpc-enable-awg:bpc-enable-awg.sh"; do
+    "bpc-enable-awg:bpc-enable-awg.sh" \
+    "bpc-enable-wg:bpc-enable-wg.sh"; do
     name="${spec%%:*}"
     script="${spec#*:}"
     if [[ -f "${release_root}/deploy/${script}" ]]; then
