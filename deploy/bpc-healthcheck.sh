@@ -82,6 +82,36 @@ check_wg() {
   fi
 }
 
+check_subscription() {
+  local sub_dir="${BPC_STATE_DIR}/ru-node/subscription"
+  local runtime_env="${sub_dir}/runtime.env"
+
+  [[ -f "${sub_dir}/enabled" ]] || return 0
+  if [[ ! -f "${runtime_env}" ]]; then
+    fail_health "subscription runtime metadata is missing"
+    return 1
+  fi
+  if [[ ! -s "${sub_dir}/token" ]]; then
+    fail_health "subscription token is missing"
+    return 1
+  fi
+  if [[ ! -s "${BPC_STATE_DIR}/ru-node/clash-verge-auto.yaml" ]]; then
+    fail_health "aggregate Clash profile is missing for enabled subscription"
+    return 1
+  fi
+
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  if [[ ! -s "${SUBSCRIPTION_CERT:-}" || ! -s "${SUBSCRIPTION_KEY:-}" ]]; then
+    fail_health "subscription TLS certificate or private key is missing"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-subscription.service; then
+    fail_health "bpc-subscription.service is not active"
+    return 1
+  fi
+}
+
 case "${ROLE}" in
   ru-node)
     config="${BPC_STATE_DIR}/ru-node/config.json"
@@ -103,6 +133,7 @@ case "${ROLE}" in
     fi
     check_awg
     check_wg
+    check_subscription
     ;;
   *)
     fail_health "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}"
