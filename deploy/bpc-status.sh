@@ -138,4 +138,11 @@ if [[ "${role}" == "ru-node" ]]; then
   else
     echo 'WireGuard: disabled'
   fi
+
+  auto_profile="${BPC_STATE_DIR}/ru-node/clash-verge-auto.yaml"
+  if [[ -s "${auto_profile}" ]]; then
+    printf 'Clash auto profile: ready (%s)\n' "${auto_profile}"
+  else
+    echo 'Clash auto profile: missing (run bpc-render-clash)'
+  fi
 fi

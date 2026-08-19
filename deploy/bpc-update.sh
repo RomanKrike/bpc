@@ -24,6 +24,7 @@ reconcile_command_links() {
     "bpc-update:bpc-update.sh" \
     "bpc-status:bpc-status.sh" \
     "bpc-ensure-dns:bpc-ensure-dns.sh" \
+    "bpc-render-clash:bpc-render-clash.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh"; do
     name="${spec%%:*}"

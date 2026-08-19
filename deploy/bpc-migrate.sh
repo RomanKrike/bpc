@@ -14,6 +14,7 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
     "bpc-update:bpc-update.sh" \
     "bpc-status:bpc-status.sh" \
     "bpc-ensure-dns:bpc-ensure-dns.sh" \
+    "bpc-render-clash:bpc-render-clash.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh"; do
     name="${spec%%:*}"
@@ -50,3 +51,10 @@ for secret_file in "${ru_dir}/client.env" "${ru_dir}/gateway-transport.yaml"; do
     chmod 0600 "${secret_file}"
   fi
 done
+
+# Rebuild the aggregate client profile from the transports already enabled on
+# the node. This gives existing installations the automatic failover profile
+# immediately after upgrading without rotating any credentials.
+if [[ -x "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
+  "${BPC_ROOT}/current/deploy/bpc-render-clash.sh"
+fi

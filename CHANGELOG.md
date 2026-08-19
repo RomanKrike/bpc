@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+### Added
+- Root-only aggregate Clash Verge Rev profile at `/etc/bpc-connect/ru-node/clash-verge-auto.yaml`.
+- `bpc-render-clash` command for rebuilding the aggregate client profile without rotating transport credentials.
+- Client-side Mihomo health checks with automatic failover across AWG, WireGuard and VLESS/REALITY.
+- Configurable transport order through `BPC_CLASH_TRANSPORT_ORDER` and health-check tuning through `BPC_CLASH_HEALTH_*` environment variables.
+
+### Changed
+- Default automatic client preference is AmneziaWG -> WireGuard -> VLESS/REALITY.
+- Existing RU nodes automatically receive the aggregate profile during migration to 0.4.0.
+
 ## 0.3.1
 
 ### Added
