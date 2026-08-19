@@ -41,6 +41,18 @@ if ! [[ "${PREFLIGHT_TIMEOUT}" =~ ^[0-9]+$ ]] || (( PREFLIGHT_TIMEOUT < 1 || PRE
   exit 2
 fi
 
+host_lower="${HOST,,}"
+if [[ "${host_lower}" == "www.microsoft.com" ]]; then
+  cat >&2 <<'ERR'
+REALITY target www.microsoft.com is rejected by BPC for the pinned Xray 26.3.27 runtime.
+Its TLS Certificate record can exceed the 8192-byte REALITY parser limit and cause:
+  REALITY: processed invalid connection ... handshake did not complete successfully
+Use www.bing.com or another target that passes this preflight.
+Upstream reference: XTLS/Xray-core#6356
+ERR
+  exit 4
+fi
+
 if ! command -v openssl >/dev/null 2>&1; then
   echo "openssl is required for REALITY target preflight" >&2
   exit 3
@@ -52,18 +64,6 @@ fi
 if ! getent ahosts "${HOST}" >/dev/null 2>&1; then
   echo "REALITY target does not resolve: ${HOST}" >&2
   exit 3
-fi
-
-host_lower="${HOST,,}"
-if [[ "${host_lower}" == "www.microsoft.com" ]]; then
-  cat >&2 <<'ERR'
-REALITY target www.microsoft.com is rejected by BPC for the pinned Xray 26.3.27 runtime.
-Its TLS Certificate record can exceed the 8192-byte REALITY parser limit and cause:
-  REALITY: processed invalid connection ... handshake did not complete successfully
-Use www.bing.com or another target that passes this preflight.
-Upstream reference: XTLS/Xray-core#6356
-ERR
-  exit 4
 fi
 
 tls_output="$(mktemp)"
