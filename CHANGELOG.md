@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.1
+
+### Fixed
+- Normalize generated Mihomo client-profile credential quoting so passwords are valid YAML scalars instead of containing literal `\"` characters.
+- Repair existing Hysteria2, TUIC, AnyTLS, Shadowsocks/ShadowTLS, Trojan, Mieru and TrustTunnel client fragments during migration without rotating credentials.
+- Fix Shadowsocks 2022 client startup failure `decode key: illegal base64 data at input byte 0` caused by the escaped quote prefix around its Base64 key.
+- Validate the generated aggregate Clash profile with the pinned Mihomo core during BPC health checks so client-side configuration errors are caught before an update is accepted.
+
 ## 0.7.0
 
 ### Added
