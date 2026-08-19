@@ -52,7 +52,7 @@ FallbackDNS=${fallback_dns}
 DNSSEC=allow-downgrade
 RESOLVED
     systemctl enable systemd-resolved.service >/dev/null 2>&1 || true
-    systemctl restart systemd-resolved.service
+    systemctl restart systemd-resolved.service >/dev/null 2>&1 || true
     if [[ -e /run/systemd/resolve/resolv.conf ]]; then
       if [[ -e /etc/resolv.conf && ! -L /etc/resolv.conf && \
         ! -e /etc/resolv.conf.bpc-backup ]]; then
@@ -63,23 +63,36 @@ RESOLVED
     if command -v resolvectl >/dev/null 2>&1; then
       resolvectl flush-caches >/dev/null 2>&1 || true
     fi
-  else
-    if [[ -e /etc/resolv.conf && ! -e /etc/resolv.conf.bpc-backup ]]; then
-      cp -a /etc/resolv.conf /etc/resolv.conf.bpc-backup 2>/dev/null || true
-    fi
-    rm -f /etc/resolv.conf 2>/dev/null || true
-    {
-      echo "# Managed by BPC bootstrap because DNS resolution was unavailable."
-      for server in ${dns_servers}; do
-        printf 'nameserver %s\n' "${server}"
-      done
-    } > /etc/resolv.conf
   fi
 
   for _ in 1 2 3 4 5; do
     if getent ahostsv4 github.com >/dev/null 2>&1 && \
       getent ahostsv4 deb.debian.org >/dev/null 2>&1; then
       echo "DNS bootstrap repair succeeded."
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "system resolver repair was insufficient; trying a static fallback." >&2
+  if [[ -e /etc/resolv.conf && ! -e /etc/resolv.conf.bpc-backup ]]; then
+    cp -a /etc/resolv.conf /etc/resolv.conf.bpc-backup 2>/dev/null || true
+  fi
+  rm -f /etc/resolv.conf 2>/dev/null || true
+  if ! {
+    echo "# Managed by BPC bootstrap because DNS resolution was unavailable."
+    for server in ${dns_servers}; do
+      printf 'nameserver %s\n' "${server}"
+    done
+  } > /etc/resolv.conf; then
+    echo "Unable to write the static DNS fallback to /etc/resolv.conf." >&2
+    return 3
+  fi
+
+  for _ in 1 2 3; do
+    if getent ahostsv4 github.com >/dev/null 2>&1 && \
+      getent ahostsv4 deb.debian.org >/dev/null 2>&1; then
+      echo "DNS bootstrap repair succeeded with static resolvers."
       return 0
     fi
     sleep 1
@@ -212,7 +225,9 @@ chmod 0755 "${release_dir}/deploy/"*.sh
 ln -sfn "${release_dir}" "${BPC_ROOT}/current"
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-update.sh" /usr/local/sbin/bpc-update
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
-ln -sfn "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" /usr/local/sbin/bpc-ensure-dns
+if [[ -f "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
+  ln -sfn "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" /usr/local/sbin/bpc-ensure-dns
+fi
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh" /usr/local/sbin/bpc-enable-wg
 
@@ -248,11 +263,15 @@ else
 fi
 
 if [[ "${WITH_AWG}" == "true" ]]; then
-  "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+  if [[ -x "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
+    "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+  fi
   AWG_PORT="${AWG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh"
 fi
 if [[ "${WITH_WG}" == "true" ]]; then
-  "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+  if [[ -x "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
+    "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+  fi
   WG_PORT="${WG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh"
 fi
 
