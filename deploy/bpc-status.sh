@@ -145,4 +145,15 @@ if [[ "${role}" == "ru-node" ]]; then
   else
     echo 'Clash auto profile: missing (run bpc-render-clash)'
   fi
+
+  sub_dir="${BPC_STATE_DIR}/ru-node/subscription"
+  if [[ -f "${sub_dir}/enabled" && -f "${sub_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${sub_dir}/runtime.env"
+    sub_state="$(systemctl is-active bpc-subscription.service 2>/dev/null || true)"
+    printf 'Subscription: %s (https://%s:%s/<hidden>/clash.yaml)\n' \
+      "${sub_state:-unknown}" "${SUBSCRIPTION_HOST:-unknown}" "${SUBSCRIPTION_PORT:-unknown}"
+  else
+    echo 'Subscription: disabled'
+  fi
 fi

@@ -9,6 +9,7 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Optional native WireGuard transport on UDP/51820.
 - Mihomo gateway config generator.
 - Automatic Clash Verge Rev failover profile for AWG, WireGuard and VLESS/REALITY.
+- Optional tokenized HTTPS subscription endpoint for the aggregate Clash profile.
 - Config generator with safety validation.
 - Fail-closed policy: no automatic DIRECT route from the work gateway.
 - Versioned deployment bundles, one-command install and safe updates with rollback.
@@ -23,6 +24,8 @@ This repository intentionally separates the BPC underlay from the corporate VPN.
 TCP/443    -> Xray VLESS + REALITY
 UDP/443    -> AmneziaWG 2.0
 UDP/51820  -> native WireGuard
+TCP/8443   -> optional HTTPS Clash subscription
+TCP/80     -> Let's Encrypt HTTP-01 validation/renewal when subscription is enabled
 ```
 
 The transports are independent. Enabling or disabling one does not replace the others.
@@ -95,13 +98,33 @@ sudo bpc-status
 
 `bpc-status` reports local service health plus DNS state and the latest WireGuard/AmneziaWG peer handshake and traffic counters when those transports are enabled.
 
-`bpc-render-clash` creates a root-only aggregate profile at `/etc/bpc-connect/ru-node/clash-verge-auto.yaml`. Existing installations automatically receive this profile during the 0.4.0 migration. The default preference can be overridden, for example:
+`bpc-render-clash` creates a root-only aggregate profile at `/etc/bpc-connect/ru-node/clash-verge-auto.yaml`. Existing installations automatically receive this profile during migration. The default preference can be overridden, for example:
 
 ```bash
 BPC_CLASH_TRANSPORT_ORDER="wg awg vless" sudo -E bpc-render-clash
 ```
 
 Health-check behavior can be tuned through `BPC_CLASH_HEALTH_URL`, `BPC_CLASH_HEALTH_INTERVAL`, `BPC_CLASH_HEALTH_TIMEOUT` and `BPC_CLASH_MAX_FAILED_TIMES`.
+
+## Secure Clash subscription
+
+Create a DNS A record such as `sub.example.com` pointing to the RU node and permit inbound TCP/80 and TCP/8443. Then enable the subscription endpoint:
+
+```bash
+sudo bpc-enable-subscription --hostname sub.example.com
+```
+
+BPC obtains a trusted Let's Encrypt certificate through HTTP-01, generates a 256-bit random URL token, starts a hardened HTTPS service on TCP/8443, and serves the current aggregate profile from exactly one secret URL path. The aggregate profile is read on every request, so later `bpc-render-clash` updates are available immediately without copying files to the client.
+
+Show the secret URL later with:
+
+```bash
+sudo bpc-subscription-url
+```
+
+`bpc-status` intentionally hides the token. Request paths are not written to the subscription service logs. The token and runtime state are root-only under `/etc/bpc-connect/ru-node/subscription`.
+
+Let's Encrypt renewal is handled by `certbot.timer`. TCP/80 must remain reachable for HTTP-01 renewals unless certificate management is replaced with another supported method.
 
 Generated client files:
 
@@ -112,11 +135,13 @@ Generated client files:
 /etc/bpc-connect/ru-node/awg/clash-verge.yaml
 /etc/bpc-connect/ru-node/wg/client.conf
 /etc/bpc-connect/ru-node/wg/clash-verge.yaml
+/etc/bpc-connect/ru-node/subscription/token
+/etc/bpc-connect/ru-node/subscription/runtime.env
 ```
 
-The aggregate Clash profile, AWG profile and WireGuard client files contain private credentials and must be treated as secrets.
+The aggregate Clash profile, AWG profile, WireGuard client files and subscription URL contain or grant access to private credentials and must be treated as secrets.
 
-See `docs/install-update.md`, `docs/ru-node.md`, `docs/amneziawg.md` and `docs/wireguard.md`.
+See `docs/install-update.md`, `docs/ru-node.md`, `docs/amneziawg.md`, `docs/wireguard.md` and `docs/subscription.md`.
 
 ## Development
 
@@ -137,7 +162,8 @@ bpc-connect render config/gateway.example.yaml -o build/mihomo/config.yaml
 
 ## Security
 
-- Never commit production UUIDs, private keys, WireGuard PSKs, Tailscale auth keys, Mihomo API secrets or real infrastructure credentials.
+- Never commit production UUIDs, private keys, WireGuard PSKs, Tailscale auth keys, Mihomo API secrets, subscription URLs or real infrastructure credentials.
 - Treat generated gateway, Xray, AmneziaWG, WireGuard and aggregate Clash configurations as secrets.
+- Treat the tokenized subscription URL like a password; anyone holding it can download the client profile and its credentials.
 - The work gateway must fail closed: transport failure must not expose the work laptop directly through the Georgia ISP.
 - Release checksums detect corrupted or mismatched artifacts; stronger signed-release verification can be added in a later milestone.
