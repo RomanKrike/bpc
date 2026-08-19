@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bpc-connect"
-version = "0.4.0"
+version = "0.4.1"
 description = "Fail-closed multi-transport bridge for BPC connectivity"
 readme = "README.md"
 requires-python = ">=3.11"
