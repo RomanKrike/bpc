@@ -2,6 +2,7 @@ import pathlib
 
 BOOTSTRAP = pathlib.Path("deploy/bootstrap-ru-node.sh").read_text(encoding="utf-8")
 DNS = pathlib.Path("deploy/bpc-ensure-dns.sh").read_text(encoding="utf-8")
+HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
 INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
 MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
 STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
@@ -43,3 +44,12 @@ def test_status_reports_dns_and_peer_handshakes() -> None:
     assert 'print_peer_line "WG"' in STATUS
     assert "latest-handshakes" in STATUS
     assert "transfer" in STATUS
+
+
+def test_healthcheck_reports_specific_component_failures() -> None:
+    assert "Health check FAILED:" in HEALTH
+    assert "xray.service is not active" in HEALTH
+    assert "AmneziaWG container" in HEALTH
+    assert "bpc-awg-firewall.service is not active" in HEALTH
+    assert "wg-quick@${interface}.service is not active" in HEALTH
+    assert "bpc-wg-firewall.service is not active" in HEALTH
