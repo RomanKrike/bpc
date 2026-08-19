@@ -2,6 +2,7 @@ import pathlib
 
 HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
 INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
+MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
 STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
@@ -14,6 +15,11 @@ def test_install_exposes_wireguard_switch_and_command() -> None:
 
 def test_update_reconciles_wireguard_command() -> None:
     assert '"bpc-enable-wg:bpc-enable-wg.sh"' in UPDATE
+
+
+def test_migration_exposes_wireguard_for_older_updaters() -> None:
+    assert '"bpc-enable-wg:bpc-enable-wg.sh"' in MIGRATE
+    assert '"/usr/local/sbin/${name}"' in MIGRATE
 
 
 def test_healthcheck_only_requires_wireguard_after_enable_marker() -> None:
