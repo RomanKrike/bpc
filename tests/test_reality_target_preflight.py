@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 HELPER = ROOT / "deploy" / "bpc-check-reality-target.sh"
 BOOTSTRAP = ROOT / "deploy" / "bootstrap-ru-node.sh"
+MIGRATE = ROOT / "deploy" / "bpc-migrate.sh"
 
 
 def test_bootstrap_defaults_to_bing_and_runs_preflight_before_xray_install() -> None:
@@ -31,5 +32,12 @@ def test_known_microsoft_target_is_rejected_without_network_probe() -> None:
 def test_preflight_checks_certificate_handshake_size() -> None:
     text = HELPER.read_text(encoding="utf-8")
     assert 'MAX_CERT_HANDSHAKE="${BPC_REALITY_MAX_CERT_HANDSHAKE:-8192}"' in text
-    assert "Handshake \\[length" in text
+    assert "-status" in text
     assert "cert_len > MAX_CERT_HANDSHAKE" in text
+
+
+def test_migration_reconciles_generated_gateway_servername() -> None:
+    text = MIGRATE.read_text(encoding="utf-8")
+    assert "BPC_REALITY_SERVER_NAME=" in text
+    assert "servername: ${reality_server_name}" in text
+    assert "known incompatible REALITY target for Xray 26.3.27" in text
