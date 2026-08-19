@@ -8,7 +8,7 @@ HEALTH_URL="${BPC_CLASH_HEALTH_URL:-https://www.gstatic.com/generate_204}"
 HEALTH_INTERVAL="${BPC_CLASH_HEALTH_INTERVAL:-15}"
 HEALTH_TIMEOUT="${BPC_CLASH_HEALTH_TIMEOUT:-5000}"
 MAX_FAILED_TIMES="${BPC_CLASH_MAX_FAILED_TIMES:-2}"
-TRANSPORT_ORDER="${BPC_CLASH_TRANSPORT_ORDER:-awg wg vless}"
+TRANSPORT_ORDER="${BPC_CLASH_TRANSPORT_ORDER:-awg wg hy2 tuic vless anytls shadowtls trojan mieru trusttunnel}"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run bpc-render-clash as root" >&2
@@ -81,12 +81,22 @@ emit_vless_proxy() {
 VLESS
 }
 
+profile_available() {
+  local transport="$1"
+  [[ -f "${RU_DIR}/${transport}/enabled" && -s "${RU_DIR}/${transport}/clash-verge.yaml" ]]
+}
+
 transport_available() {
   case "$1" in
-    awg) [[ -f "${RU_DIR}/awg/enabled" && -s "${RU_DIR}/awg/clash-verge.yaml" ]] ;;
-    wg) [[ -f "${RU_DIR}/wg/enabled" && -s "${RU_DIR}/wg/clash-verge.yaml" ]] ;;
-    vless) require_vless_values >/dev/null 2>&1 ;;
-    *) return 1 ;;
+    awg|wg|hy2|tuic|anytls|shadowtls|trojan|mieru|trusttunnel)
+      profile_available "$1"
+      ;;
+    vless)
+      require_vless_values >/dev/null 2>&1
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
 
@@ -94,25 +104,42 @@ transport_name() {
   case "$1" in
     awg) printf '%s\n' 'BPC-RU-AWG-01' ;;
     wg) printf '%s\n' 'BPC-RU-WG-01' ;;
+    hy2) printf '%s\n' 'BPC-RU-HY2-01' ;;
+    tuic) printf '%s\n' 'BPC-RU-TUIC-01' ;;
     vless) printf '%s\n' 'BPC-RU-VLESS-01' ;;
+    anytls) printf '%s\n' 'BPC-RU-ANYTLS-01' ;;
+    shadowtls) printf '%s\n' 'BPC-RU-SHADOWTLS-01' ;;
+    trojan) printf '%s\n' 'BPC-RU-TROJAN-01' ;;
+    mieru) printf '%s\n' 'BPC-RU-MIERU-01' ;;
+    trusttunnel) printf '%s\n' 'BPC-RU-TRUST-01' ;;
     *) return 1 ;;
   esac
 }
 
 emit_transport_proxy() {
   case "$1" in
-    awg) emit_existing_proxy "${RU_DIR}/awg/clash-verge.yaml" ;;
-    wg) emit_existing_proxy "${RU_DIR}/wg/clash-verge.yaml" ;;
-    vless) emit_vless_proxy ;;
-    *) return 1 ;;
+    awg|wg|hy2|tuic|anytls|shadowtls|trojan|mieru|trusttunnel)
+      emit_existing_proxy "${RU_DIR}/$1/clash-verge.yaml"
+      ;;
+    vless)
+      emit_vless_proxy
+      ;;
+    *)
+      return 1
+      ;;
   esac
 }
+
+ssh_rescue_available="false"
+if profile_available ssh-rescue; then
+  ssh_rescue_available="true"
+fi
 
 declare -a enabled_transports=()
 declare -a proxy_names=()
 for transport in ${TRANSPORT_ORDER}; do
   case "${transport}" in
-    awg|wg|vless) ;;
+    awg|wg|hy2|tuic|vless|anytls|shadowtls|trojan|mieru|trusttunnel) ;;
     *)
       echo "Unsupported transport in BPC_CLASH_TRANSPORT_ORDER: ${transport}" >&2
       exit 2
@@ -155,6 +182,9 @@ HEADER
   for transport in "${enabled_transports[@]}"; do
     emit_transport_proxy "${transport}"
   done
+  if [[ "${ssh_rescue_available}" == "true" ]]; then
+    emit_existing_proxy "${RU_DIR}/ssh-rescue/clash-verge.yaml"
+  fi
 
   cat <<GROUP
 
@@ -175,10 +205,27 @@ GROUP
     timeout: ${HEALTH_TIMEOUT}
     max-failed-times: ${MAX_FAILED_TIMES}
     expected-status: 204
+GROUP
+
+  if [[ "${ssh_rescue_available}" == "true" ]]; then
+    cat <<GROUP
+
+  - name: BPC-ROUTE
+    type: select
+    proxies:
+      - BPC-AUTO
+      - BPC-RU-SSH-RESCUE
+
+rules:
+  - MATCH,BPC-ROUTE
+GROUP
+  else
+    cat <<GROUP
 
 rules:
   - MATCH,BPC-AUTO
 GROUP
+  fi
 } > "${tmp}"
 
 chmod 0600 "${tmp}"
@@ -191,4 +238,7 @@ for name in "${proxy_names[@]}"; do
   printf ' %s' "${name}"
 done
 printf '\n'
+if [[ "${ssh_rescue_available}" == "true" ]]; then
+  printf 'Manual rescue: BPC-ROUTE can switch from BPC-AUTO to BPC-RU-SSH-RESCUE.\n'
+fi
 printf 'Strategy: first healthy transport in priority order; no DIRECT fallback.\n'
