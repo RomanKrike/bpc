@@ -31,9 +31,11 @@ Application releases are immutable directories under `/opt/bpc/releases`. Runtim
 
 ## Fresh RU-node installation
 
+Use `www.bing.com` as the tested REALITY target for the pinned Xray runtime:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
-  | sudo bash -s -- --role ru-node --reality-server-name YOUR_REALITY_TARGET
+  | sudo bash -s -- --role ru-node --reality-server-name www.bing.com
 ```
 
 You may provision AWG and native WireGuard in the same install:
@@ -42,7 +44,7 @@ You may provision AWG and native WireGuard in the same install:
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
   | sudo bash -s -- \
       --role ru-node \
-      --reality-server-name YOUR_REALITY_TARGET \
+      --reality-server-name www.bing.com \
       --public-host 203.0.113.10 \
       --port 443 \
       --with-awg \
@@ -51,6 +53,8 @@ curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
       --wg-port 51820
 ```
 
+Before generating Xray credentials, `bootstrap-ru-node.sh` runs `bpc-check-reality-target.sh`. The preflight verifies DNS resolution and a TLS 1.3 handshake, then rejects Certificate handshake messages above the pinned REALITY parser limit. The known-bad `www.microsoft.com` target is explicitly rejected for Xray 26.3.27 because its Certificate record can exceed 8192 bytes; see [XTLS/Xray-core#6356](https://github.com/XTLS/Xray-core/issues/6356).
+
 The installer performs these steps:
 
 1. installs minimal download/extraction prerequisites;
@@ -58,7 +62,7 @@ The installer performs these steps:
 3. downloads `SHA256SUMS` and verifies the deployment bundle;
 4. extracts the version into `/opt/bpc/releases/<version>`;
 5. atomically points `/opt/bpc/current` at that release;
-6. provisions the requested role on first install;
+6. provisions the requested role on first install, including REALITY target preflight;
 7. reconciles the available BPC commands under `/usr/local/sbin`;
 8. optionally provisions the selected secondary transports.
 
