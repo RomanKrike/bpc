@@ -129,7 +129,14 @@ if (( ${#enabled_transports[@]} == 0 )); then
   exit 3
 fi
 
-install -d -m 0700 "${RU_DIR}"
+# RU_DIR already contains the live RU-node state and has deliberately managed
+# ownership/mode so the Xray service account can traverse it. Never chmod or
+# recreate this directory here; the renderer only owns the generated profile.
+if [[ ! -d "${RU_DIR}" ]]; then
+  echo "RU-node state directory is missing: ${RU_DIR}" >&2
+  exit 3
+fi
+
 tmp="$(mktemp "${RU_DIR}/.clash-verge-auto.XXXXXX")"
 trap 'rm -f "${tmp}"' EXIT
 
