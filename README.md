@@ -10,6 +10,7 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Mihomo gateway config generator.
 - Automatic Clash Verge Rev failover profile for AWG, WireGuard and VLESS/REALITY.
 - Optional tokenized HTTPS subscription endpoint for the aggregate Clash profile.
+- REALITY target compatibility preflight before fresh Xray provisioning.
 - Config generator with safety validation.
 - Fail-closed policy: no automatic DIRECT route from the work gateway.
 - Versioned deployment bundles, one-command install and safe updates with rollback.
@@ -44,7 +45,7 @@ On a clean Debian 13 VPS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
-  | sudo bash -s -- --role ru-node --reality-server-name YOUR_REALITY_TARGET
+  | sudo bash -s -- --role ru-node --reality-server-name www.bing.com
 ```
 
 To provision all currently implemented RU transports immediately:
@@ -53,7 +54,7 @@ To provision all currently implemented RU transports immediately:
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
   | sudo bash -s -- \
       --role ru-node \
-      --reality-server-name YOUR_REALITY_TARGET \
+      --reality-server-name www.bing.com \
       --with-awg \
       --with-wg
 ```
@@ -70,6 +71,8 @@ Optional parameters:
 The provider firewall must permit each enabled protocol/port.
 
 The installer downloads the latest GitHub Release deployment bundle, verifies it against the published `SHA256SUMS`, installs it under `/opt/bpc/releases/<version>`, provisions the RU node on first install, and preserves generated credentials under `/etc/bpc-connect`.
+
+Before generating credentials, the RU bootstrap checks that the selected REALITY target resolves, completes a TLS 1.3 handshake, and does not expose a Certificate handshake larger than the pinned REALITY parser limit. `www.microsoft.com` is explicitly rejected for the pinned Xray 26.3.27 runtime because its TLS Certificate record can exceed the 8192-byte REALITY limit and cause `handshake did not complete successfully`; see [XTLS/Xray-core#6356](https://github.com/XTLS/Xray-core/issues/6356). `www.bing.com` is the tested BPC recommendation for this runtime.
 
 If DNS resolution is unavailable, the installer first attempts to repair `systemd-resolved` with public resolvers. If `systemd-resolved` is unavailable, BPC can install a static `/etc/resolv.conf` fallback and preserves the previous file as `/etc/resolv.conf.bpc-backup` when possible. Resolver defaults can be overridden with `BPC_DNS_SERVERS` and `BPC_FALLBACK_DNS`.
 
