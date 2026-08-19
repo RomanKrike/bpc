@@ -30,6 +30,79 @@ Options:
 USAGE
 }
 
+ensure_bootstrap_dns() {
+  local dropin server
+  local dns_servers="${BPC_DNS_SERVERS:-1.1.1.1 8.8.8.8}"
+  local fallback_dns="${BPC_FALLBACK_DNS:-9.9.9.9 1.0.0.1}"
+
+  if getent ahostsv4 github.com >/dev/null 2>&1 && \
+    getent ahostsv4 deb.debian.org >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo "DNS resolution is unavailable; attempting bootstrap repair."
+
+  if systemctl cat systemd-resolved.service >/dev/null 2>&1; then
+    dropin="/etc/systemd/resolved.conf.d/10-bpc-dns.conf"
+    install -d -m 0755 "$(dirname "${dropin}")"
+    cat > "${dropin}" <<RESOLVED
+[Resolve]
+DNS=${dns_servers}
+FallbackDNS=${fallback_dns}
+DNSSEC=allow-downgrade
+RESOLVED
+    systemctl enable systemd-resolved.service >/dev/null 2>&1 || true
+    systemctl restart systemd-resolved.service >/dev/null 2>&1 || true
+    if [[ -e /run/systemd/resolve/resolv.conf ]]; then
+      if [[ -e /etc/resolv.conf && ! -L /etc/resolv.conf && \
+        ! -e /etc/resolv.conf.bpc-backup ]]; then
+        cp -a /etc/resolv.conf /etc/resolv.conf.bpc-backup 2>/dev/null || true
+      fi
+      ln -sfn /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
+    fi
+    if command -v resolvectl >/dev/null 2>&1; then
+      resolvectl flush-caches >/dev/null 2>&1 || true
+    fi
+  fi
+
+  for _ in 1 2 3 4 5; do
+    if getent ahostsv4 github.com >/dev/null 2>&1 && \
+      getent ahostsv4 deb.debian.org >/dev/null 2>&1; then
+      echo "DNS bootstrap repair succeeded."
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "system resolver repair was insufficient; trying a static fallback." >&2
+  if [[ -e /etc/resolv.conf && ! -e /etc/resolv.conf.bpc-backup ]]; then
+    cp -a /etc/resolv.conf /etc/resolv.conf.bpc-backup 2>/dev/null || true
+  fi
+  rm -f /etc/resolv.conf 2>/dev/null || true
+  if ! {
+    echo "# Managed by BPC bootstrap because DNS resolution was unavailable."
+    for server in ${dns_servers}; do
+      printf 'nameserver %s\n' "${server}"
+    done
+  } > /etc/resolv.conf; then
+    echo "Unable to write the static DNS fallback to /etc/resolv.conf." >&2
+    return 3
+  fi
+
+  for _ in 1 2 3; do
+    if getent ahostsv4 github.com >/dev/null 2>&1 && \
+      getent ahostsv4 deb.debian.org >/dev/null 2>&1; then
+      echo "DNS bootstrap repair succeeded with static resolvers."
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "DNS bootstrap repair failed." >&2
+  echo "Configure working DNS or set BPC_DNS_SERVERS and retry." >&2
+  return 3
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --role)
@@ -100,6 +173,8 @@ for port_spec in "XRAY_PORT:${XRAY_PORT}" "AWG_PORT:${AWG_PORT}" "WG_PORT:${WG_P
   fi
 done
 
+ensure_bootstrap_dns
+
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl tar
@@ -150,6 +225,9 @@ chmod 0755 "${release_dir}/deploy/"*.sh
 ln -sfn "${release_dir}" "${BPC_ROOT}/current"
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-update.sh" /usr/local/sbin/bpc-update
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-status.sh" /usr/local/sbin/bpc-status
+if [[ -f "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
+  ln -sfn "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" /usr/local/sbin/bpc-ensure-dns
+fi
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh" /usr/local/sbin/bpc-enable-wg
 
@@ -185,9 +263,15 @@ else
 fi
 
 if [[ "${WITH_AWG}" == "true" ]]; then
+  if [[ -x "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
+    "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+  fi
   AWG_PORT="${AWG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh"
 fi
 if [[ "${WITH_WG}" == "true" ]]; then
+  if [[ -x "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
+    "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+  fi
   WG_PORT="${WG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh"
 fi
 
@@ -201,6 +285,7 @@ Current: ${BPC_ROOT}/current
 Commands:
   bpc-status
   bpc-update
+  bpc-ensure-dns
   bpc-enable-awg
   bpc-enable-wg
 

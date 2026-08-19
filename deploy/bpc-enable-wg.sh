@@ -11,6 +11,7 @@ WG_CLIENT_ADDRESS="${WG_CLIENT_ADDRESS:-10.252.0.2/32}"
 WG_CLIENT_IP="${WG_CLIENT_IP:-10.252.0.2}"
 WG_MTU="${WG_MTU:-1380}"
 WG_KEEPALIVE="${WG_KEEPALIVE:-25}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run bpc-enable-wg as root" >&2
@@ -42,6 +43,10 @@ BPC_RU_HOST="$(sed -n 's/^BPC_RU_HOST=//p' "${client_env}" | head -n1)"
 if [[ -z "${BPC_RU_HOST}" ]]; then
   echo "BPC_RU_HOST is missing from client.env" >&2
   exit 2
+fi
+
+if [[ -f "${SCRIPT_DIR}/bpc-ensure-dns.sh" ]]; then
+  bash "${SCRIPT_DIR}/bpc-ensure-dns.sh"
 fi
 
 if ! getent ahostsv4 deb.debian.org >/dev/null 2>&1; then

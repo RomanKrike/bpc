@@ -11,6 +11,7 @@ AWG_CLIENT_ADDRESS="${AWG_CLIENT_ADDRESS:-10.251.0.2/32}"
 AWG_MTU="${AWG_MTU:-1280}"
 AWG_CONTAINER="${AWG_CONTAINER:-bpc-awg}"
 AWG_IMAGE="${AWG_IMAGE:-amneziavpn/amneziawg-go:2.0.0@sha256:4ada4adcf55142c55239f7ae4d683745f6f2d7ad707c758af8f250c5f1cd368e}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 # Conservative AWG2 profile for the first interoperability test. CPS/I1-I5
 # are intentionally left empty until the base transport is proven end to end.
@@ -34,7 +35,7 @@ fi
 case "$(uname -m)" in
   x86_64|amd64) ;;
   *)
-    echo "BPC AWG2 v0.2.0 currently supports amd64 VPS hosts only" >&2
+    echo "BPC AWG2 currently supports amd64 VPS hosts only" >&2
     exit 2
     ;;
 esac
@@ -67,6 +68,10 @@ fi
 if [[ ! -f "${AWG_DIR}/enabled" ]] && ss -H -lun "sport = :${AWG_PORT}" | grep -q .; then
   echo "UDP port ${AWG_PORT} is already in use; set AWG_PORT to another value" >&2
   exit 3
+fi
+
+if [[ -f "${SCRIPT_DIR}/bpc-ensure-dns.sh" ]]; then
+  bash "${SCRIPT_DIR}/bpc-ensure-dns.sh"
 fi
 
 export DEBIAN_FRONTEND=noninteractive

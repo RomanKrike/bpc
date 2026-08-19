@@ -13,6 +13,7 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
   for spec in \
     "bpc-update:bpc-update.sh" \
     "bpc-status:bpc-status.sh" \
+    "bpc-ensure-dns:bpc-ensure-dns.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh"; do
     name="${spec%%:*}"

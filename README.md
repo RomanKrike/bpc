@@ -12,6 +12,7 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Config generator with safety validation.
 - Fail-closed policy: no automatic DIRECT route from the work gateway.
 - Versioned deployment bundles, one-command install and safe updates with rollback.
+- Automatic DNS preflight/repair for Debian RU nodes when resolver configuration is broken.
 - GitHub Actions CI, tests and automatic GitHub Releases.
 
 This repository intentionally separates the BPC underlay from the corporate VPN. The corporate VPN remains on the work laptop; BPC provides it with a Russian egress path.
@@ -59,11 +60,16 @@ The provider firewall must permit each enabled protocol/port.
 
 The installer downloads the latest GitHub Release deployment bundle, verifies it against the published `SHA256SUMS`, installs it under `/opt/bpc/releases/<version>`, provisions the RU node on first install, and preserves generated credentials under `/etc/bpc-connect`.
 
+If DNS resolution is unavailable, the installer first attempts to repair `systemd-resolved` with public resolvers. If `systemd-resolved` is unavailable, BPC can install a static `/etc/resolv.conf` fallback and preserves the previous file as `/etc/resolv.conf.bpc-backup` when possible. Resolver defaults can be overridden with `BPC_DNS_SERVERS` and `BPC_FALLBACK_DNS`.
+
+For RU-node endpoint discovery, BPC first checks the IPv4 source address selected by the default route and then public IPv4 lookup services. It no longer silently writes the local machine hostname as the client endpoint. If a usable public endpoint cannot be detected, install with `--public-host` explicitly.
+
 After installation:
 
 ```bash
 sudo bpc-status
 sudo bpc-update
+sudo bpc-ensure-dns
 ```
 
 Enable additional transports later on an existing node:
@@ -76,6 +82,8 @@ sudo bpc-status
 ```
 
 `bpc-update` downloads the latest release, backs up `/etc/bpc-connect`, atomically switches `/opt/bpc/current`, validates managed services, and rolls back to the previous release if the health check fails.
+
+`bpc-status` reports local service health plus DNS state and the latest WireGuard/AmneziaWG peer handshake and traffic counters when those transports are enabled.
 
 Generated client files:
 
