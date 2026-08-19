@@ -122,6 +122,64 @@ check_mihomo_transports() {
   done
 }
 
+check_openvpn() {
+  local ovpn_dir="${BPC_STATE_DIR}/ru-node/openvpn"
+  local runtime_env="${ovpn_dir}/runtime.env"
+  local interface
+
+  [[ -f "${ovpn_dir}/enabled" ]] || return 0
+  if [[ ! -s "${runtime_env}" || ! -s "${ovpn_dir}/server.conf" || \
+    ! -s "${ovpn_dir}/client.ovpn" || ! -s "${ovpn_dir}/clash-verge.yaml" ]]; then
+    fail_health "OpenVPN state is incomplete"
+    return 1
+  fi
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  interface="${OPENVPN_INTERFACE:-bpcovpn}"
+  if ! systemctl --quiet is-active openvpn-server@bpc.service; then
+    fail_health "openvpn-server@bpc.service is not active"
+    return 1
+  fi
+  if ! ip link show "${interface}" >/dev/null 2>&1; then
+    fail_health "OpenVPN interface ${interface} is unavailable"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-openvpn-firewall.service; then
+    fail_health "bpc-openvpn-firewall.service is not active"
+    return 1
+  fi
+}
+
+check_ikev2() {
+  local ike_dir="${BPC_STATE_DIR}/ru-node/ikev2"
+  local runtime_env="${ike_dir}/runtime.env"
+  local swanctl_dropin="/etc/swanctl/conf.d/bpc-ikev2.conf"
+
+  [[ -f "${ike_dir}/enabled" ]] || return 0
+  if [[ ! -s "${runtime_env}" || ! -s "${ike_dir}/client-info.txt" || \
+    ! -s "${swanctl_dropin}" || ! -s /etc/swanctl/x509/bpc-ikev2-cert.pem || \
+    ! -s /etc/swanctl/private/bpc-ikev2-key.pem ]]; then
+    fail_health "IKEv2 state is incomplete"
+    return 1
+  fi
+  if ! command -v swanctl >/dev/null 2>&1; then
+    fail_health "swanctl is missing for enabled IKEv2 fallback"
+    return 1
+  fi
+  if ! systemctl --quiet is-active strongswan.service; then
+    fail_health "strongswan.service is not active"
+    return 1
+  fi
+  if ! swanctl --list-conns 2>/dev/null | grep -Eq '^bpc-ikev2:'; then
+    fail_health "strongSwan has not loaded the bpc-ikev2 connection"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-ikev2-firewall.service; then
+    fail_health "bpc-ikev2-firewall.service is not active"
+    return 1
+  fi
+}
+
 check_ssh_rescue() {
   local ssh_dir="${BPC_STATE_DIR}/ru-node/ssh-rescue"
   local runtime_env="${ssh_dir}/runtime.env"
@@ -203,6 +261,8 @@ case "${ROLE}" in
     check_awg
     check_wg
     check_mihomo_transports
+    check_openvpn
+    check_ikev2
     check_ssh_rescue
     check_subscription
     ;;
