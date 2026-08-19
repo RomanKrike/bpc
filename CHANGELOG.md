@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0
+
+### Added
+- `bpc-enable-openvpn` for a dedicated OpenVPN fallback with a private BPC CA, client certificate, `tls-crypt`, forwarding/NAT service, native `.ovpn` profile and Mihomo client profile.
+- OpenVPN UDP/1194 by default with optional TCP mode through `BPC_OPENVPN_PROTO=tcp`; TCP mode uses the correct `tcp-server` / `tcp-client` OpenVPN roles.
+- `bpc-enable-ikev2 --hostname HOST` for a native strongSwan IKEv2 roadwarrior fallback using EAP-MSCHAPv2, a trusted Let's Encrypt server identity, a private client address pool and forwarding/NAT rules.
+- Root-only Windows IKEv2 connection details under `/etc/bpc-connect/ru-node/ikev2/client-info.txt`.
+- Health and status reporting for OpenVPN and IKEv2 without exposing private credentials.
+
+### Changed
+- When OpenVPN is enabled, the Clash subscription exposes it only through the manual `BPC-ROUTE` selector alongside SSH rescue; `BPC-AUTO` remains limited to the primary health-checked transports.
+- IKEv2 is intentionally OS-level and remains outside the Clash subscription and `BPC-AUTO`.
+- The OpenVPN server disables time-based renegotiation with `reneg-sec 0` as a compatibility mitigation for the current Mihomo OpenVPN rekey limitation.
+
+### Security
+- OpenVPN private CA/client keys and IKEv2 EAP credentials remain root-only and are never printed by `bpc-status`.
+- IKEv2 loads the Let's Encrypt leaf certificate, intermediate chain and private key into separate strongSwan credential stores and refreshes them after certificate renewal.
+- IKEv2 client documentation explicitly warns against unsupported nested use with a corporate VPN.
+
 ## 0.6.0
 
 ### Added
