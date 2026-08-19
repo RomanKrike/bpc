@@ -5,6 +5,8 @@ BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 ru_dir="${BPC_STATE_DIR}/ru-node"
 config="${ru_dir}/config.json"
+client_env="${ru_dir}/client.env"
+gateway_transport="${ru_dir}/gateway-transport.yaml"
 
 # Migration hooks are executed by older updaters after they switch
 # /opt/bpc/current. Reconcile commands here as well so a release can expose new
@@ -47,12 +49,31 @@ chown root:"${xray_service_group}" "${config}"
 chmod 0640 "${config}"
 
 # Client-side credentials never need to be readable by the Xray daemon.
-for secret_file in "${ru_dir}/client.env" "${ru_dir}/gateway-transport.yaml"; do
+for secret_file in "${client_env}" "${gateway_transport}"; do
   if [[ -f "${secret_file}" ]]; then
     chown root:root "${secret_file}"
     chmod 0600 "${secret_file}"
   fi
 done
+
+# `client.env` is the source consumed by the aggregate Clash renderer. Keep the
+# older generated gateway fragment aligned with its REALITY server name as well.
+# This also repairs nodes where the target was changed manually while diagnosing
+# the Xray 26.3.27 / www.microsoft.com Certificate-size incompatibility.
+if [[ -f "${client_env}" && -f "${gateway_transport}" ]]; then
+  reality_server_name="$(sed -n 's/^BPC_REALITY_SERVER_NAME=//p' "${client_env}" | head -n1)"
+  if [[ "${reality_server_name}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] && \
+    [[ "${reality_server_name}" == *.* ]]; then
+    sed -i -E "s|^    servername:.*$|    servername: ${reality_server_name}|" "${gateway_transport}"
+    chown root:root "${gateway_transport}"
+    chmod 0600 "${gateway_transport}"
+  fi
+
+  if [[ "${reality_server_name,,}" == "www.microsoft.com" ]]; then
+    echo "WARNING: www.microsoft.com is a known incompatible REALITY target for Xray 26.3.27." >&2
+    echo "Use a compatible target such as www.bing.com; see XTLS/Xray-core#6356." >&2
+  fi
+fi
 
 # Rebuild the aggregate client profile from the transports already enabled on
 # the node. This gives existing installations the automatic failover profile
