@@ -15,6 +15,8 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
     "bpc-status:bpc-status.sh" \
     "bpc-ensure-dns:bpc-ensure-dns.sh" \
     "bpc-render-clash:bpc-render-clash.sh" \
+    "bpc-enable-subscription:bpc-enable-subscription.sh" \
+    "bpc-subscription-url:bpc-subscription-url.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh"; do
     name="${spec%%:*}"
@@ -57,4 +59,11 @@ done
 # immediately after upgrading without rotating any credentials.
 if [[ -x "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
   "${BPC_ROOT}/current/deploy/bpc-render-clash.sh"
+fi
+
+# The subscription service executes the server from /opt/bpc/current. Restart
+# it after a release switch so enabled endpoints immediately use the new code.
+if [[ -f "${ru_dir}/subscription/enabled" ]] && \
+  systemctl --quiet is-enabled bpc-subscription.service 2>/dev/null; then
+  systemctl restart bpc-subscription.service
 fi
