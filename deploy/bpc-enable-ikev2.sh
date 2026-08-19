@@ -135,9 +135,14 @@ fi
 
 # shellcheck disable=SC1090,SC1091
 source "${IKE_DIR}/runtime.env"
+# Values below are guaranteed by the root-only runtime.env schema written above.
+# shellcheck disable=SC2153
 TLS_HOST="${IKEV2_HOST}"
+# shellcheck disable=SC2153
 IKE_USER="${IKEV2_USER}"
+# shellcheck disable=SC2153
 IKE_PASSWORD="${IKEV2_PASSWORD}"
+# shellcheck disable=SC2153
 IKE_POOL="${IKEV2_POOL}"
 cert_leaf="/etc/letsencrypt/live/${TLS_HOST}/cert.pem"
 cert_chain="/etc/letsencrypt/live/${TLS_HOST}/chain.pem"
