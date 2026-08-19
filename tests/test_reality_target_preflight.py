@@ -1,7 +1,6 @@
 import pathlib
 import subprocess
 
-
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HELPER = ROOT / "deploy" / "bpc-check-reality-target.sh"
 BOOTSTRAP = ROOT / "deploy" / "bootstrap-ru-node.sh"
