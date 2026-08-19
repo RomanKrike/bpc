@@ -8,7 +8,7 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Optional AmneziaWG 2.0 transport on UDP/443.
 - Optional native WireGuard transport on UDP/51820.
 - Mihomo gateway config generator.
-- Ordered fallback model for VLESS/REALITY, AmneziaWG, WireGuard and Tailscale.
+- Automatic Clash Verge Rev failover profile for AWG, WireGuard and VLESS/REALITY.
 - Config generator with safety validation.
 - Fail-closed policy: no automatic DIRECT route from the work gateway.
 - Versioned deployment bundles, one-command install and safe updates with rollback.
@@ -26,6 +26,14 @@ UDP/51820  -> native WireGuard
 ```
 
 The transports are independent. Enabling or disabling one does not replace the others.
+
+The generated aggregate Clash profile uses Mihomo's `fallback` group. The default order is:
+
+```text
+AmneziaWG -> WireGuard -> VLESS/REALITY
+```
+
+Mihomo continuously health-checks the transports and selects the first healthy option in that order. There is no `DIRECT` fallback, so if all BPC transports are unavailable the profile fails closed.
 
 ## One-command RU node install
 
@@ -70,6 +78,7 @@ After installation:
 sudo bpc-status
 sudo bpc-update
 sudo bpc-ensure-dns
+sudo bpc-render-clash
 ```
 
 Enable additional transports later on an existing node:
@@ -78,6 +87,7 @@ Enable additional transports later on an existing node:
 sudo bpc-update
 sudo bpc-enable-awg
 sudo bpc-enable-wg
+sudo bpc-render-clash
 sudo bpc-status
 ```
 
@@ -85,17 +95,26 @@ sudo bpc-status
 
 `bpc-status` reports local service health plus DNS state and the latest WireGuard/AmneziaWG peer handshake and traffic counters when those transports are enabled.
 
+`bpc-render-clash` creates a root-only aggregate profile at `/etc/bpc-connect/ru-node/clash-verge-auto.yaml`. Existing installations automatically receive this profile during the 0.4.0 migration. The default preference can be overridden, for example:
+
+```bash
+BPC_CLASH_TRANSPORT_ORDER="wg awg vless" sudo -E bpc-render-clash
+```
+
+Health-check behavior can be tuned through `BPC_CLASH_HEALTH_URL`, `BPC_CLASH_HEALTH_INTERVAL`, `BPC_CLASH_HEALTH_TIMEOUT` and `BPC_CLASH_MAX_FAILED_TIMES`.
+
 Generated client files:
 
 ```text
 /etc/bpc-connect/ru-node/gateway-transport.yaml
+/etc/bpc-connect/ru-node/clash-verge-auto.yaml
 /etc/bpc-connect/ru-node/awg/client.conf
 /etc/bpc-connect/ru-node/awg/clash-verge.yaml
 /etc/bpc-connect/ru-node/wg/client.conf
 /etc/bpc-connect/ru-node/wg/clash-verge.yaml
 ```
 
-The AWG and WireGuard client files contain private credentials and must be treated as secrets.
+The aggregate Clash profile, AWG profile and WireGuard client files contain private credentials and must be treated as secrets.
 
 See `docs/install-update.md`, `docs/ru-node.md`, `docs/amneziawg.md` and `docs/wireguard.md`.
 
@@ -119,6 +138,6 @@ bpc-connect render config/gateway.example.yaml -o build/mihomo/config.yaml
 ## Security
 
 - Never commit production UUIDs, private keys, WireGuard PSKs, Tailscale auth keys, Mihomo API secrets or real infrastructure credentials.
-- Treat generated gateway, Xray, AmneziaWG and WireGuard configurations as secrets.
+- Treat generated gateway, Xray, AmneziaWG, WireGuard and aggregate Clash configurations as secrets.
 - The work gateway must fail closed: transport failure must not expose the work laptop directly through the Georgia ISP.
 - Release checksums detect corrupted or mismatched artifacts; stronger signed-release verification can be added in a later milestone.
