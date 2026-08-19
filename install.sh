@@ -231,6 +231,12 @@ fi
 if [[ -f "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
   ln -sfn "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" /usr/local/sbin/bpc-render-clash
 fi
+if [[ -f "${BPC_ROOT}/current/deploy/bpc-enable-subscription.sh" ]]; then
+  ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-subscription.sh" /usr/local/sbin/bpc-enable-subscription
+fi
+if [[ -f "${BPC_ROOT}/current/deploy/bpc-subscription-url.sh" ]]; then
+  ln -sfn "${BPC_ROOT}/current/deploy/bpc-subscription-url.sh" /usr/local/sbin/bpc-subscription-url
+fi
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-awg.sh" /usr/local/sbin/bpc-enable-awg
 ln -sfn "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh" /usr/local/sbin/bpc-enable-wg
 
@@ -294,6 +300,8 @@ Commands:
   bpc-update
   bpc-ensure-dns
   bpc-render-clash
+  bpc-enable-subscription
+  bpc-subscription-url
   bpc-enable-awg
   bpc-enable-wg
 
