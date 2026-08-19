@@ -6,6 +6,7 @@
 - Fresh RU-node provisioning now preflights the selected REALITY target before generating credentials or installing Xray runtime state.
 - Reject `www.microsoft.com` for the pinned Xray 26.3.27 runtime because its TLS Certificate record can exceed the REALITY parser's 8192-byte limit and cause `handshake did not complete successfully`.
 - Reject other REALITY targets when the observed TLS Certificate handshake exceeds the configured compatibility limit.
+- Migration now keeps the generated `gateway-transport.yaml` REALITY server name aligned with `client.env`, repairing nodes where the target was changed manually during diagnosis.
 
 ### Changed
 - Direct RU-node bootstrap defaults to `www.bing.com` when `REALITY_SERVER_NAME` is omitted.
