@@ -44,11 +44,6 @@ if [[ -z "${BPC_RU_HOST}" ]]; then
   exit 2
 fi
 
-if [[ ! -f "${WG_DIR}/enabled" ]] && ss -H -lun "sport = :${WG_PORT}" | grep -q .; then
-  echo "UDP port ${WG_PORT} is already in use; set WG_PORT to another value" >&2
-  exit 3
-fi
-
 if ! getent ahostsv4 deb.debian.org >/dev/null 2>&1; then
   echo "DNS resolution is unavailable; configure an upstream resolver before enabling WireGuard" >&2
   exit 3
@@ -57,6 +52,11 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates iproute2 iptables kmod wireguard-tools
+
+if [[ ! -f "${WG_DIR}/enabled" ]] && ss -H -lun "sport = :${WG_PORT}" | grep -q .; then
+  echo "UDP port ${WG_PORT} is already in use; set WG_PORT to another value" >&2
+  exit 3
+fi
 
 modprobe wireguard 2>/dev/null || true
 
