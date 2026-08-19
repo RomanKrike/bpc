@@ -10,7 +10,6 @@ OVPN_INTERFACE="${BPC_OPENVPN_INTERFACE:-bpcovpn}"
 OVPN_SUBNET="${BPC_OPENVPN_SUBNET:-10.253.0.0/24}"
 OVPN_SERVER_NETWORK="${BPC_OPENVPN_SERVER_NETWORK:-10.253.0.0}"
 OVPN_SERVER_NETMASK="${BPC_OPENVPN_SERVER_NETMASK:-255.255.255.0}"
-OVPN_CLIENT_IP="${BPC_OPENVPN_CLIENT_IP:-10.253.0.2}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -72,8 +71,6 @@ if [[ -f "${OVPN_DIR}/enabled" ]]; then
       exit 4
     fi
   done
-  # shellcheck disable=SC1090,SC1091
-  source "${OVPN_DIR}/runtime.env"
 else
   umask 077
 
@@ -132,7 +129,8 @@ OPENVPN_PORT=${OVPN_PORT}
 OPENVPN_PROTO=${OVPN_PROTO}
 OPENVPN_INTERFACE=${OVPN_INTERFACE}
 OPENVPN_SUBNET=${OVPN_SUBNET}
-OPENVPN_CLIENT_IP=${OVPN_CLIENT_IP}
+OPENVPN_SERVER_NETWORK=${OVPN_SERVER_NETWORK}
+OPENVPN_SERVER_NETMASK=${OVPN_SERVER_NETMASK}
 STATE
   chmod 0600 "${OVPN_DIR}/runtime.env"
 fi
@@ -143,9 +141,11 @@ source "${OVPN_DIR}/runtime.env"
 if [[ "${OVPN_PROTO}" == "tcp" ]]; then
   server_proto="tcp-server"
   client_proto="tcp-client"
+  mihomo_udp="false"
 else
   server_proto="udp"
   client_proto="udp"
+  mihomo_udp="true"
 fi
 
 cat > "${OVPN_DIR}/server.conf" <<CONF
@@ -154,7 +154,10 @@ proto ${server_proto}
 dev ${OVPN_INTERFACE}
 dev-type tun
 topology subnet
-server ${OVPN_SERVER_NETWORK} ${OVPN_SERVER_NETMASK}
+server ${OPENVPN_SERVER_NETWORK} ${OPENVPN_SERVER_NETMASK}
+push "redirect-gateway def1 bypass-dhcp"
+push "dhcp-option DNS 1.1.1.1"
+push "dhcp-option DNS 8.8.8.8"
 ca ${OVPN_DIR}/ca.crt
 cert ${OVPN_DIR}/server.crt
 key ${OVPN_DIR}/server.key
@@ -224,7 +227,7 @@ proxies:
     auth: SHA256
     ping: 10
     ping-restart: 60
-    udp: true
+    udp: ${mihomo_udp}
     ca: |-
 $(indent_pem "${OVPN_DIR}/ca.crt")
     cert: |-
@@ -317,8 +320,8 @@ if ! systemctl --quiet is-active openvpn-server@bpc.service; then
   echo "OpenVPN service failed to start" >&2
   exit 5
 fi
-if ! ip link show "${OVPN_INTERFACE}" >/dev/null 2>&1; then
-  echo "OpenVPN interface ${OVPN_INTERFACE} is unavailable" >&2
+if ! ip link show "${OPENVPN_INTERFACE}" >/dev/null 2>&1; then
+  echo "OpenVPN interface ${OPENVPN_INTERFACE} is unavailable" >&2
   exit 5
 fi
 if ! systemctl --quiet is-active bpc-openvpn-firewall.service; then
@@ -332,7 +335,7 @@ fi
 
 cat <<DONE
 BPC OpenVPN fallback is active.
-Endpoint: ${BPC_RU_HOST}:${OVPN_PORT}/${OVPN_PROTO}
+Endpoint: ${BPC_RU_HOST}:${OPENVPN_PORT}/${OPENVPN_PROTO}
 Native client profile: ${OVPN_DIR}/client.ovpn
 Mihomo client profile: ${OVPN_DIR}/clash-verge.yaml
 
