@@ -47,26 +47,29 @@ DNSSEC=allow-downgrade
 RESOLVED
 
   systemctl enable systemd-resolved.service >/dev/null 2>&1 || true
-  systemctl restart systemd-resolved.service
-
-  if [[ -e /run/systemd/resolve/resolv.conf ]]; then
-    if [[ -e /etc/resolv.conf && ! -L /etc/resolv.conf && ! -e /etc/resolv.conf.bpc-backup ]]; then
-      cp -a /etc/resolv.conf /etc/resolv.conf.bpc-backup 2>/dev/null || true
+  if systemctl restart systemd-resolved.service; then
+    if [[ -e /run/systemd/resolve/resolv.conf ]]; then
+      if [[ -e /etc/resolv.conf && ! -L /etc/resolv.conf && \
+        ! -e /etc/resolv.conf.bpc-backup ]]; then
+        cp -a /etc/resolv.conf /etc/resolv.conf.bpc-backup 2>/dev/null || true
+      fi
+      ln -sfn /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
     fi
-    ln -sfn /run/systemd/resolve/resolv.conf /etc/resolv.conf 2>/dev/null || true
-  fi
 
-  if command -v resolvectl >/dev/null 2>&1; then
-    resolvectl flush-caches >/dev/null 2>&1 || true
-  fi
-
-  for _ in 1 2 3 4 5; do
-    if dns_works; then
-      echo "DNS resolution repaired with systemd-resolved."
-      exit 0
+    if command -v resolvectl >/dev/null 2>&1; then
+      resolvectl flush-caches >/dev/null 2>&1 || true
     fi
-    sleep 1
-  done
+
+    for _ in 1 2 3 4 5; do
+      if dns_works; then
+        echo "DNS resolution repaired with systemd-resolved."
+        exit 0
+      fi
+      sleep 1
+    done
+  else
+    echo "systemd-resolved could not be restarted; trying static fallback." >&2
+  fi
 fi
 
 if [[ -w /etc || -w /etc/resolv.conf ]]; then
