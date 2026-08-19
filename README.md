@@ -8,8 +8,11 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Optional AmneziaWG 2.0 transport on UDP/443.
 - Optional native WireGuard transport on UDP/51820.
 - Optional Mihomo server transport pack: Hysteria2, TUIC v5, AnyTLS, Shadowsocks 2022 + ShadowTLS, Trojan, Mieru and TrustTunnel.
+- Optional OpenVPN UDP/TCP fallback with both native and Mihomo client profiles.
+- Optional native strongSwan IKEv2 fallback for OS-level recovery.
 - Optional key-only SSH rescue transport for manual TCP fallback.
-- Automatic Clash Verge Rev failover profile across enabled UDP/TCP proxy transports.
+- Automatic Clash Verge Rev failover profile across enabled primary UDP/TCP proxy transports.
+- Manual `BPC-ROUTE` selector for transports that should not participate in automatic failover.
 - Optional tokenized HTTPS subscription endpoint for the aggregate Clash profile.
 - REALITY target compatibility preflight before fresh Xray provisioning.
 - Config generator with safety validation.
@@ -23,19 +26,21 @@ This repository intentionally separates the BPC underlay from the corporate VPN.
 ## RU node network layout
 
 ```text
-TCP/443     -> Xray VLESS + REALITY
-UDP/443     -> AmneziaWG 2.0
-UDP/51820   -> native WireGuard
-UDP/8443    -> Hysteria2
-TCP/8443    -> optional HTTPS Clash subscription
-UDP/10443   -> TUIC v5
-TCP/10443   -> AnyTLS
-TCP/9443    -> Shadowsocks 2022 + ShadowTLS v2
-TCP/12443   -> Trojan
-TCP/2999    -> Mieru
+TCP/443       -> Xray VLESS + REALITY
+UDP/443       -> AmneziaWG 2.0
+UDP/51820     -> native WireGuard
+UDP/8443      -> Hysteria2
+TCP/8443      -> optional HTTPS Clash subscription
+UDP/10443     -> TUIC v5
+TCP/10443     -> AnyTLS
+TCP/9443      -> Shadowsocks 2022 + ShadowTLS v2
+TCP/12443     -> Trojan
+TCP/2999      -> Mieru
 TCP+UDP/11443 -> TrustTunnel HTTP2/HTTP3
-TCP/22      -> optional SSH rescue (existing OpenSSH service)
-TCP/80      -> Let's Encrypt HTTP-01 validation/renewal
+UDP/1194      -> optional OpenVPN fallback (TCP is also supported when selected)
+UDP/500+4500  -> optional native IKEv2/IPsec fallback
+TCP/22        -> optional SSH rescue (existing OpenSSH service)
+TCP/80        -> Let's Encrypt HTTP-01 validation/renewal
 ```
 
 TCP and UDP are separate namespaces, so Hysteria2 can share numeric port 8443 with the HTTPS subscription and TUIC can share numeric port 10443 with AnyTLS.
@@ -49,7 +54,7 @@ AmneziaWG -> WireGuard -> Hysteria2 -> TUIC -> VLESS/REALITY
 
 Only transports that are actually enabled are included. Mihomo continuously health-checks them and selects the first healthy option. There is no `DIRECT` fallback, so if all automatic BPC transports are unavailable the profile fails closed.
 
-SSH rescue is intentionally not part of `BPC-AUTO` because Mihomo's SSH outbound is TCP-only. When SSH rescue is enabled, the aggregate profile adds `BPC-ROUTE`, which defaults to `BPC-AUTO` but can be switched manually to `BPC-RU-SSH-RESCUE`.
+OpenVPN and SSH rescue are intentionally not inserted into `BPC-AUTO`. When either is enabled, the aggregate profile exposes `BPC-ROUTE`, which defaults to `BPC-AUTO` and allows an explicit manual switch to `BPC-RU-OPENVPN-01` and/or `BPC-RU-SSH-RESCUE`. IKEv2 is an OS-level transport and never appears in Clash.
 
 ## One-command RU node install
 
@@ -105,6 +110,8 @@ Enable additional transports later on an existing node:
 sudo bpc-enable-awg
 sudo bpc-enable-wg
 sudo bpc-enable-mihomo-transports --hostname sub.example.com
+sudo bpc-enable-openvpn
+sudo bpc-enable-ikev2 --hostname sub.example.com
 sudo bpc-enable-ssh-rescue
 sudo bpc-render-clash
 sudo bpc-status
@@ -137,6 +144,42 @@ The command creates Hysteria2, TUIC v5, AnyTLS, Shadowsocks 2022 + ShadowTLS v2,
 Default ports can be overridden during first provisioning with `--hy2-port`, `--tuic-port`, `--anytls-port`, `--shadowtls-port`, `--trojan-port`, `--mieru-port` and `--trust-port`.
 
 The TLS listeners use a trusted Let's Encrypt certificate. If the selected certificate already exists, BPC reuses it. Otherwise TCP/80 must be reachable for the initial HTTP-01 issuance and future renewals.
+
+## OpenVPN fallback
+
+Enable the default UDP/1194 OpenVPN fallback with:
+
+```bash
+sudo bpc-enable-openvpn
+```
+
+The command creates a private BPC OpenVPN CA, separate server/client certificates, a `tls-crypt` key, a persistent `openvpn-server@bpc.service`, forwarding/NAT rules, a native `/etc/bpc-connect/ru-node/openvpn/client.ovpn` profile and a Mihomo `BPC-RU-OPENVPN-01` profile. All private material remains root-only.
+
+TCP mode is optional:
+
+```bash
+sudo BPC_OPENVPN_PROTO=tcp BPC_OPENVPN_PORT=1194 bpc-enable-openvpn
+```
+
+BPC disables time-based OpenVPN renegotiation with `reneg-sec 0`. This mitigates the current Mihomo v1.19.29 server-initiated rekey problem documented in [MetaCubeX/mihomo#3085](https://github.com/MetaCubeX/mihomo/issues/3085). OpenVPN therefore remains a manual `BPC-ROUTE` option rather than a default automatic transport until the upstream client behavior is fixed and revalidated.
+
+## Native IKEv2 fallback
+
+Create or reuse a direct DNS A record for the RU node, permit UDP/500 and UDP/4500, then run:
+
+```bash
+sudo bpc-enable-ikev2 --hostname sub.example.com
+```
+
+BPC installs the `charon-systemd` strongSwan service and an EAP-MSCHAPv2 roadwarrior connection. The server authenticates with the trusted Let's Encrypt certificate for the selected hostname; BPC loads the leaf certificate, intermediate chain and private key separately. A random username/password credential is stored root-only in:
+
+```text
+/etc/bpc-connect/ru-node/ikev2/client-info.txt
+```
+
+That file contains the Windows built-in VPN fields needed to create an IKEv2 connection. `bpc-status` never prints the password.
+
+IKEv2 is a full-tunnel OS-level fallback, not a Clash proxy. Do not stack it with a corporate VPN unless the corporate VPN client and policy explicitly support that nested arrangement.
 
 ## SSH rescue
 
@@ -188,13 +231,16 @@ Generated client/state files include:
 /etc/bpc-connect/ru-node/trojan/clash-verge.yaml
 /etc/bpc-connect/ru-node/mieru/clash-verge.yaml
 /etc/bpc-connect/ru-node/trusttunnel/clash-verge.yaml
+/etc/bpc-connect/ru-node/openvpn/client.ovpn
+/etc/bpc-connect/ru-node/openvpn/clash-verge.yaml
+/etc/bpc-connect/ru-node/ikev2/client-info.txt
 /etc/bpc-connect/ru-node/ssh-rescue/client.key
 /etc/bpc-connect/ru-node/ssh-rescue/clash-verge.yaml
 /etc/bpc-connect/ru-node/subscription/token
 /etc/bpc-connect/ru-node/subscription/runtime.env
 ```
 
-The aggregate Clash profile, transport profiles, SSH private key and subscription URL contain or grant access to private credentials and must be treated as secrets.
+The aggregate Clash profile, transport profiles, OpenVPN credentials, IKEv2 client credential file, SSH private key and subscription URL contain or grant access to private credentials and must be treated as secrets.
 
 See `docs/install-update.md`, `docs/ru-node.md`, `docs/amneziawg.md`, `docs/wireguard.md` and `docs/subscription.md`.
 
@@ -217,8 +263,8 @@ bpc-connect render config/gateway.example.yaml -o build/mihomo/config.yaml
 
 ## Security
 
-- Never commit production UUIDs, private keys, WireGuard PSKs, transport passwords, SSH rescue keys, Mihomo API secrets, subscription URLs or real infrastructure credentials.
-- Treat generated gateway, Xray, AmneziaWG, WireGuard, Mihomo transport and aggregate Clash configurations as secrets.
+- Never commit production UUIDs, private keys, WireGuard PSKs, transport passwords, OpenVPN private material, IKEv2 credentials, SSH rescue keys, Mihomo API secrets, subscription URLs or real infrastructure credentials.
+- Treat generated gateway, Xray, AmneziaWG, WireGuard, Mihomo transport, OpenVPN and aggregate Clash configurations as secrets.
 - Treat the tokenized subscription URL like a password; anyone holding it can download the client profile and its credentials.
 - The work gateway must fail closed: transport failure must not expose the work laptop directly through the Georgia ISP.
 - Release checksums detect corrupted or mismatched artifacts; stronger signed-release verification can be added in a later milestone.

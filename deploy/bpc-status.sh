@@ -158,6 +158,29 @@ if [[ "${role}" == "ru-node" ]]; then
     echo 'Mihomo transport pack: disabled'
   fi
 
+  ovpn_dir="${BPC_STATE_DIR}/ru-node/openvpn"
+  if [[ -f "${ovpn_dir}/enabled" && -f "${ovpn_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${ovpn_dir}/runtime.env"
+    ovpn_state="$(systemctl is-active openvpn-server@bpc.service 2>/dev/null || true)"
+    printf 'OpenVPN fallback: %s (%s:%s/%s; manual only)\n' \
+      "${ovpn_state:-unknown}" "${host:-unknown}" \
+      "${OPENVPN_PORT:-1194}" "${OPENVPN_PROTO:-udp}"
+  else
+    echo 'OpenVPN fallback: disabled'
+  fi
+
+  ike_dir="${BPC_STATE_DIR}/ru-node/ikev2"
+  if [[ -f "${ike_dir}/enabled" && -f "${ike_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${ike_dir}/runtime.env"
+    ike_state="$(systemctl is-active strongswan.service 2>/dev/null || true)"
+    printf 'IKEv2 fallback: %s (%s:500+4500/udp; OS-level manual only)\n' \
+      "${ike_state:-unknown}" "${IKEV2_HOST:-${host:-unknown}}"
+  else
+    echo 'IKEv2 fallback: disabled'
+  fi
+
   ssh_dir="${BPC_STATE_DIR}/ru-node/ssh-rescue"
   if [[ -f "${ssh_dir}/enabled" && -f "${ssh_dir}/runtime.env" ]]; then
     # shellcheck disable=SC1090,SC1091

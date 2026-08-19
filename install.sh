@@ -234,6 +234,8 @@ for spec in \
   "bpc-enable-awg:bpc-enable-awg.sh" \
   "bpc-enable-wg:bpc-enable-wg.sh" \
   "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
+  "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
+  "bpc-enable-ikev2:bpc-enable-ikev2.sh" \
   "bpc-enable-ssh-rescue:bpc-enable-ssh-rescue.sh"; do
   name="${spec%%:*}"
   script="${spec#*:}"
@@ -307,6 +309,8 @@ Commands:
   bpc-enable-awg
   bpc-enable-wg
   bpc-enable-mihomo-transports
+  bpc-enable-openvpn
+  bpc-enable-ikev2
   bpc-enable-ssh-rescue
 
 VLESS transport configuration:

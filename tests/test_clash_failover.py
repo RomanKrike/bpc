@@ -41,9 +41,11 @@ def test_renderer_uses_mihomo_health_checked_fallback() -> None:
     assert "      - DIRECT" not in RENDER
 
 
-def test_ssh_rescue_is_manual_and_not_part_of_default_fallback_order() -> None:
+def test_manual_fallbacks_are_not_part_of_default_auto_order() -> None:
     order = RENDER.split('TRANSPORT_ORDER="', 1)[1].split('"', 1)[0]
     assert "ssh" not in order
+    assert "openvpn" not in order
+    assert "BPC-RU-OPENVPN-01" in RENDER
     assert "BPC-RU-SSH-RESCUE" in RENDER
     assert "name: BPC-ROUTE" in RENDER
     assert "type: select" in RENDER

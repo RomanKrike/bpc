@@ -22,6 +22,8 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh" \
     "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
+    "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
+    "bpc-enable-ikev2:bpc-enable-ikev2.sh" \
     "bpc-enable-ssh-rescue:bpc-enable-ssh-rescue.sh"; do
     name="${spec%%:*}"
     script="${spec#*:}"
@@ -78,8 +80,8 @@ if [[ -f "${client_env}" && -f "${gateway_transport}" ]]; then
 fi
 
 # Rebuild the aggregate client profile from the transports already enabled on
-# the node. This gives existing installations the automatic failover profile
-# immediately after upgrading without rotating any credentials.
+# the node. This also reconciles optional manual Clash fallbacks such as OpenVPN
+# and SSH rescue without rotating any credentials.
 if [[ -x "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
   "${BPC_ROOT}/current/deploy/bpc-render-clash.sh"
 fi

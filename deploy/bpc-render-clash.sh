@@ -130,9 +130,15 @@ emit_transport_proxy() {
   esac
 }
 
-ssh_rescue_available="false"
+declare -a manual_profiles=()
+declare -a manual_names=()
+if profile_available openvpn; then
+  manual_profiles+=("${RU_DIR}/openvpn/clash-verge.yaml")
+  manual_names+=("BPC-RU-OPENVPN-01")
+fi
 if profile_available ssh-rescue; then
-  ssh_rescue_available="true"
+  manual_profiles+=("${RU_DIR}/ssh-rescue/clash-verge.yaml")
+  manual_names+=("BPC-RU-SSH-RESCUE")
 fi
 
 declare -a enabled_transports=()
@@ -182,9 +188,9 @@ HEADER
   for transport in "${enabled_transports[@]}"; do
     emit_transport_proxy "${transport}"
   done
-  if [[ "${ssh_rescue_available}" == "true" ]]; then
-    emit_existing_proxy "${RU_DIR}/ssh-rescue/clash-verge.yaml"
-  fi
+  for profile in "${manual_profiles[@]}"; do
+    emit_existing_proxy "${profile}"
+  done
 
   cat <<GROUP
 
@@ -207,14 +213,18 @@ GROUP
     expected-status: 204
 GROUP
 
-  if [[ "${ssh_rescue_available}" == "true" ]]; then
+  if (( ${#manual_names[@]} > 0 )); then
     cat <<GROUP
 
   - name: BPC-ROUTE
     type: select
     proxies:
       - BPC-AUTO
-      - BPC-RU-SSH-RESCUE
+GROUP
+    for name in "${manual_names[@]}"; do
+      printf '      - %s\n' "${name}"
+    done
+    cat <<GROUP
 
 rules:
   - MATCH,BPC-ROUTE
@@ -238,7 +248,11 @@ for name in "${proxy_names[@]}"; do
   printf ' %s' "${name}"
 done
 printf '\n'
-if [[ "${ssh_rescue_available}" == "true" ]]; then
-  printf 'Manual rescue: BPC-ROUTE can switch from BPC-AUTO to BPC-RU-SSH-RESCUE.\n'
+if (( ${#manual_names[@]} > 0 )); then
+  printf 'Manual fallbacks:'
+  for name in "${manual_names[@]}"; do
+    printf ' %s' "${name}"
+  done
+  printf '\n'
 fi
 printf 'Strategy: first healthy transport in priority order; no DIRECT fallback.\n'
