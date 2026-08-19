@@ -158,6 +158,7 @@ check_ikev2() {
   [[ -f "${ike_dir}/enabled" ]] || return 0
   if [[ ! -s "${runtime_env}" || ! -s "${ike_dir}/client-info.txt" || \
     ! -s "${swanctl_dropin}" || ! -s /etc/swanctl/x509/bpc-ikev2-cert.pem || \
+    ! -s /etc/swanctl/x509ca/bpc-ikev2-chain.pem || \
     ! -s /etc/swanctl/private/bpc-ikev2-key.pem ]]; then
     fail_health "IKEv2 state is incomplete"
     return 1
