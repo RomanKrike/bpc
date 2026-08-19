@@ -4,7 +4,7 @@ set -euo pipefail
 XRAY_VERSION="${XRAY_VERSION:-v26.3.27}"
 XRAY_PORT="${XRAY_PORT:-443}"
 REALITY_DEST_PORT="${REALITY_DEST_PORT:-443}"
-REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-}"
+REALITY_SERVER_NAME="${REALITY_SERVER_NAME:-www.bing.com}"
 BPC_DIR="${BPC_DIR:-/etc/bpc-connect/ru-node}"
 BPC_PUBLIC_HOST="${BPC_PUBLIC_HOST:-}"
 XRAY_INSTALL_URL="${XRAY_INSTALL_URL:-https://github.com/XTLS/Xray-install/raw/main/install-release.sh}"
@@ -16,7 +16,7 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 
 if [[ -z "${REALITY_SERVER_NAME}" ]]; then
-  echo "REALITY_SERVER_NAME is required (example: REALITY_SERVER_NAME=www.example.com)" >&2
+  echo "REALITY_SERVER_NAME must not be empty" >&2
   exit 2
 fi
 
@@ -31,6 +31,12 @@ fi
 
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates curl iproute2 openssl
+
+if [[ ! -x "${SCRIPT_DIR}/bpc-check-reality-target.sh" ]]; then
+  echo "REALITY target preflight helper is missing: ${SCRIPT_DIR}/bpc-check-reality-target.sh" >&2
+  exit 3
+fi
+"${SCRIPT_DIR}/bpc-check-reality-target.sh" "${REALITY_SERVER_NAME}" "${REALITY_DEST_PORT}"
 
 if ss -H -ltn "sport = :${XRAY_PORT}" | grep -q .; then
   echo "TCP port ${XRAY_PORT} is already in use; choose another XRAY_PORT" >&2
