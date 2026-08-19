@@ -32,6 +32,31 @@ def _vless(transport: Transport) -> dict[str, Any]:
     }
 
 
+def _wireguard(transport: Transport) -> dict[str, Any]:
+    s = transport.settings
+    required = ("server", "port", "private_key", "public_key", "client_ip")
+    missing = [key for key in required if not s.get(key)]
+    if missing:
+        raise BPCConfigError(f"{transport.name}: missing WireGuard settings: {', '.join(missing)}")
+
+    result: dict[str, Any] = {
+        "name": transport.name,
+        "type": "wireguard",
+        "server": s["server"],
+        "port": int(s["port"]),
+        "private-key": s["private_key"],
+        "public-key": s["public_key"],
+        "ip": s["client_ip"],
+        "allowed-ips": ["0.0.0.0/0"],
+        "persistent-keepalive": int(s.get("persistent_keepalive", 25)),
+        "udp": True,
+        "mtu": int(s.get("mtu", 1380)),
+    }
+    if s.get("preshared_key"):
+        result["pre-shared-key"] = s["preshared_key"]
+    return result
+
+
 def _amneziawg(transport: Transport) -> dict[str, Any]:
     s = transport.settings
     required = ("server", "port", "private_key", "public_key", "client_ip")
@@ -46,29 +71,38 @@ def _amneziawg(transport: Transport) -> dict[str, Any]:
 
     awg_opts: dict[str, Any] = {"version": version}
     for key in (
-        "jc", "jmin", "jmax", "s1", "s2", "s3", "s4",
-        "h1", "h2", "h3", "h4", "i1", "i2", "i3", "i4", "i5",
-        "header-protection-key", "content-padding-addition", "rekey-after-time",
-        "rekey-timeout", "reject-after-time", "keepalive-timeout",
-        "max-handshake-attempts", "random-trailers", "disable-cookies",
+        "jc",
+        "jmin",
+        "jmax",
+        "s1",
+        "s2",
+        "s3",
+        "s4",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "i1",
+        "i2",
+        "i3",
+        "i4",
+        "i5",
+        "header-protection-key",
+        "content-padding-addition",
+        "rekey-after-time",
+        "rekey-timeout",
+        "reject-after-time",
+        "keepalive-timeout",
+        "max-handshake-attempts",
+        "random-trailers",
+        "disable-cookies",
     ):
         if key in awg:
             awg_opts[key] = awg[key]
 
-    return {
-        "name": transport.name,
-        "type": "wireguard",
-        "server": s["server"],
-        "port": int(s["port"]),
-        "private-key": s["private_key"],
-        "public-key": s["public_key"],
-        "ip": s["client_ip"],
-        "allowed-ips": ["0.0.0.0/0"],
-        "persistent-keepalive": int(s.get("persistent_keepalive", 25)),
-        "udp": True,
-        "mtu": int(s.get("mtu", 1380)),
-        "amnezia-wg-option": awg_opts,
-    }
+    result = _wireguard(transport)
+    result["amnezia-wg-option"] = awg_opts
+    return result
 
 
 def _tailscale(transport: Transport) -> dict[str, Any]:
@@ -100,6 +134,8 @@ def render_mihomo(config: GatewayConfig) -> dict[str, Any]:
             proxies.append(_vless(transport))
         elif transport.kind == "amneziawg":
             proxies.append(_amneziawg(transport))
+        elif transport.kind == "wireguard":
+            proxies.append(_wireguard(transport))
         elif transport.kind == "tailscale":
             proxies.append(_tailscale(transport))
         else:  # pragma: no cover - protected by parser validation
