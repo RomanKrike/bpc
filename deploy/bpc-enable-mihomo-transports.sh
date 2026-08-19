@@ -482,6 +482,7 @@ proxies:
     transport: TCP
     username: \"${MIERU_USERNAME}\"
     password: \"${MIERU_PASSWORD}\"
+    udp: true
     multiplexing: MULTIPLEXING_LOW
 PROFILE
 )"
@@ -497,7 +498,6 @@ proxies:
     health-check: true
     udp: true
     sni: ${TLS_HOST}
-    alpn: [h2]
     skip-cert-verify: false
     quic: true
     congestion-controller: bbr
