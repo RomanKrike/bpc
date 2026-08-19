@@ -7,11 +7,24 @@ STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
-def test_renderer_prefers_obfuscated_udp_then_wg_then_tcp() -> None:
-    assert 'TRANSPORT_ORDER="${BPC_CLASH_TRANSPORT_ORDER:-awg wg vless}"' in RENDER
-    assert "BPC-RU-AWG-01" in RENDER
-    assert "BPC-RU-WG-01" in RENDER
-    assert "BPC-RU-VLESS-01" in RENDER
+def test_renderer_prefers_primary_udp_then_diverse_tcp_transports() -> None:
+    assert (
+        'TRANSPORT_ORDER="${BPC_CLASH_TRANSPORT_ORDER:-awg wg hy2 tuic vless '
+        'anytls shadowtls trojan mieru trusttunnel}"'
+    ) in RENDER
+    for name in (
+        "BPC-RU-AWG-01",
+        "BPC-RU-WG-01",
+        "BPC-RU-HY2-01",
+        "BPC-RU-TUIC-01",
+        "BPC-RU-VLESS-01",
+        "BPC-RU-ANYTLS-01",
+        "BPC-RU-SHADOWTLS-01",
+        "BPC-RU-TROJAN-01",
+        "BPC-RU-MIERU-01",
+        "BPC-RU-TRUST-01",
+    ):
+        assert name in RENDER
 
 
 def test_renderer_uses_mihomo_health_checked_fallback() -> None:
@@ -28,8 +41,17 @@ def test_renderer_uses_mihomo_health_checked_fallback() -> None:
     assert "      - DIRECT" not in RENDER
 
 
+def test_ssh_rescue_is_manual_and_not_part_of_default_fallback_order() -> None:
+    order = RENDER.split('TRANSPORT_ORDER="', 1)[1].split('"', 1)[0]
+    assert "ssh" not in order
+    assert "BPC-RU-SSH-RESCUE" in RENDER
+    assert "name: BPC-ROUTE" in RENDER
+    assert "type: select" in RENDER
+    assert "MATCH,BPC-ROUTE" in RENDER
+
+
 def test_renderer_is_exposed_and_migrated() -> None:
-    assert "/usr/local/sbin/bpc-render-clash" in INSTALL
+    assert '"bpc-render-clash:bpc-render-clash.sh"' in INSTALL
     assert '"bpc-render-clash:bpc-render-clash.sh"' in UPDATE
     assert '"bpc-render-clash:bpc-render-clash.sh"' in MIGRATE
     assert '"${BPC_ROOT}/current/deploy/bpc-render-clash.sh"' in MIGRATE
