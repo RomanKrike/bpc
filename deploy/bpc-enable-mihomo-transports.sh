@@ -386,7 +386,10 @@ write_profile() {
   local content="$2"
   local dir="${RU_DIR}/${transport}"
   install -d -m 0700 "${dir}"
-  printf '%s\n' "${content}" > "${dir}/clash-verge.yaml"
+  # The profile templates historically used escaped double quotes (\") inside
+  # heredocs. YAML treats those as literal backslashes in an unquoted scalar,
+  # which corrupts credentials; SS2022 then fails Base64 decoding at byte 0.
+  printf '%s\n' "${content}" | sed 's/\\"/"/g' > "${dir}/clash-verge.yaml"
   chmod 0600 "${dir}/clash-verge.yaml"
   touch "${dir}/enabled"
   chmod 0600 "${dir}/enabled"
