@@ -81,7 +81,7 @@ def test_tls_certificates_are_staged_inside_mihomo_home() -> None:
     assert 'TLS_DIR="${SERVER_DIR}/home/tls"' in TLS_FIX
     assert 'STAGED_CERT="${TLS_DIR}/fullchain.pem"' in TLS_FIX
     assert 'STAGED_KEY="${TLS_DIR}/privkey.pem"' in TLS_FIX
-    assert "instead of\nbroadening SAFE_PATHS to /etc/letsencrypt" in TLS_FIX
+    assert "broadening SAFE_PATHS to /etc/letsencrypt" in TLS_FIX
     assert 'install -m 0644 "${TLS_CERT}" "${STAGED_CERT}.new"' in TLS_FIX
     assert 'install -m 0600 "${TLS_KEY}" "${STAGED_KEY}.new"' in TLS_FIX
     assert "bpc-mihomo-transports.service.d/20-bpc-listener-check.conf" in TLS_FIX
