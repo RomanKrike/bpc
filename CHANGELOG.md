@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.2
+
+### Fixed
+- Stage Let's Encrypt certificate and private-key copies inside the Mihomo home directory so TLS listeners comply with Mihomo v1.19.29 `SAFE_PATHS` restrictions.
+- Repair existing Hysteria2, TUIC, AnyTLS, Trojan and TrustTunnel listeners during migration without rotating transport credentials or changing the subscription URL.
+- Refresh the staged TLS material automatically after certificate renewal before restarting the Mihomo transport service.
+- Add a systemd post-start listener check so a running Mihomo process cannot be reported healthy when individual protocol listeners failed to bind.
+
 ## 0.7.1
 
 ### Fixed
