@@ -33,7 +33,7 @@ check_socket() {
   local label="$3"
   local attempt output
 
-  for attempt in $(seq 1 30); do
+  for ((attempt = 0; attempt < 30; attempt++)); do
     if [[ "${proto}" == "tcp" ]]; then
       output="$(ss -H -ltnp "sport = :${port}" 2>/dev/null || true)"
     else
