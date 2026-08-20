@@ -95,6 +95,23 @@ if [[ -f "${ru_dir}/mihomo-server/enabled" ]]; then
   done
 fi
 
+# Mihomo v1.19.29 refuses TLS listener certificate paths outside its home unless
+# they are explicitly added to SAFE_PATHS. Older BPC releases referenced
+# /etc/letsencrypt/live directly, so TLS-based listeners silently failed to bind
+# while the Mihomo process itself remained healthy. Stage the existing
+# certificate/key inside Mihomo home, rewrite only BPC-managed listener paths,
+# install a post-start socket check, and restart without rotating credentials.
+if [[ -f "${ru_dir}/mihomo-server/enabled" ]]; then
+  mihomo_tls_fix="${BPC_ROOT}/current/deploy/bpc-fix-mihomo-tls.sh"
+  if [[ ! -f "${mihomo_tls_fix}" ]]; then
+    echo "Mihomo TLS repair helper is missing: ${mihomo_tls_fix}" >&2
+    exit 1
+  fi
+  chmod 0755 "${mihomo_tls_fix}" \
+    "${BPC_ROOT}/current/deploy/bpc-check-mihomo-listeners.sh"
+  "${mihomo_tls_fix}"
+fi
+
 # Rebuild the aggregate client profile from the transports already enabled on
 # the node. This also reconciles optional manual Clash fallbacks such as OpenVPN
 # and SSH rescue without rotating any credentials.
