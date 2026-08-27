@@ -106,7 +106,13 @@ rollback() {
     rm -rf "${BPC_STATE_DIR}"
     tar -C /etc -xzf "${backup}"
   fi
-  "${new_target}/deploy/bpc-migrate.sh" || true
+
+  # Always run the migration logic from the release we just restored. Running
+  # the failed/new release migration against an old current symlink can call
+  # helpers that do not exist in the rollback target (observed on 0.7.2 -> 0.7.1).
+  if [[ -x "${BPC_ROOT}/current/deploy/bpc-migrate.sh" ]]; then
+    "${BPC_ROOT}/current/deploy/bpc-migrate.sh" || true
+  fi
   if [[ -f "${BPC_STATE_DIR}/ru-node/config.json" && -x /usr/local/bin/xray ]]; then
     /usr/local/bin/xray run -test -config "${BPC_STATE_DIR}/ru-node/config.json" >/dev/null || true
     systemctl restart xray || true
@@ -116,7 +122,11 @@ rollback() {
 ln -sfn "${new_target}" "${BPC_ROOT}/current"
 reconcile_command_links "${BPC_ROOT}/current"
 
-"${BPC_ROOT}/current/deploy/bpc-migrate.sh"
+if ! "${BPC_ROOT}/current/deploy/bpc-migrate.sh"; then
+  echo "Update migration failed." >&2
+  rollback
+  exit 5
+fi
 
 if ! "${BPC_ROOT}/current/deploy/bpc-healthcheck.sh"; then
   rollback

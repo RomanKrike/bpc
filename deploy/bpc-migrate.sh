@@ -60,6 +60,30 @@ for secret_file in "${client_env}" "${gateway_transport}"; do
   fi
 done
 
+# Enabled transport firewall units are runtime prerequisites. A VPS reboot or
+# an interrupted maintenance operation can leave a oneshot RemainAfterExit unit
+# inactive even though the transport container/interface is still present.
+# Re-assert those units idempotently before the release health check.
+repair_firewall_service() {
+  local marker="$1"
+  local service="$2"
+
+  [[ -f "${marker}" ]] || return 0
+  if ! systemctl cat "${service}" >/dev/null 2>&1; then
+    echo "WARNING: enabled transport is missing firewall unit: ${service}" >&2
+    return 0
+  fi
+  systemctl enable "${service}" >/dev/null 2>&1 || true
+  if ! systemctl --quiet is-active "${service}"; then
+    if ! systemctl restart "${service}"; then
+      echo "WARNING: failed to reactivate ${service}; health check will report it." >&2
+    fi
+  fi
+}
+
+repair_firewall_service "${ru_dir}/awg/enabled" "bpc-awg-firewall.service"
+repair_firewall_service "${ru_dir}/wg/enabled" "bpc-wg-firewall.service"
+
 # `client.env` is the source consumed by the aggregate Clash renderer. Keep the
 # older generated gateway fragment aligned with its REALITY server name as well.
 # This also repairs nodes where the target was changed manually while diagnosing
