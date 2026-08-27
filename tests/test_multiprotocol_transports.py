@@ -18,8 +18,8 @@ TLS_FIX = pathlib.Path("deploy/bpc-fix-mihomo-tls.sh").read_text(encoding="utf-8
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
-def test_release_version_is_072() -> None:
-    assert 'version = "0.7.2"' in PYPROJECT
+def test_release_version_is_073() -> None:
+    assert 'version = "0.7.3"' in PYPROJECT
 
 
 def test_mihomo_transport_pack_is_pinned_and_digest_verified() -> None:
@@ -105,6 +105,15 @@ def test_listener_checker_covers_every_expected_socket() -> None:
     for check in expected:
         assert check in LISTENER_CHECK
     assert "grep -Fq 'bpc-mihomo'" in LISTENER_CHECK
+
+
+def test_update_recovery_is_release_safe_and_repairs_firewalls() -> None:
+    assert 'repair_firewall_service "${ru_dir}/awg/enabled" "bpc-awg-firewall.service"' in MIGRATE
+    assert 'repair_firewall_service "${ru_dir}/wg/enabled" "bpc-wg-firewall.service"' in MIGRATE
+    assert '"${BPC_ROOT}/current/deploy/bpc-migrate.sh" || true' in UPDATE
+    assert '"${new_target}/deploy/bpc-migrate.sh" || true' not in UPDATE
+    assert 'if ! "${BPC_ROOT}/current/deploy/bpc-migrate.sh"; then' in UPDATE
+    assert "Update migration failed." in UPDATE
 
 
 def test_transport_pack_is_secret_safe_and_health_checked() -> None:
