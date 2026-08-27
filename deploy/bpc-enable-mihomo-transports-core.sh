@@ -301,7 +301,10 @@ listeners:
       bpc: "${HY2_PASSWORD}"
     up: 1000
     down: 1000
-    ignore-client-bandwidth: true
+    # Mihomo currently has a Hysteria2 interoperability bug where
+    # ignore-client-bandwidth=true can reject otherwise valid clients during
+    # authentication. Keep bandwidth negotiation enabled until upstream fixes it.
+    ignore-client-bandwidth: false
     obfs: salamander
     obfs-password: "${HY2_OBFS_PASSWORD}"
     alpn: [h3]
