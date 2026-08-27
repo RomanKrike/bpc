@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.3
+
+### Fixed
+- Re-activate enabled AWG and WireGuard firewall/NAT oneshot services during migration when they are unexpectedly inactive, preventing false update failures after reboot or interrupted maintenance.
+- Run rollback migration logic from the restored release instead of the failed new release, avoiding missing-helper errors when rolling back across versions.
+- Treat migration failure as an update failure and enter the normal rollback path instead of leaving the new release selected with partially migrated state.
+
 ## 0.7.2
 
 ### Fixed
