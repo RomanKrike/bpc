@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.4
+
+### Fixed
+- Disable Mihomo Hysteria2 `ignore-client-bandwidth` mode because current Mihomo builds can reject valid HY2 clients during authentication when it is enabled (MetaCubeX/mihomo#2792).
+- Repair existing BPC Hysteria2 listeners during migration by switching only `ignore-client-bandwidth: true` to `false` without rotating credentials or changing the subscription profile.
+
 ## 0.7.3
 
 ### Fixed

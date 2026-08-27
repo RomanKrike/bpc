@@ -119,6 +119,19 @@ if [[ -f "${ru_dir}/mihomo-server/enabled" ]]; then
   done
 fi
 
+# Mihomo Hysteria2 currently rejects valid clients when
+# ignore-client-bandwidth=true (MetaCubeX/mihomo#2792). Older BPC releases used
+# that setting, producing a healthy QUIC/TLS exchange followed by authentication
+# failure/timeout. Repair only the BPC-managed HY2 listener; credentials and the
+# client profile do not change.
+if [[ -f "${ru_dir}/mihomo-server/enabled" && -s "${ru_dir}/mihomo-server/config.yaml" ]]; then
+  if grep -Fq 'ignore-client-bandwidth: true' "${ru_dir}/mihomo-server/config.yaml"; then
+    sed -i 's/ignore-client-bandwidth: true/ignore-client-bandwidth: false/' \
+      "${ru_dir}/mihomo-server/config.yaml"
+    chmod 0600 "${ru_dir}/mihomo-server/config.yaml"
+  fi
+fi
+
 # Mihomo v1.19.29 refuses TLS listener certificate paths outside its home unless
 # they are explicitly added to SAFE_PATHS. Older BPC releases referenced
 # /etc/letsencrypt/live directly, so TLS-based listeners silently failed to bind
