@@ -18,8 +18,8 @@ TLS_FIX = pathlib.Path("deploy/bpc-fix-mihomo-tls.sh").read_text(encoding="utf-8
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
-def test_release_version_is_073() -> None:
-    assert 'version = "0.7.3"' in PYPROJECT
+def test_release_version_is_074() -> None:
+    assert 'version = "0.7.4"' in PYPROJECT
 
 
 def test_mihomo_transport_pack_is_pinned_and_digest_verified() -> None:
@@ -70,6 +70,13 @@ def test_client_profile_credentials_are_normalized_and_repaired() -> None:
     assert "for transport in hy2 tuic anytls shadowtls trojan mieru trusttunnel" in MIGRATE
     assert "grep -Fq '\\\"'" in MIGRATE
     assert "sed -i 's/\\\\\"/\"/g'" in MIGRATE
+
+
+def test_hysteria2_avoids_broken_ignore_client_bandwidth_mode() -> None:
+    assert "ignore-client-bandwidth: false" in ENABLE_CORE
+    assert "ignore-client-bandwidth: true" not in ENABLE_CORE
+    assert "MetaCubeX/mihomo#2792" in MIGRATE
+    assert "sed -i 's/ignore-client-bandwidth: true/ignore-client-bandwidth: false/'" in MIGRATE
 
 
 def test_transport_enable_wrapper_applies_tls_repair() -> None:
