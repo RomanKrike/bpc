@@ -27,6 +27,27 @@ jobs:
       - run: bpc-connect validate config/gateway.example.yaml
       - run: bpc-connect render config/gateway.example.yaml -o build/mihomo/config.yaml
 
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
+      - name: Check Go formatting
+        run: test -z "$(gofmt -l cmd internal)"
+      - run: go test ./...
+      - run: go vet ./...
+      - name: Cross-build WGShim
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/bpc-wgshim
+          rm -f bpc-wgshim
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/bpc-wgshim
+          rm -f bpc-wgshim
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/bpc-wgshim
+          rm -f bpc-wgshim.exe
+
   shellcheck:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -51,12 +72,16 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: [python, shellcheck]
+    needs: [python, go, shellcheck]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
       - run: pip install build
       - run: python -m build
       - name: Build deployment bundle
