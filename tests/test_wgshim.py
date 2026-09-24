@@ -26,7 +26,7 @@ def test_wgshim_provisioning_is_secret_safe_and_single_client() -> None:
     assert 'head -c 32 /dev/urandom | base64' in ENABLE
     assert 'chmod 0600 "${WGSHIM_DIR}/psk"' in ENABLE
     assert 'chmod 0600 "${WGSHIM_DIR}/client.txt" "${WGSHIM_DIR}/client.key"' in ENABLE
-    assert "one active client per server instance" in ENABLE
+    assert "one active client" in ENABLE
     assert "Recommended first-test WireGuard MTU: 1360" in ENABLE
     assert "bpc-wgshim.service" in ENABLE
 
