@@ -220,6 +220,34 @@ check_ssh_rescue() {
   fi
 }
 
+check_wgshim() {
+  local shim_dir="${BPC_STATE_DIR}/ru-node/wgshim"
+  local runtime_env="${shim_dir}/runtime.env"
+  local port
+
+  [[ -f "${shim_dir}/enabled" ]] || return 0
+  if [[ ! -s "${runtime_env}" || ! -s "${shim_dir}/psk" || ! -s "${shim_dir}/client.key" ]]; then
+    fail_health "WGShim state is incomplete"
+    return 1
+  fi
+  if [[ ! -x /usr/local/bin/bpc-wgshim ]]; then
+    fail_health "bpc-wgshim binary is missing"
+    return 1
+  fi
+
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  port="${WGSHIM_PORT:-24443}"
+  if ! systemctl --quiet is-active bpc-wgshim.service; then
+    fail_health "bpc-wgshim.service is not active"
+    return 1
+  fi
+  if ! ss -H -lun "sport = :${port}" | grep -q .; then
+    fail_health "WGShim UDP listener is unavailable on port ${port}"
+    return 1
+  fi
+}
+
 check_subscription() {
   local sub_dir="${BPC_STATE_DIR}/ru-node/subscription"
   local runtime_env="${sub_dir}/runtime.env"
@@ -275,6 +303,7 @@ case "${ROLE}" in
     check_openvpn
     check_ikev2
     check_ssh_rescue
+    check_wgshim
     check_subscription
     ;;
   *)

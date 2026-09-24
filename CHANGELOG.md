@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.0
+
+### Added
+- Experimental `BPC WGShim` low-latency transport for carrying an existing WireGuard UDP endpoint through the RU node without Clash/Mihomo.
+- `bpc-enable-wgshim --target IPv4:PORT` to provision a single-client WGShim relay, generate a root-only PSK and Windows client instructions, and run the server as a hardened systemd service.
+- Cross-platform WGShim release binaries for Linux amd64/arm64 and Windows amd64.
+- Authenticated outer UDP framing with independent client-to-server/server-to-client keys, fresh per-packet nonces and configurable random padding.
+
+### Changed
+- Release bundles now include the Go WGShim source and prebuilt platform binaries.
+- CI cross-builds and tests WGShim in addition to the existing Python and shell test suites.
+
+### Security
+- WGShim does not modify WireGuard cryptography; complete WireGuard datagrams remain protected by WireGuard and are additionally wrapped in an authenticated encrypted outer datagram.
+- WGShim has no fixed cleartext protocol magic on the wire and silently drops unauthenticated datagrams.
+- WGShim is an obfuscation/relay transport, not a claim of undetectability against statistical or active traffic analysis.
+
 ## 0.7.5
 
 ### Added
