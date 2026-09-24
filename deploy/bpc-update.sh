@@ -30,6 +30,7 @@ reconcile_command_links() {
     "bpc-subscription-url:bpc-subscription-url.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh" \
+    "bpc-enable-wgshim:bpc-enable-wgshim.sh" \
     "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
     "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
     "bpc-enable-ikev2:bpc-enable-ikev2.sh" \
