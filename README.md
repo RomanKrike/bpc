@@ -13,6 +13,8 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Optional key-only SSH rescue transport for manual TCP fallback.
 - Automatic Clash Verge Rev failover profile across enabled primary UDP/TCP proxy transports.
 - Manual `BPC-ROUTE` selector for transports that should not participate in automatic failover.
+- `BPC-MANUAL` selector for forcing any enabled primary transport during protocol testing.
+- Server-managed selective underlay routing for exact VPN/WireGuard endpoint IPv4 addresses.
 - Optional tokenized HTTPS subscription endpoint for the aggregate Clash profile.
 - REALITY target compatibility preflight before fresh Xray provisioning.
 - Config generator with safety validation.
@@ -45,16 +47,16 @@ TCP/80        -> Let's Encrypt HTTP-01 validation/renewal
 
 TCP and UDP are separate namespaces, so Hysteria2 can share numeric port 8443 with the HTTPS subscription and TUIC can share numeric port 10443 with AnyTLS.
 
-The generated aggregate Clash profile uses Mihomo's `fallback` group. The default automatic order is:
+The generated aggregate Clash profile uses Mihomo's `fallback` group. The default automatic order prefers censorship-resistant TCP transports before UDP/WireGuard:
 
 ```text
-AmneziaWG -> WireGuard -> Hysteria2 -> TUIC -> VLESS/REALITY
-          -> AnyTLS -> ShadowTLS -> Trojan -> Mieru -> TrustTunnel
+VLESS/REALITY -> AnyTLS -> ShadowTLS -> Trojan -> Hysteria2 -> TUIC
+              -> Mieru -> TrustTunnel -> AmneziaWG -> WireGuard
 ```
 
 Only transports that are actually enabled are included. Mihomo continuously health-checks them and selects the first healthy option. There is no `DIRECT` fallback, so if all automatic BPC transports are unavailable the profile fails closed.
 
-OpenVPN and SSH rescue are intentionally not inserted into `BPC-AUTO`. When either is enabled, the aggregate profile exposes `BPC-ROUTE`, which defaults to `BPC-AUTO` and allows an explicit manual switch to `BPC-RU-OPENVPN-01` and/or `BPC-RU-SSH-RESCUE`. IKEv2 is an OS-level transport and never appears in Clash.
+OpenVPN and SSH rescue are intentionally not inserted into `BPC-AUTO`. The aggregate profile always exposes `BPC-MANUAL` for forcing one primary transport and `BPC-ROUTE`, which defaults to `BPC-AUTO` and can switch to `BPC-MANUAL` plus any enabled OpenVPN/SSH rescue fallback. IKEv2 is an OS-level transport and never appears in Clash.
 
 ## One-command RU node install
 
@@ -102,6 +104,7 @@ sudo bpc-status
 sudo bpc-update
 sudo bpc-ensure-dns
 sudo bpc-render-clash
+sudo bpc-route-target list
 ```
 
 Enable additional transports later on an existing node:
@@ -128,6 +131,39 @@ BPC_CLASH_TRANSPORT_ORDER="hy2 tuic awg wg vless anytls" sudo -E bpc-render-clas
 ```
 
 Health-check behavior can be tuned through `BPC_CLASH_HEALTH_URL`, `BPC_CLASH_HEALTH_INTERVAL`, `BPC_CLASH_HEALTH_TIMEOUT` and `BPC_CLASH_MAX_FAILED_TIMES`.
+
+## Selective underlay routing
+
+BPC can route only the external endpoint of another VPN through the Russian BPC exit while leaving normal Windows traffic direct. This is intended for cases such as a native WireGuard or corporate VPN that is filtered on the direct Georgia -> Russia path.
+
+For example, to carry only a WireGuard endpoint at `176.32.35.91` through BPC:
+
+```bash
+sudo bpc-route-target add 176.32.35.91
+```
+
+The command stores the endpoint under `/etc/bpc-connect/ru-node/route-targets.txt` and immediately rebuilds the aggregate Clash profile. If the HTTPS subscription is enabled, the existing subscription URL serves the new profile automatically; refresh that profile in Clash Verge Rev and enable TUN mode.
+
+With one or more route targets, BPC renders policy rules equivalent to:
+
+```yaml
+rules:
+  - IP-CIDR,176.32.35.91/32,BPC-ROUTE,no-resolve
+  - MATCH,DIRECT
+```
+
+This means the selected VPN endpoint remains fail-closed through BPC, while unrelated traffic exits directly instead of being sent through the Russian VPS. BPC does not require a local Clash `Script.js`, a hand-edited `route-address`, or persistent Windows routes.
+
+Manage targets with:
+
+```bash
+sudo bpc-route-target add 176.32.35.91
+sudo bpc-route-target list
+sudo bpc-route-target remove 176.32.35.91
+sudo bpc-route-target clear
+```
+
+`clear` restores the normal full-tunnel fail-closed profile where `MATCH` uses `BPC-ROUTE`.
 
 ## Mihomo multi-protocol transport pack
 
