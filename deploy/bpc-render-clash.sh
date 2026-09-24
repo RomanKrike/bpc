@@ -162,6 +162,34 @@ if (( ${#enabled_transports[@]} == 0 )); then
   exit 3
 fi
 
+is_valid_ipv4() {
+  local ip="$1"
+  local a b c d extra octet
+
+  IFS='.' read -r a b c d extra <<< "${ip}"
+  [[ -z "${extra:-}" ]] || return 1
+  for octet in "${a:-}" "${b:-}" "${c:-}" "${d:-}"; do
+    [[ "${octet}" =~ ^[0-9]{1,3}$ ]] || return 1
+    (( 10#${octet} <= 255 )) || return 1
+  done
+}
+
+declare -a route_targets=()
+if [[ -s "${ROUTE_TARGETS_FILE}" ]]; then
+  while IFS= read -r target; do
+    [[ -n "${target}" ]] || continue
+    if ! is_valid_ipv4 "${target}"; then
+      echo "Invalid IPv4 address in ${ROUTE_TARGETS_FILE}: ${target}" >&2
+      exit 2
+    fi
+    if [[ "${target}" == "${BPC_RU_HOST:-}" ]]; then
+      echo "BPC route target would create a loop through the RU endpoint: ${target}" >&2
+      exit 2
+    fi
+    route_targets+=("${target}")
+  done < "${ROUTE_TARGETS_FILE}"
+fi
+
 # RU_DIR already contains the live RU-node state and has deliberately managed
 # ownership/mode so the Xray service account can traverse it. Never chmod or
 # recreate this directory here; the renderer only owns the generated profile.
@@ -211,29 +239,43 @@ GROUP
     timeout: ${HEALTH_TIMEOUT}
     max-failed-times: ${MAX_FAILED_TIMES}
     expected-status: 204
-GROUP
 
-  if (( ${#manual_names[@]} > 0 )); then
-    cat <<GROUP
+  - name: BPC-MANUAL
+    type: select
+    proxies:
+GROUP
+  for name in "${proxy_names[@]}"; do
+    printf '      - %s\n' "${name}"
+  done
+
+  cat <<GROUP
 
   - name: BPC-ROUTE
     type: select
     proxies:
       - BPC-AUTO
+      - BPC-MANUAL
 GROUP
-    for name in "${manual_names[@]}"; do
-      printf '      - %s\n' "${name}"
-    done
+  for name in "${manual_names[@]}"; do
+    printf '      - %s\n' "${name}"
+  done
+
+  if (( ${#route_targets[@]} > 0 )); then
     cat <<GROUP
 
 rules:
-  - MATCH,BPC-ROUTE
+GROUP
+    for target in "${route_targets[@]}"; do
+      printf '  - IP-CIDR,%s/32,BPC-ROUTE,no-resolve\n' "${target}"
+    done
+    cat <<GROUP
+  - MATCH,DIRECT
 GROUP
   else
     cat <<GROUP
 
 rules:
-  - MATCH,BPC-AUTO
+  - MATCH,BPC-ROUTE
 GROUP
   fi
 } > "${tmp}"
@@ -255,4 +297,14 @@ if (( ${#manual_names[@]} > 0 )); then
   done
   printf '\n'
 fi
-printf 'Strategy: first healthy transport in priority order; no DIRECT fallback.\n'
+if (( ${#route_targets[@]} > 0 )); then
+  printf 'Routing mode: selective underlay; BPC targets:'
+  for target in "${route_targets[@]}"; do
+    printf ' %s' "${target}"
+  done
+  printf '\n'
+  printf 'Non-target traffic: DIRECT. Target traffic remains fail-closed through BPC-ROUTE.\n'
+else
+  printf 'Routing mode: full-tunnel fail-closed through BPC-ROUTE.\n'
+fi
+printf 'Strategy: first healthy automatic transport in priority order; BPC-MANUAL is available for protocol testing.\n'
