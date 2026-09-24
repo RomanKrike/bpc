@@ -162,6 +162,7 @@ ca ${OVPN_DIR}/ca.crt
 cert ${OVPN_DIR}/server.crt
 key ${OVPN_DIR}/server.key
 tls-crypt ${OVPN_DIR}/tls-crypt.key
+dh none
 tls-version-min 1.2
 data-ciphers AES-256-GCM
 data-ciphers-fallback AES-256-GCM

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.7.5
+
+### Added
+- `bpc-route-target add|remove|list|clear` for server-managed selective underlay routing of exact IPv4 VPN/WireGuard endpoints.
+- `BPC-MANUAL` Clash selector for forcing any enabled primary transport during protocol testing without changing the subscription.
+- Selective routing status in `bpc-status`.
+
+### Changed
+- When route targets are configured, the aggregate Clash profile sends only those endpoint IPs through `BPC-ROUTE` and sends non-target traffic `DIRECT`; target traffic remains fail-closed if BPC is unavailable.
+- Default `BPC-AUTO` order now prefers VLESS/REALITY, AnyTLS, ShadowTLS and Trojan before UDP transports, with AmneziaWG and native WireGuard last.
+- Clearing all route targets restores the previous full-tunnel fail-closed `MATCH,BPC-ROUTE` behavior.
+
+### Fixed
+- Add `dh none` to BPC-managed OpenVPN server configuration so OpenVPN 2.6 can start without a finite-field DH file.
+- Repair existing 0.7.4 OpenVPN configs during migration before the release health check.
+
 ## 0.7.4
 
 ### Fixed

@@ -17,6 +17,14 @@ def test_openvpn_supports_udp_and_tcp_without_tcp_exit_notify() -> None:
     assert 'if [[ "${OVPN_PROTO}" == "udp" ]]; then' in OPENVPN
     assert "explicit-exit-notify 1" in OPENVPN
     assert "reneg-sec 0" in OPENVPN
+    assert "dh none" in OPENVPN
+
+
+def test_migration_repairs_openvpn_26_missing_dh_policy() -> None:
+    assert 'openvpn/enabled' in MIGRATE
+    assert "You must define DH" in MIGRATE
+    assert "dh none" in MIGRATE
+    assert "systemctl restart openvpn-server@bpc.service" in MIGRATE
 
 
 def test_openvpn_generates_native_and_mihomo_clients() -> None:

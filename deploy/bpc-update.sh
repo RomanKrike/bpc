@@ -25,6 +25,7 @@ reconcile_command_links() {
     "bpc-status:bpc-status.sh" \
     "bpc-ensure-dns:bpc-ensure-dns.sh" \
     "bpc-render-clash:bpc-render-clash.sh" \
+    "bpc-route-target:bpc-route-target.sh" \
     "bpc-enable-subscription:bpc-enable-subscription.sh" \
     "bpc-subscription-url:bpc-subscription-url.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
