@@ -181,6 +181,19 @@ if [[ "${role}" == "ru-node" ]]; then
     echo 'IKEv2 fallback: disabled'
   fi
 
+  wgshim_dir="${BPC_STATE_DIR}/ru-node/wgshim"
+  if [[ -f "${wgshim_dir}/enabled" && -f "${wgshim_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${wgshim_dir}/runtime.env"
+    wgshim_state="$(systemctl is-active bpc-wgshim.service 2>/dev/null || true)"
+    printf 'WGShim low-latency relay: %s (%s:%s/udp -> %s:%s; padding %s..%s)\n' \
+      "${wgshim_state:-unknown}" "${host:-unknown}" "${WGSHIM_PORT:-24443}" \
+      "${WGSHIM_TARGET_HOST:-unknown}" "${WGSHIM_TARGET_PORT:-unknown}" \
+      "${WGSHIM_PADDING_MIN:-0}" "${WGSHIM_PADDING_MAX:-31}"
+  else
+    echo 'WGShim low-latency relay: disabled'
+  fi
+
   ssh_dir="${BPC_STATE_DIR}/ru-node/ssh-rescue"
   if [[ -f "${ssh_dir}/enabled" && -f "${ssh_dir}/runtime.env" ]]; then
     # shellcheck disable=SC1090,SC1091
