@@ -17,6 +17,7 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
     "bpc-status:bpc-status.sh" \
     "bpc-ensure-dns:bpc-ensure-dns.sh" \
     "bpc-render-clash:bpc-render-clash.sh" \
+    "bpc-route-target:bpc-route-target.sh" \
     "bpc-enable-subscription:bpc-enable-subscription.sh" \
     "bpc-subscription-url:bpc-subscription-url.sh" \
     "bpc-enable-awg:bpc-enable-awg.sh" \
@@ -147,6 +148,24 @@ if [[ -f "${ru_dir}/mihomo-server/enabled" ]]; then
   chmod 0755 "${mihomo_tls_fix}" \
     "${BPC_ROOT}/current/deploy/bpc-check-mihomo-listeners.sh"
   "${mihomo_tls_fix}"
+fi
+
+# BPC 0.7.4 generated an OpenVPN TLS server config without an explicit DH
+# policy. OpenVPN 2.6 refuses to start such a server with "You must define DH
+# file (--dh)". Modern ECDH negotiation does not require a finite-field DH file,
+# so repair BPC-managed configs with "dh none" before the release health check.
+if [[ -f "${ru_dir}/openvpn/enabled" ]]; then
+  openvpn_changed="false"
+  for openvpn_config in "${ru_dir}/openvpn/server.conf" /etc/openvpn/server/bpc.conf; do
+    if [[ -s "${openvpn_config}" ]] && ! grep -Eq '^dh[[:space:]]+' "${openvpn_config}"; then
+      sed -i '/^tls-version-min[[:space:]]/i dh none' "${openvpn_config}"
+      chmod 0600 "${openvpn_config}"
+      openvpn_changed="true"
+    fi
+  done
+  if [[ "${openvpn_changed}" == "true" ]] && systemctl cat openvpn-server@bpc.service >/dev/null 2>&1; then
+    systemctl restart openvpn-server@bpc.service
+  fi
 fi
 
 # Rebuild the aggregate client profile from the transports already enabled on
