@@ -169,6 +169,29 @@ if [[ -f "${ru_dir}/openvpn/enabled" ]]; then
   fi
 fi
 
+# Refresh the WGShim executable from the newly selected release without
+# rotating the existing PSK or changing its target. This keeps an enabled
+# low-latency relay aligned with the BPC release across normal updates.
+if [[ -f "${ru_dir}/wgshim/enabled" ]]; then
+  case "$(uname -m)" in
+    x86_64|amd64) wgshim_arch="amd64" ;;
+    aarch64|arm64) wgshim_arch="arm64" ;;
+    *)
+      echo "Unsupported architecture for enabled WGShim: $(uname -m)" >&2
+      exit 1
+      ;;
+  esac
+  wgshim_binary="${BPC_ROOT}/current/bin/bpc-wgshim-linux-${wgshim_arch}"
+  if [[ ! -x "${wgshim_binary}" ]]; then
+    echo "Enabled WGShim release binary is missing: ${wgshim_binary}" >&2
+    exit 1
+  fi
+  install -m 0755 "${wgshim_binary}" /usr/local/bin/bpc-wgshim
+  if systemctl cat bpc-wgshim.service >/dev/null 2>&1; then
+    systemctl restart bpc-wgshim.service
+  fi
+fi
+
 # Rebuild the aggregate client profile from the transports already enabled on
 # the node. This also reconciles optional manual Clash fallbacks such as OpenVPN
 # and SSH rescue without rotating any credentials.
