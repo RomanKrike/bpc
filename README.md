@@ -15,6 +15,7 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - Manual `BPC-ROUTE` selector for transports that should not participate in automatic failover.
 - `BPC-MANUAL` selector for forcing any enabled primary transport during protocol testing.
 - Server-managed selective underlay routing for exact VPN/WireGuard endpoint IPv4 addresses.
+- Experimental WGShim low-latency authenticated UDP wrapper for an existing WireGuard endpoint, without Clash/Mihomo in the data path.
 - Optional tokenized HTTPS subscription endpoint for the aggregate Clash profile.
 - REALITY target compatibility preflight before fresh Xray provisioning.
 - Config generator with safety validation.
@@ -31,6 +32,7 @@ This repository intentionally separates the BPC underlay from the corporate VPN.
 TCP/443       -> Xray VLESS + REALITY
 UDP/443       -> AmneziaWG 2.0
 UDP/51820     -> native WireGuard
+UDP/24443     -> optional WGShim low-latency WireGuard wrapper
 UDP/8443      -> Hysteria2
 TCP/8443      -> optional HTTPS Clash subscription
 UDP/10443     -> TUIC v5
@@ -112,6 +114,7 @@ Enable additional transports later on an existing node:
 ```bash
 sudo bpc-enable-awg
 sudo bpc-enable-wg
+sudo bpc-enable-wgshim --target 176.32.35.91:24081
 sudo bpc-enable-mihomo-transports --hostname sub.example.com
 sudo bpc-enable-openvpn
 sudo bpc-enable-ikev2 --hostname sub.example.com
@@ -164,6 +167,67 @@ sudo bpc-route-target clear
 ```
 
 `clear` restores the normal full-tunnel fail-closed profile where `MATCH` uses `BPC-ROUTE`.
+
+## WGShim low-latency WireGuard wrapper
+
+WGShim is an experimental, latency-oriented BPC transport for carrying an
+existing WireGuard UDP endpoint through the RU node without putting the packet
+flow through Clash/Mihomo, TCP, DNS policy or the proxy selector stack.
+
+The intended path is:
+
+```text
+WireGuard for Windows
+  Endpoint = 127.0.0.1:24081
+        |
+        v
+bpc-wgshim-windows-amd64.exe
+        |
+        | authenticated/encrypted outer UDP
+        v
+BPC RU node:24443/udp
+        |
+        | normal UDP
+        v
+existing WireGuard endpoint
+```
+
+Provision the RU node with the existing WireGuard endpoint as the fixed target:
+
+```bash
+sudo bpc-enable-wgshim --target 176.32.35.91:24081
+sudo bpc-status
+```
+
+The command creates a root-only PSK and Windows instructions under
+`/etc/bpc-connect/ru-node/wgshim/`, installs `bpc-wgshim.service`, and listens
+on UDP/24443 by default. Permit that UDP port in the VPS provider firewall.
+
+On Windows, securely copy `client.key` from the server and download the
+matching `bpc-wgshim-windows-amd64.exe` from the BPC GitHub Release. Start it
+using the exact command recorded in `client.txt`, then point the normal
+WireGuard peer at:
+
+```ini
+Endpoint = 127.0.0.1:24081
+MTU = 1360
+```
+
+The MTU value is a conservative first-test value and can be tuned after the
+path is verified. WGShim does not replace or alter WireGuard cryptography.
+Instead, each complete WireGuard datagram is placed inside an additional
+authenticated encrypted UDP envelope. The outer framing uses independent
+directional keys, a fresh random nonce, and configurable random padding. There
+is no intentional per-data-packet timing delay because this mode is designed
+for RDP/Moonlight and other latency-sensitive traffic.
+
+WGShim does not claim to be undetectable against advanced statistical or active
+traffic analysis. Its purpose is to remove the ordinary WireGuard wire format
+from the outer path with minimal processing and routing overhead.
+
+BPC 0.8.0 WGShim supports one active client per server instance. It is separate
+from `BPC-AUTO` and the Clash subscription; Clash Verge is not required for
+WGShim operation.
 
 ## Mihomo multi-protocol transport pack
 
