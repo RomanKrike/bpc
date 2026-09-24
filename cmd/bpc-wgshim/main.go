@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/RomanKrike/bpc/internal/wgshim"
@@ -57,7 +56,7 @@ func runClient(args []string) {
 	logger := log.New(os.Stdout, "bpc-wgshim ", log.LstdFlags|log.LUTC)
 	logger.Printf("starting client listen=%s server=%s padding=%d..%d", *listen, *server, *paddingMin, *paddingMax)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if err := wgshim.RunClient(ctx, wgshim.ClientConfig{
 		LocalListen:   *listen,
@@ -91,7 +90,7 @@ func runServer(args []string) {
 	logger := log.New(os.Stdout, "bpc-wgshim ", log.LstdFlags|log.LUTC)
 	logger.Printf("starting server listen=%s target=%s padding=%d..%d", *listen, *target, *paddingMin, *paddingMax)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	if err := wgshim.RunServer(ctx, wgshim.ServerConfig{
 		Listen:        *listen,
