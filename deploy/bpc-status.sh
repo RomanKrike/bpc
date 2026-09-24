@@ -199,6 +199,14 @@ if [[ "${role}" == "ru-node" ]]; then
     echo 'Clash auto profile: missing (run bpc-render-clash)'
   fi
 
+  route_targets_file="${BPC_STATE_DIR}/ru-node/route-targets.txt"
+  if [[ -s "${route_targets_file}" ]]; then
+    route_targets="$(paste -sd, "${route_targets_file}")"
+    printf 'Client routing: selective underlay (%s)\n' "${route_targets}"
+  else
+    echo 'Client routing: full-tunnel fail-closed'
+  fi
+
   sub_dir="${BPC_STATE_DIR}/ru-node/subscription"
   if [[ -f "${sub_dir}/enabled" && -f "${sub_dir}/runtime.env" ]]; then
     # shellcheck disable=SC1090,SC1091
