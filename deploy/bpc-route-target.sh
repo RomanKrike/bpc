@@ -46,8 +46,10 @@ render_profile() {
 write_targets() {
   local tmp
   tmp="$(mktemp "${RU_DIR}/.route-targets.XXXXXX")"
-  trap 'rm -f "${tmp}"' RETURN
-  cat > "${tmp}"
+  if ! cat > "${tmp}"; then
+    rm -f "${tmp}"
+    return 1
+  fi
   if [[ -s "${tmp}" ]]; then
     sort -u -o "${tmp}" "${tmp}"
     chmod 0600 "${tmp}"
@@ -55,7 +57,6 @@ write_targets() {
   else
     rm -f "${tmp}" "${TARGETS_FILE}"
   fi
-  trap - RETURN
 }
 
 if [[ ${EUID} -ne 0 ]]; then
