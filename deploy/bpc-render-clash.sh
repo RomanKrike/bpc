@@ -8,7 +8,8 @@ HEALTH_URL="${BPC_CLASH_HEALTH_URL:-https://www.gstatic.com/generate_204}"
 HEALTH_INTERVAL="${BPC_CLASH_HEALTH_INTERVAL:-15}"
 HEALTH_TIMEOUT="${BPC_CLASH_HEALTH_TIMEOUT:-5000}"
 MAX_FAILED_TIMES="${BPC_CLASH_MAX_FAILED_TIMES:-2}"
-TRANSPORT_ORDER="${BPC_CLASH_TRANSPORT_ORDER:-awg wg hy2 tuic vless anytls shadowtls trojan mieru trusttunnel}"
+ROUTE_TARGETS_FILE="${BPC_ROUTE_TARGETS_FILE:-${RU_DIR}/route-targets.txt}"
+TRANSPORT_ORDER="${BPC_CLASH_TRANSPORT_ORDER:-vless anytls shadowtls trojan hy2 tuic mieru trusttunnel awg wg}"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run bpc-render-clash as root" >&2
