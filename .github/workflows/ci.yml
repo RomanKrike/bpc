@@ -47,6 +47,8 @@ jobs:
           rm -f bpc-wgshim
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/bpc-wgshim
           rm -f bpc-wgshim.exe
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/bpc-agent
+          rm -f bpc-agent.exe
 
   shellcheck:
     runs-on: ubuntu-latest
