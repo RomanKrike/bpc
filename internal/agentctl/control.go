@@ -48,15 +48,16 @@ type RuntimeConfig struct {
 }
 
 type State struct {
-	Version      int           `json:"version"`
-	DeviceID     string        `json:"device_id"`
-	DeviceName   string        `json:"device_name"`
-	DeviceToken  string        `json:"device_token"`
-	PublicKey    string        `json:"public_key"`
-	PrivateKey   string        `json:"private_key"`
-	ControlURL   string        `json:"control_url"`
-	UpdatePubKey string        `json:"update_public_key"`
-	Config       RuntimeConfig `json:"config"`
+	Version      int              `json:"version"`
+	DeviceID     string           `json:"device_id"`
+	DeviceName   string           `json:"device_name"`
+	DeviceToken  string           `json:"device_token"`
+	PublicKey    string           `json:"public_key"`
+	PrivateKey   string           `json:"private_key"`
+	ControlURL   string           `json:"control_url"`
+	UpdatePubKey string           `json:"update_public_key"`
+	Config       RuntimeConfig    `json:"config"`
+	WireGuard    WireGuardProfile `json:"wireguard"`
 }
 
 type EnrollmentRequest struct {
