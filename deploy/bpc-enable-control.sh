@@ -117,7 +117,7 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 value = {
-    "config_version": 2,
+    "config_version": 3,
     "wgshim_server": f"{sys.argv[2]}:{sys.argv[3]}",
     "wgshim_listen": f"127.0.0.1:{sys.argv[4]}",
     "wgshim_target": f"127.0.0.1:{sys.argv[5]}",

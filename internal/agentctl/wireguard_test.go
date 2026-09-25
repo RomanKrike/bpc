@@ -86,3 +86,20 @@ func bytesOf(value byte) []byte {
 	}
 	return out
 }
+
+func TestValidateWireGuardServerProfileAllowsMissingPrivateKey(t *testing.T) {
+	publicKey := base64.StdEncoding.EncodeToString(bytesOf(7))
+	profile := WireGuardProfile{
+		Address:             "10.253.0.2/32",
+		MTU:                 1360,
+		PeerPublicKey:       publicKey,
+		AllowedIPs:          []string{"10.253.0.0/24"},
+		PersistentKeepalive: 25,
+	}
+	if err := ValidateWireGuardServerProfile(profile); err != nil {
+		t.Fatalf("server profile rejected: %v", err)
+	}
+	if err := ValidateWireGuardProfile(profile); err == nil {
+		t.Fatal("client profile without private key was accepted")
+	}
+}

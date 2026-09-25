@@ -14,6 +14,7 @@ SERVER = pathlib.Path("deploy/bpc-agent.sh").read_text(encoding="utf-8")
 SERVICE = pathlib.Path("cmd/bpc-agent/service_windows.go").read_text(encoding="utf-8")
 STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
 TUNNEL = pathlib.Path("cmd/bpc-agent/tunnel_windows.go").read_text(encoding="utf-8")
+UI = pathlib.Path("cmd/bpc-agent/ui_windows.go").read_text(encoding="utf-8")
 WGPROFILE = pathlib.Path("internal/agentctl/wireguard.go").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
@@ -224,3 +225,44 @@ def test_bootstrap_download_is_repeatable_until_enrollment() -> None:
     assert "self._delete_bootstrap_download(download_token)" in enrollment_block
     assert "_delete_bootstrap_download" in CONTROL
 
+
+
+def test_agent_defaults_to_split_tunnel_and_hot_syncs_routes() -> None:
+    assert 'WG_ALLOWED_IPS="${BPC_AGENT_ALLOWED_IPS:-${WG_SUBNET}}"' in DATAPLANE
+    assert '"config_version": 3' in ENABLE_CONTROL
+    assert '"wireguard": self._wireguard_profile_for_device(device)' in CONTROL
+    assert 'WireGuard     *WireGuardProfile `json:"wireguard,omitempty"`' in AGENTCTL
+    assert "ValidateWireGuardServerProfile" in AGENTCTL
+    assert "syncRuntimeState(ctx, control, state, statePath)" in AGENT
+    startup_sync = AGENT.index("syncRuntimeState(ctx, control, state, statePath)")
+    startup_apply = AGENT.index("supervisor.apply(ctx, state.Config, state.WireGuard, logger)")
+    assert startup_sync < startup_apply
+    assert "profile.PrivateKey = state.WireGuard.PrivateKey" in AGENT
+    assert "state.WireGuard = profile" in AGENT
+    assert 'Tunnel routes: %s' in AGENT
+
+
+def test_agent_has_wireguard_style_tray_ui() -> None:
+    assert '"status-json"' in AGENT
+    assert '"connect"' in AGENT
+    assert '"disconnect"' in AGENT
+    assert '"ui"' in AGENT
+    assert '"install-ui"' in AGENT
+    assert "installWindowsUI" in AGENT
+    assert "startWindowsUI" in AGENT
+    assert "BPC Agent UI" in UI
+    assert "System.Windows.Forms.NotifyIcon" in UI
+    assert "Connect" in UI
+    assert "Disconnect" in UI
+    assert "& $exe connect" in UI
+    assert "& $exe disconnect" in UI
+    assert "setWindowsServiceAutomatic(true)" in AGENT
+    assert "setWindowsServiceAutomatic(false)" in AGENT
+    assert "New-ScheduledTaskTrigger -AtLogOn" in UI
+    assert "RunLevel Highest" in UI
+
+
+def test_manual_update_migrates_existing_install_to_tray_ui() -> None:
+    assert "scheduleReplacement(exePath, nextPath, installUI)" in AGENT
+    assert "checkAndStageUpdate(context.Background(), control, state, logger, true)" in AGENT
+    assert "install-ui" in AGENT

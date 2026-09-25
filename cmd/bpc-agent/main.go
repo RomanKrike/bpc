@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	version         = "0.10.5"
+	version         = "0.10.6"
 	legacyTaskName  = "BPC Agent"
 	bootstrapStart  = "\nBPC_AGENT_BOOTSTRAP_V2\n"
 	bootstrapEnd    = "\nBPC_AGENT_BOOTSTRAP_END\n"
@@ -59,6 +59,27 @@ func main() {
 		err = runWindowsService()
 	case "status":
 		err = printStatus()
+	case "status-json":
+		err = printStatusJSON()
+	case "connect":
+		err = connectAgent()
+	case "disconnect":
+		err = disconnectAgent()
+	case "ui":
+		err = launchWindowsUI()
+	case "install-ui":
+		if !isAdministrator() {
+			err = elevate("install-ui")
+		} else {
+			dir, exePath, _, pathErr := installPaths()
+			if pathErr != nil {
+				err = pathErr
+			} else if installErr := installWindowsUI(exePath, dir); installErr != nil {
+				err = installErr
+			} else {
+				err = startWindowsUI()
+			}
+		}
 	case "update":
 		err = updateNow()
 	case "uninstall":
@@ -117,6 +138,7 @@ func installAgent() error {
 	// Remove the 0.9.x startup task before switching to the native service.
 	_, _ = runCommand("schtasks.exe", "/End", "/TN", legacyTaskName)
 	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", legacyTaskName, "/F")
+	_ = removeWindowsUI()
 	if err := stopWindowsService(); err != nil {
 		return fmt.Errorf("stop existing BPC Agent service: %w", err)
 	}
@@ -125,9 +147,13 @@ func installAgent() error {
 			return fmt.Errorf("install agent binary: %w", err)
 		}
 	}
+	if err := installWindowsUI(exePath, dir); err != nil {
+		return fmt.Errorf("install BPC Agent UI: %w", err)
+	}
 	lockDownPath(dir)
 	lockDownPath(exePath)
 	lockDownPath(statePath)
+	lockDownPath(filepath.Join(dir, "bpc-ui.ps1"))
 
 	if err := installWindowsService(exePath); err != nil {
 		return fmt.Errorf("install BPC Agent service: %w", err)
@@ -135,6 +161,7 @@ func installAgent() error {
 	if err := startWindowsService(); err != nil {
 		return fmt.Errorf("start BPC Agent service: %w", err)
 	}
+	_ = startWindowsUI()
 
 	fmt.Printf("BPC Agent %s installed.\n", version)
 	fmt.Printf("Device: %s\nDevice ID: %s\n", state.DeviceName, state.DeviceID)
@@ -247,14 +274,17 @@ func runAgentContext(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	var supervisor runtimeSupervisor
-	if err := supervisor.apply(ctx, state.Config, state.WireGuard, logger); err != nil {
-		logger.Printf("initial transport start failed: %v", err)
-	}
-
 	control, err := agentctl.NewClient(state.ControlURL, state.DeviceToken)
 	if err != nil {
 		return err
+	}
+	if err := syncRuntimeState(ctx, control, state, statePath); err != nil {
+		logger.Printf("initial config sync failed: %v", err)
+	}
+
+	var supervisor runtimeSupervisor
+	if err := supervisor.apply(ctx, state.Config, state.WireGuard, logger); err != nil {
+		logger.Printf("initial transport start failed: %v", err)
 	}
 
 	configTicker := time.NewTicker(30 * time.Second)
@@ -269,18 +299,10 @@ func runAgentContext(parent context.Context) error {
 	for {
 		select {
 		case <-configTicker.C:
-			if cfg, err := control.FetchConfig(ctx); err != nil {
+			if err := syncRuntimeState(ctx, control, state, statePath); err != nil {
 				logger.Printf("config sync failed: %v", err)
-			} else if err := agentctl.ValidateRuntimeConfig(*cfg); err != nil {
-				logger.Printf("config sync rejected: %v", err)
-			} else {
-				state.Config = *cfg
-				if err := agentctl.SaveState(statePath, *state); err != nil {
-					logger.Printf("save synced config failed: %v", err)
-				}
-				if err := supervisor.apply(ctx, *cfg, state.WireGuard, logger); err != nil {
-					logger.Printf("apply synced config failed: %v", err)
-				}
+			} else if err := supervisor.apply(ctx, state.Config, state.WireGuard, logger); err != nil {
+				logger.Printf("apply synced config failed: %v", err)
 			}
 		case <-heartbeatTicker.C:
 			status := "control-online-data-plane-pending"
@@ -298,7 +320,7 @@ func runAgentContext(parent context.Context) error {
 				logger.Printf("heartbeat failed: %v", err)
 			}
 		case <-updateDelay.C:
-			updated, err := checkAndStageUpdate(ctx, control, state, logger)
+			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
 			}
@@ -307,7 +329,7 @@ func runAgentContext(parent context.Context) error {
 				return nil
 			}
 		case <-updateTicker.C:
-			updated, err := checkAndStageUpdate(ctx, control, state, logger)
+			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
 			}
@@ -320,6 +342,35 @@ func runAgentContext(parent context.Context) error {
 			return nil
 		}
 	}
+}
+
+func syncRuntimeState(
+	ctx context.Context,
+	control *agentctl.Client,
+	state *agentctl.State,
+	statePath string,
+) error {
+	cfg, err := control.FetchConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if err := agentctl.ValidateRuntimeConfig(*cfg); err != nil {
+		return err
+	}
+	if cfg.WireGuard != nil {
+		profile := *cfg.WireGuard
+		profile.PrivateKey = state.WireGuard.PrivateKey
+		if strings.TrimSpace(profile.PresharedKey) == "" {
+			profile.PresharedKey = state.WireGuard.PresharedKey
+		}
+		if err := agentctl.ValidateWireGuardProfile(profile); err != nil {
+			return fmt.Errorf("synced WireGuard profile: %w", err)
+		}
+		state.WireGuard = profile
+		cfg.WireGuard = nil
+	}
+	state.Config = *cfg
+	return agentctl.SaveState(statePath, *state)
 }
 
 func (s *runtimeSupervisor) apply(
@@ -485,6 +536,7 @@ func checkAndStageUpdate(
 	control *agentctl.Client,
 	state *agentctl.State,
 	logger *log.Logger,
+	installUI bool,
 ) (bool, error) {
 	manifest, err := control.FetchUpdateManifest(ctx)
 	if err != nil {
@@ -511,17 +563,22 @@ func checkAndStageUpdate(
 	}
 	lockDownPath(nextPath)
 	logger.Printf("verified BPC Agent update %s; scheduling replacement", manifest.Version)
-	if err := scheduleReplacement(exePath, nextPath); err != nil {
+	if err := scheduleReplacement(exePath, nextPath, installUI); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func scheduleReplacement(exePath, nextPath string) error {
+func scheduleReplacement(exePath, nextPath string, installUI bool) error {
+	uiStep := ""
+	if installUI {
+		uiStep = fmt.Sprintf("& '%s' install-ui; ", psQuote(exePath))
+	}
 	script := fmt.Sprintf(
-		"Start-Sleep -Seconds 3; Move-Item -LiteralPath '%s' -Destination '%s' -Force; sc.exe start '%s' | Out-Null",
+		"Start-Sleep -Seconds 3; Move-Item -LiteralPath '%s' -Destination '%s' -Force; %ssc.exe start '%s' | Out-Null",
 		psQuote(nextPath),
 		psQuote(exePath),
+		uiStep,
 		psQuote(serviceName),
 	)
 	cmd := exec.Command(
@@ -556,7 +613,7 @@ func updateNow() error {
 		return err
 	}
 	logger := log.New(os.Stderr, "bpc-agent ", log.LstdFlags)
-	updated, err := checkAndStageUpdate(context.Background(), control, state, logger)
+	updated, err := checkAndStageUpdate(context.Background(), control, state, logger, true)
 	if err != nil {
 		return err
 	}
@@ -585,6 +642,62 @@ func uninstallAgent() error {
 	return nil
 }
 
+func connectAgent() error {
+	if !isAdministrator() {
+		return elevate("connect")
+	}
+	if err := setWindowsServiceAutomatic(true); err != nil {
+		return err
+	}
+	return startWindowsService()
+}
+
+func disconnectAgent() error {
+	if !isAdministrator() {
+		return elevate("disconnect")
+	}
+	if err := stopWindowsService(); err != nil {
+		return err
+	}
+	return setWindowsServiceAutomatic(false)
+}
+
+func printStatusJSON() error {
+	_, _, statePath, err := installPaths()
+	if err != nil {
+		return err
+	}
+	state, err := agentctl.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+	payload := struct {
+		Version       string   `json:"version"`
+		Device        string   `json:"device"`
+		DeviceID      string   `json:"device_id"`
+		Service       string   `json:"service"`
+		Control       string   `json:"control"`
+		Relay         string   `json:"relay"`
+		TunnelAddress string   `json:"tunnel_address"`
+		Routes        []string `json:"routes"`
+	}{
+		Version:       version,
+		Device:        state.DeviceName,
+		DeviceID:      state.DeviceID,
+		Service:       windowsServiceStatus(),
+		Control:       state.ControlURL,
+		Relay:         state.Config.WGShimServer,
+		TunnelAddress: state.WireGuard.Address,
+		Routes:        state.WireGuard.AllowedIPs,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(encoded))
+	return nil
+}
+
 func printStatus() error {
 	_, _, statePath, err := installPaths()
 	if err != nil {
@@ -608,6 +721,7 @@ func printStatus() error {
 			state.WireGuard.Address,
 			state.WireGuard.MTU,
 		)
+		fmt.Printf("Tunnel routes: %s\n", strings.Join(state.WireGuard.AllowedIPs, ","))
 	} else if state.Config.LegacyTunnel != "" {
 		fmt.Printf("Tunnel backend: legacy WireGuard (%s)\n", state.Config.LegacyTunnel)
 	} else {
@@ -801,8 +915,12 @@ func usage() {
 		"  bpc-agent.exe install         Enroll/reinstall and start at boot\n" +
 		"  bpc-agent.exe run             Run the foreground agent loop (diagnostics)\n" +
 		"  bpc-agent.exe status          Show local agent state\n" +
+		"  bpc-agent.exe connect         Enable the tunnel service\n" +
+		"  bpc-agent.exe disconnect      Disable the tunnel service\n" +
+		"  bpc-agent.exe ui              Open the tray UI\n" +
+		"  bpc-agent.exe install-ui      Install tray UI autostart\n" +
 		"  bpc-agent.exe update          Check, verify and stage a signed update\n" +
-		"  bpc-agent.exe uninstall       Remove the startup task\n" +
+		"  bpc-agent.exe uninstall       Remove the agent and tray UI\n" +
 		"  bpc-agent.exe version\n\n" +
 		"Prepared binaries are generated on the BPC VPS with:\n" +
 		"  bpc-agent create NAME")

@@ -27,8 +27,18 @@ func (p WireGuardProfile) Complete() bool {
 }
 
 func ValidateWireGuardProfile(p WireGuardProfile) error {
-	if _, err := ParseWGKey(p.PrivateKey, false); err != nil {
-		return fmt.Errorf("private key: %w", err)
+	return validateWireGuardProfile(p, true)
+}
+
+func ValidateWireGuardServerProfile(p WireGuardProfile) error {
+	return validateWireGuardProfile(p, false)
+}
+
+func validateWireGuardProfile(p WireGuardProfile, requirePrivate bool) error {
+	if requirePrivate {
+		if _, err := ParseWGKey(p.PrivateKey, false); err != nil {
+			return fmt.Errorf("private key: %w", err)
+		}
 	}
 	if _, err := ParseWGKey(p.PeerPublicKey, false); err != nil {
 		return fmt.Errorf("peer public key: %w", err)
