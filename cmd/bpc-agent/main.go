@@ -13,44 +13,32 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/RomanKrike/bpc/internal/agentctl"
 	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
 const (
-	version         = "0.9.0"
+	version         = "0.10.0"
 	taskName        = "BPC Agent"
-	bootstrapStart  = "\nBPC_AGENT_BOOTSTRAP_V1\n"
+	bootstrapStart  = "\nBPC_AGENT_BOOTSTRAP_V2\n"
 	bootstrapEnd    = "\nBPC_AGENT_BOOTSTRAP_END\n"
 	defaultLogEvery = 30 * time.Second
 )
 
-type bootstrap struct {
-	Version    int    `json:"version"`
-	Device     string `json:"device"`
-	Tunnel     string `json:"tunnel"`
-	Server     string `json:"server"`
-	Listen     string `json:"listen"`
-	Target     string `json:"target"`
-	PaddingMin int    `json:"padding_min"`
-	PaddingMax int    `json:"padding_max"`
-	PSK        string `json:"psk"`
-}
-
-type endpointEntry struct {
-	Peer     string
-	Endpoint string
+type runtimeSupervisor struct {
+	mu          sync.Mutex
+	fingerprint string
+	cancel      context.CancelFunc
 }
 
 func main() {
 	cmd := "install"
-	args := os.Args[1:]
-	if len(args) > 0 {
-		cmd = strings.ToLower(args[0])
-		args = args[1:]
+	if len(os.Args) > 1 {
+		cmd = strings.ToLower(os.Args[1])
 	}
 
 	if cmd == "version" || cmd == "--version" || cmd == "-version" {
@@ -69,6 +57,8 @@ func main() {
 		err = runAgent()
 	case "status":
 		err = printStatus()
+	case "update":
+		err = updateNow()
 	case "uninstall":
 		err = uninstallAgent()
 	case "help", "--help", "-h":
@@ -84,24 +74,31 @@ func main() {
 }
 
 func installAgent() error {
-	cfg, err := loadBootstrap()
+	bootstrap, err := loadBootstrap()
 	if err != nil {
 		return err
 	}
-	if err := validateBootstrap(cfg); err != nil {
+	if err := agentctl.ValidateBootstrap(*bootstrap); err != nil {
 		return err
 	}
-
 	if !isAdministrator() {
 		return elevate("install")
 	}
 
-	dir, exePath, err := installPaths()
+	dir, exePath, statePath, err := installPaths()
 	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create install directory: %w", err)
+	}
+
+	state, err := enrollOrLoadState(context.Background(), *bootstrap, statePath)
+	if err != nil {
+		return fmt.Errorf("device enrollment: %w", err)
+	}
+	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
+		return fmt.Errorf("runtime config: %w", err)
 	}
 
 	current, err := os.Executable()
@@ -119,6 +116,7 @@ func installAgent() error {
 	}
 	lockDownPath(dir)
 	lockDownPath(exePath)
+	lockDownPath(statePath)
 
 	action := fmt.Sprintf("\"%s\" run", exePath)
 	if out, err := runCommand(
@@ -137,35 +135,68 @@ func installAgent() error {
 	}
 
 	fmt.Printf("BPC Agent %s installed.\n", version)
-	fmt.Printf("Device: %s\nTunnel: %s\nServer: %s\n", cfg.Device, cfg.Tunnel, cfg.Server)
+	fmt.Printf("Device: %s\nDevice ID: %s\n", state.DeviceName, state.DeviceID)
+	fmt.Printf("Control: %s\n", state.ControlURL)
 	fmt.Printf("Installed path: %s\n", exePath)
 	fmt.Println("The agent will start automatically with Windows.")
 	return nil
 }
 
-func uninstallAgent() error {
-	cfg, _ := loadBootstrap()
-	if !isAdministrator() {
-		return elevate("uninstall")
+func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, statePath string) (*agentctl.State, error) {
+	if state, err := agentctl.LoadState(statePath); err == nil {
+		return state, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
-	_, _ = runCommand("schtasks.exe", "/End", "/TN", taskName)
-	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", taskName, "/F")
-	if cfg != nil {
-		if wgPath, err := findWireGuardTool(); err == nil {
-			_ = restoreEndpoint(wgPath, cfg)
-		}
+
+	publicKey, privateKey, err := agentctl.GenerateIdentity()
+	if err != nil {
+		return nil, fmt.Errorf("generate device identity: %w", err)
 	}
-	fmt.Println("BPC Agent startup task removed.")
-	fmt.Println("The installed binary is left in ProgramData so this command can finish safely.")
-	return nil
+	client, err := agentctl.NewClient(bootstrap.ControlURL, "")
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.Enroll(ctx, agentctl.EnrollmentRequest{
+		Token:     bootstrap.EnrollToken,
+		Device:    bootstrap.Device,
+		PublicKey: publicKey,
+		Version:   version,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := agentctl.ValidateRuntimeConfig(response.Config); err != nil {
+		return nil, err
+	}
+
+	state := &agentctl.State{
+		Version:      agentctl.StateVersion,
+		DeviceID:     response.DeviceID,
+		DeviceName:   bootstrap.Device,
+		DeviceToken:  response.DeviceToken,
+		PublicKey:    publicKey,
+		PrivateKey:   privateKey,
+		ControlURL:   bootstrap.ControlURL,
+		UpdatePubKey: bootstrap.UpdatePublicKey,
+		Config:       response.Config,
+	}
+	if err := agentctl.SaveState(statePath, *state); err != nil {
+		return nil, err
+	}
+	return state, nil
 }
 
 func runAgent() error {
-	cfg, err := loadBootstrap()
+	_, _, statePath, err := installPaths()
 	if err != nil {
 		return err
 	}
-	if err := validateBootstrap(cfg); err != nil {
+	state, err := agentctl.LoadState(statePath)
+	if err != nil {
+		return fmt.Errorf("load agent state: %w", err)
+	}
+	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
 		return err
 	}
 
@@ -174,35 +205,134 @@ func runAgent() error {
 		return err
 	}
 	defer closer.Close()
-	logger.Printf("starting BPC Agent version=%s device=%s tunnel=%s server=%s", version, cfg.Device, cfg.Tunnel, cfg.Server)
+	logger.Printf(
+		"starting BPC Agent version=%s device=%s id=%s control=%s",
+		version,
+		state.DeviceName,
+		state.DeviceID,
+		state.ControlURL,
+	)
 
-	wgPath, err := waitForWireGuard(logger, 5*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var supervisor runtimeSupervisor
+	if err := supervisor.apply(ctx, state.Config, logger); err != nil {
+		logger.Printf("initial transport start failed: %v", err)
+	}
+
+	control, err := agentctl.NewClient(state.ControlURL, state.DeviceToken)
 	if err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go runWGShimLoop(ctx, cfg, logger)
+	configTicker := time.NewTicker(30 * time.Second)
+	heartbeatTicker := time.NewTicker(60 * time.Second)
+	updateTicker := time.NewTicker(6 * time.Hour)
+	updateDelay := time.NewTimer(45 * time.Second)
+	defer configTicker.Stop()
+	defer heartbeatTicker.Stop()
+	defer updateTicker.Stop()
+	defer updateDelay.Stop()
 
-	// Give the local UDP listener a short head start before repointing WireGuard.
-	time.Sleep(300 * time.Millisecond)
-
-	ticker := time.NewTicker(3 * time.Second)
-	defer ticker.Stop()
 	for {
-		if err := ensureTunnelEndpoint(wgPath, cfg, logger); err != nil {
-			logger.Printf("tunnel reconciliation failed: %v", err)
+		select {
+		case <-configTicker.C:
+			if cfg, err := control.FetchConfig(ctx); err != nil {
+				logger.Printf("config sync failed: %v", err)
+			} else if err := agentctl.ValidateRuntimeConfig(*cfg); err != nil {
+				logger.Printf("config sync rejected: %v", err)
+			} else {
+				state.Config = *cfg
+				if err := agentctl.SaveState(statePath, *state); err != nil {
+					logger.Printf("save synced config failed: %v", err)
+				}
+				if err := supervisor.apply(ctx, *cfg, logger); err != nil {
+					logger.Printf("apply synced config failed: %v", err)
+				}
+			}
+		case <-heartbeatTicker.C:
+			status := "control-online"
+			transport := "wgshim"
+			if state.Config.LegacyTunnel == "" {
+				status = "control-online-data-plane-pending"
+			}
+			if err := control.Heartbeat(ctx, agentctl.HeartbeatRequest{
+				Version:   version,
+				Transport: transport,
+				Status:    status,
+			}); err != nil {
+				logger.Printf("heartbeat failed: %v", err)
+			}
+		case <-updateDelay.C:
+			updated, err := checkAndStageUpdate(ctx, control, state, logger)
+			if err != nil {
+				logger.Printf("update check failed: %v", err)
+			}
+			if updated {
+				supervisor.stop()
+				return nil
+			}
+		case <-updateTicker.C:
+			updated, err := checkAndStageUpdate(ctx, control, state, logger)
+			if err != nil {
+				logger.Printf("update check failed: %v", err)
+			}
+			if updated {
+				supervisor.stop()
+				return nil
+			}
+		case <-ctx.Done():
+			supervisor.stop()
+			return nil
 		}
-		<-ticker.C
 	}
 }
 
-func runWGShimLoop(ctx context.Context, cfg *bootstrap, logger *log.Logger) {
+func (s *runtimeSupervisor) apply(parent context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) error {
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	fingerprint := string(raw)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if fingerprint == s.fingerprint && s.cancel != nil {
+		return nil
+	}
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+
+	ctx, cancel := context.WithCancel(parent)
+	s.cancel = cancel
+	s.fingerprint = fingerprint
+
+	go runWGShimLoop(ctx, cfg, logger)
+	if cfg.LegacyTunnel != "" {
+		go runLegacyWireGuardLoop(ctx, cfg, logger)
+	} else {
+		logger.Printf("self-contained tunnel backend is not enabled yet; control plane and updater are active")
+	}
+	return nil
+}
+
+func (s *runtimeSupervisor) stop() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cancel != nil {
+		s.cancel()
+		s.cancel = nil
+	}
+}
+
+func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) {
 	for ctx.Err() == nil {
-		psk, err := base64.StdEncoding.DecodeString(cfg.PSK)
+		psk, err := base64.StdEncoding.DecodeString(cfg.WGShimPSK)
 		if err != nil || len(psk) != 32 {
-			logger.Printf("invalid embedded WGShim key")
+			logger.Printf("invalid runtime WGShim key")
 			return
 		}
 		txKey, err := wgshim.DeriveKey(psk, wgshim.ClientToServer)
@@ -225,10 +355,9 @@ func runWGShimLoop(ctx context.Context, cfg *bootstrap, logger *log.Logger) {
 			logger.Printf("create RX codec: %v", err)
 			return
 		}
-
 		err = wgshim.RunClient(ctx, wgshim.ClientConfig{
-			LocalListen:   cfg.Listen,
-			Server:        cfg.Server,
+			LocalListen:   cfg.WGShimListen,
+			Server:        cfg.WGShimServer,
 			TX:            tx,
 			RX:            rx,
 			Logger:        logger,
@@ -242,13 +371,33 @@ func runWGShimLoop(ctx context.Context, cfg *bootstrap, logger *log.Logger) {
 	}
 }
 
-func ensureTunnelEndpoint(wgPath string, cfg *bootstrap, logger *log.Logger) error {
-	if _, err := runCommand("sc.exe", "query", "WireGuardTunnel$"+cfg.Tunnel); err != nil {
-		return fmt.Errorf("WireGuard tunnel service %q is not installed", cfg.Tunnel)
+func runLegacyWireGuardLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) {
+	for ctx.Err() == nil {
+		wgPath, err := findWireGuardTool()
+		if err != nil {
+			logger.Printf("legacy WireGuard backend unavailable: %v", err)
+		} else if err := ensureTunnelEndpoint(wgPath, cfg, logger); err != nil {
+			logger.Printf("legacy tunnel reconciliation failed: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(3 * time.Second):
+		}
 	}
-	_, _ = runCommand("sc.exe", "start", "WireGuardTunnel$"+cfg.Tunnel)
+}
 
-	out, err := runCommand(wgPath, "show", cfg.Tunnel, "endpoints")
+func ensureTunnelEndpoint(wgPath string, cfg agentctl.RuntimeConfig, logger *log.Logger) error {
+	tunnel := cfg.LegacyTunnel
+	if tunnel == "" {
+		return nil
+	}
+	if _, err := runCommand("sc.exe", "query", "WireGuardTunnel$"+tunnel); err != nil {
+		return fmt.Errorf("WireGuard tunnel service %q is not installed", tunnel)
+	}
+	_, _ = runCommand("sc.exe", "start", "WireGuardTunnel$"+tunnel)
+
+	out, err := runCommand(wgPath, "show", tunnel, "endpoints")
 	if err != nil {
 		return fmt.Errorf("read WireGuard endpoints: %w: %s", err, strings.TrimSpace(out))
 	}
@@ -256,17 +405,15 @@ func ensureTunnelEndpoint(wgPath string, cfg *bootstrap, logger *log.Logger) err
 	if len(entries) == 0 {
 		return errors.New("WireGuard tunnel has no peers")
 	}
-
-	local := cfg.Listen
 	for _, entry := range entries {
-		if equalEndpoint(entry.Endpoint, local) {
+		if equalEndpoint(entry.Endpoint, cfg.WGShimListen) {
 			return nil
 		}
 	}
 
 	peer := ""
 	for _, entry := range entries {
-		if equalEndpoint(entry.Endpoint, cfg.Target) {
+		if equalEndpoint(entry.Endpoint, cfg.WGShimTarget) {
 			peer = entry.Peer
 			break
 		}
@@ -275,105 +422,143 @@ func ensureTunnelEndpoint(wgPath string, cfg *bootstrap, logger *log.Logger) err
 		peer = entries[0].Peer
 	}
 	if peer == "" {
-		return fmt.Errorf("cannot choose WireGuard peer: expected target %s and found %d peers", cfg.Target, len(entries))
+		return fmt.Errorf("cannot choose WireGuard peer: expected target %s and found %d peers", cfg.WGShimTarget, len(entries))
 	}
 
-	out, err = runCommand(wgPath, "set", cfg.Tunnel, "peer", peer, "endpoint", local)
+	out, err = runCommand(wgPath, "set", tunnel, "peer", peer, "endpoint", cfg.WGShimListen)
 	if err != nil {
 		return fmt.Errorf("set WireGuard endpoint: %w: %s", err, strings.TrimSpace(out))
 	}
-	logger.Printf("WireGuard peer endpoint switched to %s (target behind WGShim: %s)", local, cfg.Target)
+	logger.Printf("legacy WireGuard peer endpoint switched to %s", cfg.WGShimListen)
 	return nil
 }
 
-func restoreEndpoint(wgPath string, cfg *bootstrap) error {
-	out, err := runCommand(wgPath, "show", cfg.Tunnel, "endpoints")
+func checkAndStageUpdate(
+	ctx context.Context,
+	control *agentctl.Client,
+	state *agentctl.State,
+	logger *log.Logger,
+) (bool, error) {
+	manifest, err := control.FetchUpdateManifest(ctx)
+	if err != nil {
+		return false, err
+	}
+	if err := agentctl.VerifyUpdateManifest(*manifest, state.UpdatePubKey); err != nil {
+		return false, err
+	}
+	if !agentctl.IsNewerVersion(manifest.Version, version) {
+		return false, nil
+	}
+
+	dir, exePath, _, err := installPaths()
+	if err != nil {
+		return false, err
+	}
+	nextPath := filepath.Join(dir, "bpc-agent.next.exe")
+	if err := control.Download(ctx, manifest.URL, nextPath); err != nil {
+		return false, err
+	}
+	if err := agentctl.VerifyFileSHA256(nextPath, manifest.SHA256); err != nil {
+		_ = os.Remove(nextPath)
+		return false, err
+	}
+	lockDownPath(nextPath)
+	logger.Printf("verified BPC Agent update %s; scheduling replacement", manifest.Version)
+	if err := scheduleReplacement(exePath, nextPath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func scheduleReplacement(exePath, nextPath string) error {
+	script := fmt.Sprintf(
+		"Start-Sleep -Seconds 3; Move-Item -LiteralPath '%s' -Destination '%s' -Force; schtasks.exe /Run /TN '%s' | Out-Null",
+		psQuote(nextPath),
+		psQuote(exePath),
+		psQuote(taskName),
+	)
+	cmd := exec.Command(
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-WindowStyle",
+		"Hidden",
+		"-Command",
+		script,
+	)
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start update helper: %w", err)
+	}
+	return nil
+}
+
+func updateNow() error {
+	if !isAdministrator() {
+		return elevate("update")
+	}
+	_, _, statePath, err := installPaths()
 	if err != nil {
 		return err
 	}
-	entries := parseEndpoints(out)
-	for _, entry := range entries {
-		if equalEndpoint(entry.Endpoint, cfg.Listen) {
-			_, err = runCommand(wgPath, "set", cfg.Tunnel, "peer", entry.Peer, "endpoint", cfg.Target)
-			return err
-		}
+	state, err := agentctl.LoadState(statePath)
+	if err != nil {
+		return err
 	}
+	control, err := agentctl.NewClient(state.ControlURL, state.DeviceToken)
+	if err != nil {
+		return err
+	}
+	logger := log.New(os.Stderr, "bpc-agent ", log.LstdFlags)
+	updated, err := checkAndStageUpdate(context.Background(), control, state, logger)
+	if err != nil {
+		return err
+	}
+	if !updated {
+		fmt.Println("BPC Agent is already up to date.")
+		return nil
+	}
+	fmt.Println("Update verified and staged. BPC Agent will restart with the new version.")
+	return nil
+}
+
+func uninstallAgent() error {
+	if !isAdministrator() {
+		return elevate("uninstall")
+	}
+	_, _ = runCommand("schtasks.exe", "/End", "/TN", taskName)
+	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", taskName, "/F")
+	fmt.Println("BPC Agent startup task removed.")
+	fmt.Println("Device revocation remains server-side; use bpc-agent revoke NAME on the VPS.")
 	return nil
 }
 
 func printStatus() error {
-	cfg, err := loadBootstrap()
+	_, _, statePath, err := installPaths()
 	if err != nil {
 		return err
 	}
+	state, err := agentctl.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+
 	fmt.Printf("BPC Agent: %s\n", version)
-	fmt.Printf("Device: %s\nTunnel: %s\nServer: %s\nTarget: %s\n", cfg.Device, cfg.Tunnel, cfg.Server, cfg.Target)
-
-	wgPath, err := findWireGuardTool()
-	if err != nil {
-		fmt.Println("WireGuard: not found")
-		return nil
-	}
-	out, err := runCommand(wgPath, "show", cfg.Tunnel, "endpoints")
-	if err != nil {
-		fmt.Printf("WireGuard tunnel: unavailable (%v)\n", err)
-		return nil
-	}
-	entries := parseEndpoints(out)
-	for _, entry := range entries {
-		fmt.Printf("Peer endpoint: %s\n", entry.Endpoint)
-	}
-
-	handshake, err := runCommand(wgPath, "show", cfg.Tunnel, "latest-handshakes")
-	if err == nil {
-		for _, line := range strings.Split(strings.TrimSpace(handshake), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) != 2 {
-				continue
-			}
-			unixTime, parseErr := strconv.ParseInt(fields[1], 10, 64)
-			if parseErr != nil || unixTime <= 0 {
-				continue
-			}
-			fmt.Printf("Latest handshake: %s ago\n", time.Since(time.Unix(unixTime, 0)).Round(time.Second))
-			break
-		}
+	fmt.Printf("Device: %s\n", state.DeviceName)
+	fmt.Printf("Device ID: %s\n", state.DeviceID)
+	fmt.Printf("Control: %s\n", state.ControlURL)
+	fmt.Printf("WGShim server: %s\n", state.Config.WGShimServer)
+	fmt.Printf("WGShim target: %s\n", state.Config.WGShimTarget)
+	if state.Config.LegacyTunnel == "" {
+		fmt.Println("Tunnel backend: embedded backend pending")
+	} else {
+		fmt.Printf("Tunnel backend: legacy WireGuard (%s)\n", state.Config.LegacyTunnel)
 	}
 	return nil
 }
 
-func waitForWireGuard(logger *log.Logger, max time.Duration) (string, error) {
-	deadline := time.Now().Add(max)
-	for {
-		path, err := findWireGuardTool()
-		if err == nil {
-			return path, nil
-		}
-		if time.Now().After(deadline) {
-			return "", err
-		}
-		logger.Printf("WireGuard for Windows not found yet; retrying")
-		time.Sleep(5 * time.Second)
-	}
-}
-
-func findWireGuardTool() (string, error) {
-	if path, err := exec.LookPath("wg.exe"); err == nil {
-		return path, nil
-	}
-	candidates := []string{
-		filepath.Join(os.Getenv("ProgramFiles"), "WireGuard", "wg.exe"),
-		`C:\Program Files\WireGuard\wg.exe`,
-	}
-	for _, path := range candidates {
-		if path == "" {
-			continue
-		}
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
-			return path, nil
-		}
-	}
-	return "", errors.New("WireGuard for Windows is not installed or wg.exe was not found")
+type endpointEntry struct {
+	Peer     string
+	Endpoint string
 }
 
 func parseEndpoints(output string) []endpointEntry {
@@ -392,7 +577,26 @@ func equalEndpoint(a, b string) bool {
 	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
 }
 
-func loadBootstrap() (*bootstrap, error) {
+func findWireGuardTool() (string, error) {
+	if path, err := exec.LookPath("wg.exe"); err == nil {
+		return path, nil
+	}
+	candidates := []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "WireGuard", "wg.exe"),
+		"C:\\Program Files\\WireGuard\\wg.exe",
+	}
+	for _, path := range candidates {
+		if path == "" {
+			continue
+		}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return path, nil
+		}
+	}
+	return "", errors.New("WireGuard for Windows is not installed or wg.exe was not found")
+}
+
+func loadBootstrap() (*agentctl.Bootstrap, error) {
 	exe, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve executable: %w", err)
@@ -404,10 +608,10 @@ func loadBootstrap() (*bootstrap, error) {
 	return parseBootstrapBytes(data)
 }
 
-func parseBootstrapBytes(data []byte) (*bootstrap, error) {
+func parseBootstrapBytes(data []byte) (*agentctl.Bootstrap, error) {
 	start := bytes.LastIndex(data, []byte(bootstrapStart))
 	if start < 0 {
-		return nil, errors.New("this is a generic BPC Agent binary; create a prepared client with `bpc-agent create` on the VPS")
+		return nil, errors.New("this is a generic BPC Agent binary; create a prepared client with bpc-agent create on the VPS")
 	}
 	start += len(bootstrapStart)
 	endRel := bytes.Index(data[start:], []byte(bootstrapEnd))
@@ -419,50 +623,24 @@ func parseBootstrapBytes(data []byte) (*bootstrap, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode embedded bootstrap: %w", err)
 	}
-	var cfg bootstrap
+	var cfg agentctl.Bootstrap
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parse embedded bootstrap: %w", err)
 	}
 	return &cfg, nil
 }
 
-func validateBootstrap(cfg *bootstrap) error {
-	if cfg.Version != 1 {
-		return fmt.Errorf("unsupported bootstrap version %d", cfg.Version)
-	}
-	for field, value := range map[string]string{
-		"device": cfg.Device,
-		"tunnel": cfg.Tunnel,
-		"server": cfg.Server,
-		"listen": cfg.Listen,
-		"target": cfg.Target,
-		"psk":    cfg.PSK,
-	} {
-		if strings.TrimSpace(value) == "" {
-			return fmt.Errorf("bootstrap field %s is empty", field)
-		}
-	}
-	key, err := base64.StdEncoding.DecodeString(cfg.PSK)
-	if err != nil || len(key) != 32 {
-		return errors.New("bootstrap WGShim key is invalid")
-	}
-	if cfg.PaddingMin < 0 || cfg.PaddingMax < cfg.PaddingMin || cfg.PaddingMax > 255 {
-		return errors.New("invalid bootstrap padding range")
-	}
-	return nil
-}
-
-func installPaths() (string, string, error) {
+func installPaths() (string, string, string, error) {
 	base := os.Getenv("ProgramData")
 	if strings.TrimSpace(base) == "" {
-		base = `C:\ProgramData`
+		base = "C:\\ProgramData"
 	}
 	dir := filepath.Join(base, "BPC")
-	return dir, filepath.Join(dir, "bpc-agent.exe"), nil
+	return dir, filepath.Join(dir, "bpc-agent.exe"), filepath.Join(dir, "state.json"), nil
 }
 
 func newFileLogger() (*log.Logger, io.Closer, error) {
-	dir, _, err := installPaths()
+	dir, _, _, err := installPaths()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -477,8 +655,8 @@ func newFileLogger() (*log.Logger, io.Closer, error) {
 }
 
 func isAdministrator() bool {
-	cmd := `$p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); if ($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }`
-	return exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", cmd).Run() == nil
+	command := "$p = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent()); if ($p.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }"
+	return exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command).Run() == nil
 }
 
 func elevate(command string) error {
@@ -486,7 +664,11 @@ func elevate(command string) error {
 	if err != nil {
 		return err
 	}
-	ps := fmt.Sprintf("$p=Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs -Wait -PassThru; exit $p.ExitCode", psQuote(exe), psQuote(command))
+	ps := fmt.Sprintf(
+		"$p=Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+		psQuote(exe),
+		psQuote(command),
+	)
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", ps)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -513,6 +695,7 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
+
 	tmp := dst + ".tmp"
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o700)
 	if err != nil {
@@ -537,7 +720,14 @@ func copyFile(src, dst string) error {
 }
 
 func lockDownPath(path string) {
-	_, _ = runCommand("icacls.exe", path, "/inheritance:r", "/grant:r", "*S-1-5-18:F", "*S-1-5-32-544:F")
+	_, _ = runCommand(
+		"icacls.exe",
+		path,
+		"/inheritance:r",
+		"/grant:r",
+		"*S-1-5-18:F",
+		"*S-1-5-32-544:F",
+	)
 }
 
 func samePath(a, b string) bool {
@@ -545,18 +735,17 @@ func samePath(a, b string) bool {
 }
 
 func usage() {
-	fmt.Println(`BPC Agent for Windows
-
-Usage:
-  bpc-agent.exe                 Install a prepared agent package
-  bpc-agent.exe install         Install/reinstall and start at boot
-  bpc-agent.exe run             Run the background agent loop
-  bpc-agent.exe status          Show tunnel and handshake state
-  bpc-agent.exe uninstall       Remove startup task and restore direct endpoint
-  bpc-agent.exe version
-
-Prepared binaries are generated on the BPC VPS with:
-  bpc-agent create NAME --tunnel TUNNEL`)
+	fmt.Println("BPC Agent for Windows\n\n" +
+		"Usage:\n" +
+		"  bpc-agent.exe                 Enroll and install a prepared agent package\n" +
+		"  bpc-agent.exe install         Enroll/reinstall and start at boot\n" +
+		"  bpc-agent.exe run             Run the background agent loop\n" +
+		"  bpc-agent.exe status          Show local agent state\n" +
+		"  bpc-agent.exe update          Check, verify and stage a signed update\n" +
+		"  bpc-agent.exe uninstall       Remove the startup task\n" +
+		"  bpc-agent.exe version\n\n" +
+		"Prepared binaries are generated on the BPC VPS with:\n" +
+		"  bpc-agent create NAME")
 }
 
 func fatalf(format string, args ...any) {
