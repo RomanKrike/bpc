@@ -20,6 +20,8 @@ WGSHIM_CODEC = pathlib.Path("internal/wgshim/codec.go").read_text(encoding="utf-
 WGSHIM_RELAY = pathlib.Path("internal/wgshim/relay.go").read_text(encoding="utf-8")
 AGENT_RELAY = pathlib.Path("cmd/bpc-agent-relay/main.go").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
+NODE = pathlib.Path("deploy/bpc-node.sh").read_text(encoding="utf-8")
+GATEWAY_TEMPLATE = pathlib.Path("deploy/bp-gateway-install.sh.tpl").read_text(encoding="utf-8")
 
 
 def test_release_builds_windows_agent() -> None:
@@ -34,6 +36,7 @@ def test_release_builds_windows_agent() -> None:
 def test_agent_server_commands_are_reconciled() -> None:
     for command in (
         '"bpc-agent:bpc-agent.sh"',
+        '"bpc-node:bpc-node.sh"',
         '"bpc-enable-control:bpc-enable-control.sh"',
         '"bpc-enable-agent-dataplane:bpc-enable-agent-dataplane.sh"',
     ):
@@ -375,3 +378,24 @@ def test_agent_ui_shows_selected_udp_endpoint_and_port_rtt() -> None:
     assert "ports" in UI
     assert "reachable" in UI
     assert "rtt_ms" in AGENT
+
+
+def test_bp_gateway_routes_home_subnets_through_overlay() -> None:
+    assert "advertised_routes" in CONTROL
+    assert "gateway_routes" in CONTROL
+    assert "sync_gateway_routes" in CONTROL
+    assert '"ip", "route", "replace"' in CONTROL
+    assert '"allowed-ips"' in CONTROL
+    assert "gateway create NAME --route CIDR" in NODE
+    assert "gateway grant NAME DEVICE" in NODE
+    assert "managed_routes" in NODE
+    assert "wireguard_server_public_key" in NODE
+    assert "bp-gateway-wgshim.service" in GATEWAY_TEMPLATE
+    assert "net.ipv4.ip_forward=1" in GATEWAY_TEMPLATE
+    assert "MASQUERADE" in GATEWAY_TEMPLATE
+
+
+def test_windows_client_uses_bp_connect_branding() -> None:
+    assert "$form.Text = 'BP Connect'" in UI
+    assert "$tray.Text = 'BP Connect'" in UI
+    assert "Open BP Connect" in UI
