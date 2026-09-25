@@ -110,6 +110,10 @@ func installAgent() error {
 	current, _ = filepath.Abs(current)
 	exePath, _ = filepath.Abs(exePath)
 
+	if err := installWintunPayload(current, dir); err != nil {
+		return fmt.Errorf("install Wintun runtime: %w", err)
+	}
+
 	// Remove the 0.9.x startup task before switching to the native service.
 	_, _ = runCommand("schtasks.exe", "/End", "/TN", legacyTaskName)
 	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", legacyTaskName, "/F")
@@ -229,7 +233,7 @@ func runAgentContext(parent context.Context) error {
 	defer cancel()
 
 	var supervisor runtimeSupervisor
-	if err := supervisor.apply(ctx, state.Config, logger); err != nil {
+	if err := supervisor.apply(ctx, state.Config, state.WireGuard, logger); err != nil {
 		logger.Printf("initial transport start failed: %v", err)
 	}
 
@@ -259,15 +263,17 @@ func runAgentContext(parent context.Context) error {
 				if err := agentctl.SaveState(statePath, *state); err != nil {
 					logger.Printf("save synced config failed: %v", err)
 				}
-				if err := supervisor.apply(ctx, *cfg, logger); err != nil {
+				if err := supervisor.apply(ctx, *cfg, state.WireGuard, logger); err != nil {
 					logger.Printf("apply synced config failed: %v", err)
 				}
 			}
 		case <-heartbeatTicker.C:
-			status := "control-online"
+			status := "control-online-data-plane-pending"
 			transport := "wgshim"
-			if state.Config.LegacyTunnel == "" {
-				status = "control-online-data-plane-pending"
+			if state.WireGuard.Complete() {
+				status = "connected-embedded-wireguard"
+			} else if state.Config.LegacyTunnel != "" {
+				status = "connected-legacy-wireguard"
 			}
 			if err := control.Heartbeat(ctx, agentctl.HeartbeatRequest{
 				Version:   version,
@@ -301,8 +307,16 @@ func runAgentContext(parent context.Context) error {
 	}
 }
 
-func (s *runtimeSupervisor) apply(parent context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) error {
-	raw, err := json.Marshal(cfg)
+func (s *runtimeSupervisor) apply(
+	parent context.Context,
+	cfg agentctl.RuntimeConfig,
+	profile agentctl.WireGuardProfile,
+	logger *log.Logger,
+) error {
+	raw, err := json.Marshal(struct {
+		Config  agentctl.RuntimeConfig
+		Profile agentctl.WireGuardProfile
+	}{cfg, profile})
 	if err != nil {
 		return err
 	}
@@ -323,10 +337,16 @@ func (s *runtimeSupervisor) apply(parent context.Context, cfg agentctl.RuntimeCo
 	s.fingerprint = fingerprint
 
 	go runWGShimLoop(ctx, cfg, logger)
-	if cfg.LegacyTunnel != "" {
+	if profile.Complete() {
+		go func() {
+			if err := runEmbeddedWireGuard(ctx, cfg, profile, logger); err != nil && ctx.Err() == nil {
+				logger.Printf("embedded WireGuard stopped: %v", err)
+			}
+		}()
+	} else if cfg.LegacyTunnel != "" {
 		go runLegacyWireGuardLoop(ctx, cfg, logger)
 	} else {
-		logger.Printf("self-contained tunnel backend is not enabled yet; control plane and updater are active")
+		logger.Printf("no provisioned WireGuard profile; control plane remains online")
 	}
 	return nil
 }
@@ -567,10 +587,16 @@ func printStatus() error {
 	fmt.Printf("Windows service: %s\n", windowsServiceStatus())
 	fmt.Printf("WGShim server: %s\n", state.Config.WGShimServer)
 	fmt.Printf("WGShim target: %s\n", state.Config.WGShimTarget)
-	if state.Config.LegacyTunnel == "" {
-		fmt.Println("Tunnel backend: embedded backend pending")
-	} else {
+	if state.WireGuard.Complete() {
+		fmt.Printf(
+			"Tunnel backend: embedded WireGuard (%s; MTU %d)\n",
+			state.WireGuard.Address,
+			state.WireGuard.MTU,
+		)
+	} else if state.Config.LegacyTunnel != "" {
 		fmt.Printf("Tunnel backend: legacy WireGuard (%s)\n", state.Config.LegacyTunnel)
+	} else {
+		fmt.Println("Tunnel backend: not provisioned")
 	}
 	return nil
 }
