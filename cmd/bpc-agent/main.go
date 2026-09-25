@@ -632,6 +632,7 @@ func printStatus() error {
 			state.WireGuard.Address,
 			state.WireGuard.MTU,
 		)
+		fmt.Printf("Tunnel routes: %s\n", strings.Join(state.WireGuard.AllowedIPs, ","))
 	} else if state.Config.LegacyTunnel != "" {
 		fmt.Printf("Tunnel backend: legacy WireGuard (%s)\n", state.Config.LegacyTunnel)
 	} else {
