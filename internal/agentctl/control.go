@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -38,6 +39,7 @@ type Bootstrap struct {
 type RuntimeConfig struct {
 	ConfigVersion int               `json:"config_version"`
 	WGShimServer  string            `json:"wgshim_server"`
+	WGShimServers []string          `json:"wgshim_servers,omitempty"`
 	WGShimListen  string            `json:"wgshim_listen"`
 	WGShimTarget  string            `json:"wgshim_target"`
 	WGShimPSK     string            `json:"wgshim_psk"`
@@ -290,6 +292,24 @@ func ValidateRuntimeConfig(cfg RuntimeConfig) error {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("runtime config field %s is empty", name)
 		}
+	}
+	servers := cfg.WGShimServers
+	if len(servers) == 0 {
+		servers = []string{cfg.WGShimServer}
+	}
+	seenServers := map[string]struct{}{}
+	for _, endpoint := range servers {
+		endpoint = strings.TrimSpace(endpoint)
+		if endpoint == "" {
+			return errors.New("runtime WGShim server list contains an empty endpoint")
+		}
+		if _, _, err := net.SplitHostPort(endpoint); err != nil {
+			return fmt.Errorf("invalid WGShim server endpoint %q: %w", endpoint, err)
+		}
+		if _, exists := seenServers[endpoint]; exists {
+			return fmt.Errorf("duplicate WGShim server endpoint %q", endpoint)
+		}
+		seenServers[endpoint] = struct{}{}
 	}
 	key, err := base64.StdEncoding.DecodeString(cfg.WGShimPSK)
 	if err != nil || len(key) != 32 {
