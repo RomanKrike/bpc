@@ -243,6 +243,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             "padding_min": int(global_config["padding_min"]),
             "padding_max": int(global_config["padding_max"]),
             "update_channel": str(global_config.get("update_channel", "stable")),
+            "wireguard": self._wireguard_profile_for_device(device),
         }
         legacy = str(device.get("legacy_tunnel", "")).strip()
         if legacy:
