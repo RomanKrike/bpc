@@ -373,6 +373,7 @@ revoke_agent() {
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -395,6 +396,23 @@ for path in (root / "devices").glob("*.json"):
     if token:
         token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
         (root / "tokens" / f"{token_hash}.json").unlink(missing_ok=True)
+    device_id = str(value.get("device_id", ""))
+    if device_id:
+        (root.parent / "agent" / "wgshim-keys" / f"{device_id}.key").unlink(missing_ok=True)
+    wg_public = str(value.get("wireguard_public_key", "")).strip()
+    if wg_public:
+        try:
+            config = json.loads((root / "config.json").read_text(encoding="utf-8"))
+            interface = str(config.get("wireguard_interface", "")).strip()
+            if interface:
+                subprocess.run(
+                    ["wg", "set", interface, "peer", wg_public, "remove"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+        except (OSError, ValueError, json.JSONDecodeError):
+            pass
     count += 1
 print(f"Revoked devices: {count}")
 if count == 0:

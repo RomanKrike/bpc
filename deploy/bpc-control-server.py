@@ -4,10 +4,13 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import secrets
 import ssl
+import subprocess
+import threading
 import time
 import uuid
 from http import HTTPStatus
@@ -41,6 +44,63 @@ def read_json(path: Path) -> dict[str, Any]:
 
 def token_index(token: str) -> str:
     return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
+def atomic_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    tmp.write_text(value, encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
+def valid_wireguard_key(value: str) -> bool:
+    try:
+        raw = base64.b64decode(value, validate=True)
+    except (ValueError, base64.binascii.Error):
+        return False
+    return len(raw) == 32 and any(raw)
+
+
+def run_wg(*args: str) -> None:
+    completed = subprocess.run(
+        ["wg", *args],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(message or f"wg exited with {completed.returncode}")
+
+
+def sync_wireguard_peers(state_dir: Path) -> None:
+    config = read_json(state_dir / "config.json")
+    interface = str(config["wireguard_interface"])
+    completed = subprocess.run(
+        ["wg", "show", interface, "peers"],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(completed.stderr.strip() or f"WireGuard interface {interface} unavailable")
+    for peer in completed.stdout.split():
+        run_wg("set", interface, "peer", peer, "remove")
+    for path in sorted((state_dir / "devices").glob("*.json")):
+        try:
+            device = read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if bool(device.get("revoked", False)):
+            continue
+        public_key = str(device.get("wireguard_public_key", "")).strip()
+        address = str(device.get("wireguard_address", "")).strip()
+        if not valid_wireguard_key(public_key) or not address:
+            continue
+        run_wg("set", interface, "peer", public_key, "allowed-ips", address)
 
 
 class ControlHandler(BaseHTTPRequestHandler):
@@ -143,9 +203,16 @@ class ControlHandler(BaseHTTPRequestHandler):
             "wgshim_server",
             "wgshim_listen",
             "wgshim_target",
-            "wgshim_psk",
             "padding_min",
             "padding_max",
+            "wireguard_interface",
+            "wireguard_subnet",
+            "wireguard_server_address",
+            "wireguard_server_public_key",
+            "wireguard_mtu",
+            "wireguard_keepalive",
+            "wireguard_allowed_ips",
+            "wgshim_key_dir",
         )
         for name in required:
             if name not in value:
@@ -153,11 +220,77 @@ class ControlHandler(BaseHTTPRequestHandler):
         return value
 
     def _config_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
-        config = self._global_config()
+        global_config = self._global_config()
+        config = {
+            "config_version": int(global_config["config_version"]),
+            "wgshim_server": str(global_config["wgshim_server"]),
+            "wgshim_listen": str(global_config["wgshim_listen"]),
+            "wgshim_target": str(global_config["wgshim_target"]),
+            "wgshim_psk": str(device["wgshim_psk"]),
+            "padding_min": int(global_config["padding_min"]),
+            "padding_max": int(global_config["padding_max"]),
+            "update_channel": str(global_config.get("update_channel", "stable")),
+        }
         legacy = str(device.get("legacy_tunnel", "")).strip()
         if legacy:
             config["legacy_tunnel"] = legacy
         return config
+
+    def _wireguard_profile_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
+        config = self._global_config()
+        allowed_ips = config["wireguard_allowed_ips"]
+        if not isinstance(allowed_ips, list) or not allowed_ips:
+            raise ValueError("wireguard_allowed_ips must be a non-empty list")
+        return {
+            "address": str(device["wireguard_address"]),
+            "mtu": int(config["wireguard_mtu"]),
+            "peer_public_key": str(config["wireguard_server_public_key"]),
+            "allowed_ips": [str(item) for item in allowed_ips],
+            "persistent_keepalive": int(config["wireguard_keepalive"]),
+        }
+
+    def _allocate_wireguard_address(self) -> str:
+        config = self._global_config()
+        network = ipaddress.ip_network(str(config["wireguard_subnet"]), strict=False)
+        if network.version != 4:
+            raise ValueError("wireguard_subnet must be IPv4")
+        server_ip = ipaddress.ip_interface(str(config["wireguard_server_address"])).ip
+        used: set[ipaddress.IPv4Address] = set()
+        for path in (self._root() / "devices").glob("*.json"):
+            try:
+                device = read_json(path)
+                if bool(device.get("revoked", False)):
+                    continue
+                raw = str(device.get("wireguard_address", "")).strip()
+                if raw:
+                    used.add(ipaddress.ip_interface(raw).ip)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+        for candidate in network.hosts():
+            if candidate == server_ip or candidate in used:
+                continue
+            return f"{candidate}/32"
+        raise RuntimeError("BPC Agent WireGuard address pool is exhausted")
+
+    def _install_wireguard_peer(self, public_key: str, address: str) -> None:
+        config = self._global_config()
+        run_wg(
+            "set",
+            str(config["wireguard_interface"]),
+            "peer",
+            public_key,
+            "allowed-ips",
+            address,
+        )
+
+    def _remove_wireguard_peer(self, public_key: str) -> None:
+        if not public_key:
+            return
+        try:
+            config = self._global_config()
+            run_wg("set", str(config["wireguard_interface"]), "peer", public_key, "remove")
+        except (OSError, KeyError, ValueError, RuntimeError):
+            pass
 
     def _enroll(self) -> None:
         body = self._read_body_json()
@@ -166,6 +299,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         token = str(body.get("token", "")).strip()
         device_name = str(body.get("device", "")).strip()
         public_key = str(body.get("public_key", "")).strip()
+        wireguard_public_key = str(body.get("wireguard_public_key", "")).strip()
         agent_version = str(body.get("version", "")).strip()
 
         if len(token) != 64 or not device_name or len(device_name) > 64:
@@ -177,7 +311,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         except (ValueError, base64.binascii.Error):
             self.send_error(HTTPStatus.BAD_REQUEST)
             return
-        if len(public_raw) != 32:
+        if len(public_raw) != 32 or not valid_wireguard_key(wireguard_public_key):
             self.send_error(HTTPStatus.BAD_REQUEST)
             return
 
@@ -199,31 +333,58 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return
 
-        device_id = uuid.uuid4().hex
-        device_token = secrets.token_hex(32)
-        now = int(time.time())
-        device = {
-            "device_id": device_id,
-            "device": device_name,
-            "device_token": device_token,
-            "public_key": public_key,
-            "legacy_tunnel": str(enrollment.get("legacy_tunnel", "")),
-            "created": now,
-            "last_seen": now,
-            "last_version": agent_version,
-            "revoked": False,
-        }
-        try:
-            atomic_json(self._root() / "devices" / f"{device_id}.json", device)
-            atomic_json(
-                self._root() / "tokens" / f"{token_index(device_token)}.json",
-                {"device_id": device_id},
-            )
-            enroll_path.unlink()
-            config = self._config_for_device(device)
-        except (OSError, ValueError, KeyError):
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
+        enroll_lock: threading.Lock = self.server.enroll_lock  # type: ignore[attr-defined]
+        with enroll_lock:
+            if not enroll_path.is_file():
+                self.send_error(HTTPStatus.UNAUTHORIZED)
+                return
+            device_id = uuid.uuid4().hex
+            device_token = secrets.token_hex(32)
+            wgshim_psk = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
+            now = int(time.time())
+            try:
+                wireguard_address = self._allocate_wireguard_address()
+                global_config = self._global_config()
+                key_path = Path(str(global_config["wgshim_key_dir"])) / f"{device_id}.key"
+                device_path = self._root() / "devices" / f"{device_id}.json"
+                token_path = self._root() / "tokens" / f"{token_index(device_token)}.json"
+                device = {
+                    "device_id": device_id,
+                    "device": device_name,
+                    "device_token": device_token,
+                    "public_key": public_key,
+                    "wireguard_public_key": wireguard_public_key,
+                    "wireguard_address": wireguard_address,
+                    "wgshim_psk": wgshim_psk,
+                    "legacy_tunnel": str(enrollment.get("legacy_tunnel", "")),
+                    "created": now,
+                    "last_seen": now,
+                    "last_version": agent_version,
+                    "revoked": False,
+                }
+                atomic_json(device_path, device)
+                atomic_json(token_path, {"device_id": device_id})
+                atomic_text(key_path, wgshim_psk + "\n")
+                self._install_wireguard_peer(wireguard_public_key, wireguard_address)
+                enroll_path.unlink()
+                config = self._config_for_device(device)
+                wireguard = self._wireguard_profile_for_device(device)
+            except (OSError, ValueError, KeyError, RuntimeError):
+                self._remove_wireguard_peer(wireguard_public_key)
+                for rollback in (
+                    self._root() / "devices" / f"{device_id}.json",
+                    self._root() / "tokens" / f"{token_index(device_token)}.json",
+                ):
+                    rollback.unlink(missing_ok=True)
+                try:
+                    global_config = self._global_config()
+                    (Path(str(global_config["wgshim_key_dir"])) / f"{device_id}.key").unlink(
+                        missing_ok=True
+                    )
+                except (OSError, ValueError, KeyError, json.JSONDecodeError):
+                    pass
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+                return
 
         self._send_json(
             HTTPStatus.OK,
@@ -231,6 +392,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "device_id": device_id,
                 "device_token": device_token,
                 "config": config,
+                "wireguard": wireguard,
             },
         )
 
@@ -346,8 +508,11 @@ def main() -> int:
         if not path.is_file():
             raise SystemExit(f"required file is missing: {path}")
 
+    sync_wireguard_peers(state_dir)
+
     server = ControlServer((args.listen, args.port), ControlHandler)
     server.state_dir = str(state_dir)
+    server.enroll_lock = threading.Lock()
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2

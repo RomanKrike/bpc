@@ -25,6 +25,7 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
     "bpc-enable-wgshim:bpc-enable-wgshim.sh" \
     "bpc-agent:bpc-agent.sh" \
     "bpc-enable-control:bpc-enable-control.sh" \
+    "bpc-enable-agent-dataplane:bpc-enable-agent-dataplane.sh" \
     "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
     "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
     "bpc-enable-ikev2:bpc-enable-ikev2.sh" \
@@ -212,6 +213,9 @@ fi
 # after a release switch while preserving enrollment/device/update state.
 if [[ -f "${ru_dir}/control/enabled" ]] && \
   systemctl --quiet is-enabled bpc-control.service 2>/dev/null; then
+  if [[ -x "${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh" ]]; then
+    "${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh"
+  fi
   systemctl restart bpc-control.service
   if [[ -x "${BPC_ROOT}/current/deploy/bpc-agent.sh" ]]; then
     "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update

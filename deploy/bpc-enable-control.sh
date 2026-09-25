@@ -4,7 +4,7 @@ set -euo pipefail
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RU_DIR="${BPC_STATE_DIR}/ru-node"
-WGSHIM_DIR="${RU_DIR}/wgshim"
+AGENT_DIR="${RU_DIR}/agent"
 SUB_DIR="${RU_DIR}/subscription"
 CONTROL_DIR="${RU_DIR}/control"
 PORT="${BPC_CONTROL_PORT:-8444}"
@@ -19,7 +19,8 @@ Options:
   -h, --help    Show this help
 
 The BPC control plane reuses the trusted TLS certificate provisioned by
-bpc-enable-subscription. WGShim must already be enabled.
+bpc-enable-subscription. It provisions the dedicated self-contained BPC Agent
+WireGuard/WGShim data plane automatically.
 USAGE
 }
 
@@ -49,19 +50,25 @@ if ! [[ "${PORT}" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
   echo "--port must be between 1024 and 65535" >&2
   exit 2
 fi
-if [[ ! -f "${WGSHIM_DIR}/enabled" || ! -s "${WGSHIM_DIR}/runtime.env" || ! -s "${WGSHIM_DIR}/psk" ]]; then
-  echo "WGShim must be enabled before the BPC control plane" >&2
-  exit 3
-fi
 if [[ ! -f "${SUB_DIR}/enabled" || ! -s "${SUB_DIR}/runtime.env" ]]; then
   echo "Secure subscription HTTPS must be enabled first with bpc-enable-subscription" >&2
   exit 3
 fi
 
 # shellcheck disable=SC1090,SC1091
-source "${WGSHIM_DIR}/runtime.env"
-# shellcheck disable=SC1090,SC1091
 source "${SUB_DIR}/runtime.env"
+
+if [[ ! -x "${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh" ]]; then
+  echo "BPC Agent data-plane provisioner is missing from the current release" >&2
+  exit 3
+fi
+"${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh"
+if [[ ! -f "${AGENT_DIR}/enabled" || ! -s "${AGENT_DIR}/runtime.env" ]]; then
+  echo "BPC Agent data plane did not initialize" >&2
+  exit 3
+fi
+# shellcheck disable=SC1090,SC1091
+source "${AGENT_DIR}/runtime.env"
 
 if [[ ! -s "${SUBSCRIPTION_CERT}" || ! -s "${SUBSCRIPTION_KEY}" ]]; then
   echo "Subscription TLS certificate is missing" >&2
@@ -94,8 +101,12 @@ if [[ ! -s "${signing_key}" || ! -s "${signing_public}" ]]; then
 fi
 chmod 0600 "${signing_key}" "${signing_public}"
 
-wgshim_psk="$(tr -d '\r\n' < "${WGSHIM_DIR}/psk")"
-python3 - "${CONTROL_DIR}/config.json" <<PY
+python3 - "${CONTROL_DIR}/config.json" \
+  "${AGENT_PUBLIC_HOST}" "${AGENT_WGSHIM_PORT}" "${AGENT_WGSHIM_LOCAL_PORT}" \
+  "${AGENT_WG_PORT}" "${AGENT_WGSHIM_PADDING_MIN}" "${AGENT_WGSHIM_PADDING_MAX}" \
+  "${AGENT_WG_INTERFACE}" "${AGENT_WG_SUBNET}" "${AGENT_WG_SERVER_ADDRESS}" \
+  "${AGENT_WG_SERVER_PUBLIC_KEY}" "${AGENT_WG_MTU}" "${AGENT_WG_KEEPALIVE}" \
+  "${AGENT_WG_ALLOWED_IPS}" "${AGENT_WGSHIM_KEY_DIR}" <<'PY'
 import json
 import os
 import sys
@@ -103,13 +114,20 @@ from pathlib import Path
 
 path = Path(sys.argv[1])
 value = {
-    "config_version": 1,
-    "wgshim_server": "${BPC_RU_HOST}:${WGSHIM_PORT:-24443}",
-    "wgshim_listen": "127.0.0.1:${WGSHIM_LOCAL_PORT:-24081}",
-    "wgshim_target": "${WGSHIM_TARGET_HOST}:${WGSHIM_TARGET_PORT}",
-    "wgshim_psk": "${wgshim_psk}",
-    "padding_min": int("${WGSHIM_PADDING_MIN:-0}"),
-    "padding_max": int("${WGSHIM_PADDING_MAX:-31}"),
+    "config_version": 2,
+    "wgshim_server": f"{sys.argv[2]}:{sys.argv[3]}",
+    "wgshim_listen": f"127.0.0.1:{sys.argv[4]}",
+    "wgshim_target": f"127.0.0.1:{sys.argv[5]}",
+    "padding_min": int(sys.argv[6]),
+    "padding_max": int(sys.argv[7]),
+    "wireguard_interface": sys.argv[8],
+    "wireguard_subnet": sys.argv[9],
+    "wireguard_server_address": sys.argv[10],
+    "wireguard_server_public_key": sys.argv[11],
+    "wireguard_mtu": int(sys.argv[12]),
+    "wireguard_keepalive": int(sys.argv[13]),
+    "wireguard_allowed_ips": [item.strip() for item in sys.argv[14].split(",") if item.strip()],
+    "wgshim_key_dir": sys.argv[15],
     "update_channel": "stable",
 }
 tmp = path.with_suffix(".tmp")
@@ -130,8 +148,9 @@ chmod 0600 "${CONTROL_DIR}/runtime.env"
 cat > /etc/systemd/system/bpc-control.service <<UNIT
 [Unit]
 Description=BPC Agent control plane
-After=network-online.target
+After=network-online.target wg-quick@${AGENT_WG_INTERFACE}.service bpc-agent-relay.service
 Wants=network-online.target
+Requires=wg-quick@${AGENT_WG_INTERFACE}.service bpc-agent-relay.service
 
 [Service]
 Type=simple
@@ -143,7 +162,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=${CONTROL_DIR}
+ReadWritePaths=${CONTROL_DIR} ${AGENT_DIR}
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
@@ -151,6 +170,9 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
 SystemCallArchitectures=native
 
 [Install]
@@ -184,5 +206,5 @@ State:
 Update signing public key:
   ${signing_public}
 
-Allow inbound TCP/${PORT} in the VPS provider firewall if it is filtered there.
+Allow inbound TCP/${PORT} and UDP/${AGENT_WGSHIM_PORT} in the VPS provider firewall if filtered there.
 DONE
