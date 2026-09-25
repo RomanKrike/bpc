@@ -133,9 +133,6 @@ func installAgent() error {
 	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
 		return fmt.Errorf("runtime config: %w", err)
 	}
-	if err := writeUIStatus(state); err != nil {
-		return fmt.Errorf("write UI status: %w", err)
-	}
 
 	current, err := os.Executable()
 	if err != nil {
@@ -165,6 +162,9 @@ func installAgent() error {
 	lockDownPath(statePath)
 	if err := installWindowsUI(exePath, dir); err != nil {
 		return fmt.Errorf("install BPC Agent UI: %w", err)
+	}
+	if err := writeUIStatus(state); err != nil {
+		return fmt.Errorf("write UI status: %w", err)
 	}
 	allowUsersReadPath(dir)
 	allowUsersReadPath(exePath)
