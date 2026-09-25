@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/netip"
 	"strings"
 
@@ -40,7 +41,7 @@ func runEmbeddedWireGuard(
 		_ = tunDevice.Close()
 		return fmt.Errorf("read Wintun adapter name: %w", err)
 	}
-	if err := configureEmbeddedInterface(interfaceName, profile); err != nil {
+	if err := configureEmbeddedInterface(interfaceName, cfg, profile); err != nil {
 		_ = tunDevice.Close()
 		return err
 	}
@@ -125,8 +126,16 @@ func embeddedUAPI(cfg agentctl.RuntimeConfig, profile agentctl.WireGuardProfile)
 	return builder.String(), nil
 }
 
-func configureEmbeddedInterface(name string, profile agentctl.WireGuardProfile) error {
+func configureEmbeddedInterface(
+	name string,
+	cfg agentctl.RuntimeConfig,
+	profile agentctl.WireGuardProfile,
+) error {
 	address, err := netip.ParsePrefix(profile.Address)
+	if err != nil {
+		return err
+	}
+	serverIP, err := resolveWGShimServerIPv4(cfg.WGShimServer)
 	if err != nil {
 		return err
 	}
@@ -159,6 +168,16 @@ func configureEmbeddedInterface(name string, profile agentctl.WireGuardProfile) 
 
 	script := fmt.Sprintf(
 		"$ErrorActionPreference='Stop'; "+
+			"Get-NetRoute -InterfaceAlias '%s' -ErrorAction SilentlyContinue | "+
+			"Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue; "+
+			"$route=Find-NetRoute -RemoteIPAddress '%s' | "+
+			"Where-Object {$_.InterfaceAlias -ne '%s'} | "+
+			"Sort-Object RouteMetric | Select-Object -First 1; "+
+			"if ($null -eq $route) { throw 'No physical route to BPC relay' }; "+
+			"$nextHop=$route.NextHop; if ([string]::IsNullOrWhiteSpace($nextHop)) {$nextHop='0.0.0.0'}; "+
+			"Remove-NetRoute -DestinationPrefix '%s/32' -Confirm:$false -ErrorAction SilentlyContinue; "+
+			"New-NetRoute -InterfaceIndex $route.InterfaceIndex -DestinationPrefix '%s/32' "+
+			"-NextHop $nextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null; "+
 			"Get-NetIPAddress -InterfaceAlias '%s' -AddressFamily IPv4 "+
 			"-ErrorAction SilentlyContinue | "+
 			"Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue; "+
@@ -166,6 +185,11 @@ func configureEmbeddedInterface(name string, profile agentctl.WireGuardProfile) 
 			"-AddressFamily IPv4 -ErrorAction Stop | Out-Null; "+
 			"Set-NetIPInterface -InterfaceAlias '%s' -AddressFamily IPv4 "+
 			"-NlMtuBytes %d -ErrorAction Stop; %s",
+		escapedName,
+		serverIP,
+		escapedName,
+		serverIP,
+		serverIP,
 		escapedName,
 		escapedName,
 		address.Addr().String(),
@@ -189,4 +213,29 @@ func configureEmbeddedInterface(name string, profile agentctl.WireGuardProfile) 
 		)
 	}
 	return nil
+}
+
+
+func resolveWGShimServerIPv4(endpoint string) (string, error) {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		return "", fmt.Errorf("parse WGShim server endpoint: %w", err)
+	}
+	host = strings.Trim(host, "[]")
+	if ip := net.ParseIP(host); ip != nil {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String(), nil
+		}
+		return "", fmt.Errorf("WGShim server does not resolve to IPv4: %s", host)
+	}
+	addresses, err := net.LookupIP(host)
+	if err != nil {
+		return "", fmt.Errorf("resolve WGShim server %s: %w", host, err)
+	}
+	for _, ip := range addresses {
+		if v4 := ip.To4(); v4 != nil {
+			return v4.String(), nil
+		}
+	}
+	return "", fmt.Errorf("WGShim server has no IPv4 address: %s", host)
 }

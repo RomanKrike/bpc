@@ -151,34 +151,49 @@ func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, stateP
 		return nil, err
 	}
 
-	var wireGuardProfile agentctl.WireGuardProfile
+	var legacyProfile agentctl.WireGuardProfile
 	if bootstrap.LegacyTunnel != "" {
 		profile, err := captureLegacyWireGuardProfile(bootstrap.LegacyTunnel)
 		if err != nil {
 			return nil, fmt.Errorf("capture legacy WireGuard profile: %w", err)
 		}
-		wireGuardProfile = profile
+		legacyProfile = profile
 	}
 
 	publicKey, privateKey, err := agentctl.GenerateIdentity()
 	if err != nil {
 		return nil, fmt.Errorf("generate device identity: %w", err)
 	}
+	wireGuardPrivate, wireGuardPublic, err := agentctl.GenerateWireGuardKeypair()
+	if err != nil {
+		return nil, fmt.Errorf("generate WireGuard identity: %w", err)
+	}
 	client, err := agentctl.NewClient(bootstrap.ControlURL, "")
 	if err != nil {
 		return nil, err
 	}
 	response, err := client.Enroll(ctx, agentctl.EnrollmentRequest{
-		Token:     bootstrap.EnrollToken,
-		Device:    bootstrap.Device,
-		PublicKey: publicKey,
-		Version:   version,
+		Token:              bootstrap.EnrollToken,
+		Device:             bootstrap.Device,
+		PublicKey:          publicKey,
+		WireGuardPublicKey: wireGuardPublic,
+		Version:            version,
 	})
 	if err != nil {
 		return nil, err
 	}
 	if err := agentctl.ValidateRuntimeConfig(response.Config); err != nil {
 		return nil, err
+	}
+
+	wireGuardProfile := response.WireGuard
+	wireGuardProfile.PrivateKey = wireGuardPrivate
+	if err := agentctl.ValidateWireGuardProfile(wireGuardProfile); err != nil {
+		if legacyProfile.Complete() {
+			wireGuardProfile = legacyProfile
+		} else {
+			return nil, fmt.Errorf("provisioned WireGuard profile: %w", err)
+		}
 	}
 
 	state := &agentctl.State{

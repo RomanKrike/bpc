@@ -61,16 +61,18 @@ type State struct {
 }
 
 type EnrollmentRequest struct {
-	Token     string `json:"token"`
-	Device    string `json:"device"`
-	PublicKey string `json:"public_key"`
-	Version   string `json:"version"`
+	Token              string `json:"token"`
+	Device             string `json:"device"`
+	PublicKey          string `json:"public_key"`
+	WireGuardPublicKey string `json:"wireguard_public_key"`
+	Version            string `json:"version"`
 }
 
 type EnrollmentResponse struct {
-	DeviceID    string        `json:"device_id"`
-	DeviceToken string        `json:"device_token"`
-	Config      RuntimeConfig `json:"config"`
+	DeviceID    string           `json:"device_id"`
+	DeviceToken string           `json:"device_token"`
+	Config      RuntimeConfig    `json:"config"`
+	WireGuard   WireGuardProfile `json:"wireguard"`
 }
 
 type HeartbeatRequest struct {
@@ -117,6 +119,10 @@ func (c *Client) Enroll(ctx context.Context, req EnrollmentRequest) (*Enrollment
 	}
 	if response.DeviceID == "" || response.DeviceToken == "" {
 		return nil, errors.New("control plane returned incomplete enrollment response")
+	}
+	if strings.TrimSpace(response.WireGuard.Address) == "" ||
+		strings.TrimSpace(response.WireGuard.PeerPublicKey) == "" {
+		return nil, errors.New("control plane returned incomplete WireGuard profile")
 	}
 	return &response, nil
 }
