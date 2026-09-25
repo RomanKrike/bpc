@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.0
+
+### Added
+- BP Gateway nodes that advertise selected home-LAN CIDRs into the existing Agent overlay.
+- `bpc-node gateway create|grant|ungrant|list|remove` for provisioning gateway nodes and assigning their routes to BP Connect devices.
+- Root-only one-command Debian gateway installer using the existing WireGuard + WGShim relay data plane.
+- Control-plane route synchronization so advertised gateway CIDRs are owned by the gateway WireGuard peer and installed on the relay host.
+
+### Changed
+- The end-user Windows application is branded as **BP Connect** while BPC remains the internal repository/protocol namespace.
+- Home-infrastructure access is split-tunnel by default: only explicitly granted gateway CIDRs enter BP Network.
+
 ## 0.12.0
 
 ### Added
