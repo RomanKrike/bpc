@@ -90,7 +90,6 @@ func main() {
 				}
 				allowUsersReadPath(dir)
 				allowUsersReadPath(exePath)
-				allowUsersReadPath(filepath.Join(dir, "bpc-ui.ps1"))
 				if statusPath, statusErr := uiStatusPath(); statusErr == nil {
 					allowUsersReadPath(statusPath)
 				}
