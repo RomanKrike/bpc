@@ -1,4 +1,4 @@
-# BPC Connect
+# BP Connect
 
 Fail-closed multi-transport connectivity bridge for the first BPC milestone: **Georgia -> Russia -> corporate VPN / home infrastructure**.
 
@@ -210,6 +210,56 @@ sudo bpc-agent revoke pc004
 Revocation invalidates the control-plane bearer token, removes the device
 WireGuard peer and removes its WGShim relay key. Each active device has a
 separate relay session, so multiple agents can be connected concurrently.
+
+## BP Network home gateway
+
+BPC 0.13 adds the first BP Network subnet-routing milestone. A Linux **BP Gateway**
+inside the home LAN joins the same `10.253.0.0/24` Agent overlay as BP Connect.
+The relay then routes only the explicitly advertised home CIDRs to that gateway.
+
+The initial path is:
+
+```text
+BP Connect (Windows)
+        |
+        | encrypted BP overlay
+        v
+BP Relay
+        |
+        | gateway WireGuard peer
+        v
+BP Gateway (home Debian host/VM)
+        |
+        v
+home LAN
+```
+
+Create a gateway on the BP Relay and grant its routes to a Windows device:
+
+```bash
+sudo bpc-node gateway create home-moscow \
+  --route 192.168.88.0/24 \
+  --grant pc004
+```
+
+The command creates a root-only installer under
+`/etc/bpc-connect/ru-node/control/nodes/home-moscow/install.sh`. Copy that file
+to an always-on Debian host or VM inside the home LAN and run it as root. The
+installer provisions WireGuard, WGShim, forwarding and scoped NAT automatically.
+
+Manage access later with:
+
+```bash
+sudo bpc-node gateway list
+sudo bpc-node gateway grant home-moscow pc004
+sudo bpc-node gateway ungrant home-moscow pc004
+sudo bpc-node gateway remove home-moscow
+```
+
+BP Connect receives granted CIDRs through its normal control-plane sync, so no
+manual Windows routes or separate WireGuard application are required. This
+milestone uses the relay path; direct peer-to-peer/NAT traversal can be added
+later without changing the gateway/address model.
 
 ## WGShim low-latency WireGuard wrapper
 
