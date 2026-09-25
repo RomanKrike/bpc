@@ -224,20 +224,43 @@ func RunMultiServer(ctx context.Context, cfg MultiServerConfig) error {
 		var (
 			matchedID   string
 			matchedPeer MultiServerPeer
+			packetType  byte
 			inner       []byte
 		)
 		for id, peer := range snapshot {
-			decoded, openErr := peer.RX.Open(buf[:n])
+			decodedType, decoded, openErr := peer.RX.OpenTyped(buf[:n])
 			if openErr != nil {
 				continue
 			}
 			matchedID = id
 			matchedPeer = peer
+			packetType = decodedType
 			inner = decoded
 			break
 		}
 		if matchedID == "" {
 			stats.AuthDrops.Add(1)
+			continue
+		}
+
+		if IsProbe(packetType) {
+			reply, sealErr := matchedPeer.TX.SealProbeReply(inner)
+			if sealErr != nil {
+				if cfg.Logger != nil {
+					cfg.Logger.Printf("peer=%s seal probe reply failed: %v", matchedID, sealErr)
+				}
+				continue
+			}
+			if _, writeErr := outerConn.WriteToUDP(reply, addr); writeErr != nil {
+				if ctx.Err() == nil && cfg.Logger != nil {
+					cfg.Logger.Printf("peer=%s send probe reply failed: %v", matchedID, writeErr)
+				}
+				continue
+			}
+			stats.OuterTX.Add(uint64(len(reply)))
+			continue
+		}
+		if !IsData(packetType) {
 			continue
 		}
 
