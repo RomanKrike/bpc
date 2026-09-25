@@ -201,9 +201,27 @@ if [[ "${role}" == "ru-node" ]]; then
     agent_relay_state="$(systemctl is-active bpc-agent-relay.service 2>/dev/null || true)"
     agent_wg_state="$(systemctl is-active "wg-quick@${AGENT_WG_INTERFACE}.service" 2>/dev/null || true)"
     peers="$(wg show "${AGENT_WG_INTERFACE}" peers 2>/dev/null | wc -w || true)"
-    printf 'Agent data plane: relay=%s wg=%s (%s:%s/udp; subnet=%s; peers=%s)\n' \
+    agent_relay_pid="$(systemctl show -p MainPID --value bpc-agent-relay.service 2>/dev/null || true)"
+    agent_relay_port="${AGENT_WGSHIM_PORT:-24444}"
+    if [[ "${agent_relay_pid}" =~ ^[1-9][0-9]*$ ]]; then
+      detected_port="$(ss -H -lunp 2>/dev/null | awk -v pid="pid=${agent_relay_pid}," '
+        index($0, pid) {
+          addr=$5
+          sub(/^.*:/, "", addr)
+          print addr
+          exit
+        }')"
+      if [[ "${detected_port}" =~ ^[0-9]+$ ]]; then
+        agent_relay_port="${detected_port}"
+      fi
+    fi
+    relay_note=""
+    if [[ "${agent_relay_port}" != "${AGENT_WGSHIM_PORT:-24444}" ]]; then
+      relay_note="; runtime expects ${AGENT_WGSHIM_PORT:-24444}"
+    fi
+    printf 'Agent data plane: relay=%s wg=%s (%s:%s/udp%s; subnet=%s; peers=%s)\n' \
       "${agent_relay_state:-unknown}" "${agent_wg_state:-unknown}" \
-      "${AGENT_PUBLIC_HOST:-${host:-unknown}}" "${AGENT_WGSHIM_PORT:-24444}" \
+      "${AGENT_PUBLIC_HOST:-${host:-unknown}}" "${agent_relay_port}" "${relay_note}" \
       "${AGENT_WG_SUBNET:-unknown}" "${peers:-0}"
   else
     echo 'Agent data plane: disabled'
