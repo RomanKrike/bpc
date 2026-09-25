@@ -215,7 +215,7 @@ def test_prepared_agent_has_expiring_https_download_link() -> None:
 
 
 def test_bootstrap_download_is_repeatable_until_enrollment() -> None:
-    bootstrap_method = CONTROL.split("def _serve_bootstrap_binary", 1)[1].split("def _serve_update_binary", 1)[0]
+    bootstrap_method = CONTROL.split("def _serve_bootstrap_binary", 1)[1]\n    bootstrap_method = bootstrap_method.split("def _serve_update_binary", 1)[0]
     assert "unlink" in bootstrap_method
     assert "expires <= int(time.time())" in bootstrap_method
     assert "binary_path.unlink" in bootstrap_method
