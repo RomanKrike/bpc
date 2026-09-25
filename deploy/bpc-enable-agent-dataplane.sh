@@ -173,11 +173,17 @@ case "${ACTION}" in
       iptables -I INPUT 1 -p udp --dport "${AGENT_WG_PORT}" -j DROP
     iptables -C INPUT -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT 2>/dev/null || \
       iptables -I INPUT 1 -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT
+    iptables -C INPUT -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
+      -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || \
+      iptables -I INPUT 1 -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
+        -p icmp --icmp-type echo-request -j ACCEPT
     ;;
   down)
     iptables -D FORWARD -i "${AGENT_WG_INTERFACE}" -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
     iptables -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" -o "${DEFAULT_IF}" -j MASQUERADE 2>/dev/null || true
+    iptables -D INPUT -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
+      -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || true
     iptables -D INPUT -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT 2>/dev/null || true
     iptables -D INPUT -p udp --dport "${AGENT_WG_PORT}" -j DROP 2>/dev/null || true
     ;;
