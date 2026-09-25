@@ -15,7 +15,7 @@ import (
 	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
-const version = "0.10.6"
+const version = "0.10.7"
 
 func main() {
 	listen := flag.String("listen", "0.0.0.0:24444", "public WGShim UDP listen address")
