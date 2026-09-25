@@ -215,7 +215,6 @@ func configureEmbeddedInterface(
 	return nil
 }
 
-
 func resolveWGShimServerIPv4(endpoint string) (string, error) {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
 	if err != nil {
