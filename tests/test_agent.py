@@ -254,8 +254,10 @@ def test_agent_has_wireguard_style_tray_ui() -> None:
     assert "System.Windows.Forms.NotifyIcon" in UI
     assert "Connect" in UI
     assert "Disconnect" in UI
-    assert "Start-Service -Name BPCAgent" in UI
-    assert "Stop-Service -Name BPCAgent" in UI
+    assert "& $exe connect" in UI
+    assert "& $exe disconnect" in UI
+    assert "setWindowsServiceAutomatic(true)" in AGENT
+    assert "setWindowsServiceAutomatic(false)" in AGENT
     assert "New-ScheduledTaskTrigger -AtLogOn" in UI
     assert "RunLevel Highest" in UI
 
