@@ -23,7 +23,6 @@ import (
 
 const (
 	version         = "0.10.0"
-	taskName        = "BPC Agent"
 	bootstrapStart  = "\nBPC_AGENT_BOOTSTRAP_V2\n"
 	bootstrapEnd    = "\nBPC_AGENT_BOOTSTRAP_END\n"
 	defaultLogEvery = 30 * time.Second
