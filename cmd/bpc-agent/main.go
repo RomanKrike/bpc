@@ -646,6 +646,9 @@ func connectAgent() error {
 	if !isAdministrator() {
 		return elevate("connect")
 	}
+	if err := setWindowsServiceAutomatic(true); err != nil {
+		return err
+	}
 	return startWindowsService()
 }
 
@@ -653,7 +656,10 @@ func disconnectAgent() error {
 	if !isAdministrator() {
 		return elevate("disconnect")
 	}
-	return stopWindowsService()
+	if err := stopWindowsService(); err != nil {
+		return err
+	}
+	return setWindowsServiceAutomatic(false)
 }
 
 func printStatusJSON() error {
