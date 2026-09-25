@@ -15,6 +15,18 @@ fail_health() {
   return 1
 }
 
+service_owns_udp_port() {
+  local service="$1"
+  local port="$2"
+  local pid
+
+  pid="$(systemctl show -p MainPID --value "${service}" 2>/dev/null || true)"
+  if ! [[ "${pid}" =~ ^[1-9][0-9]*$ ]]; then
+    return 1
+  fi
+  ss -H -lunp "sport = :${port}" 2>/dev/null | grep -Fq "pid=${pid},"
+}
+
 check_awg() {
   local awg_dir="${BPC_STATE_DIR}/ru-node/awg"
   local runtime_env="${awg_dir}/runtime.env"
@@ -277,8 +289,8 @@ check_agent_dataplane() {
     fail_health "bpc-agent-dataplane-firewall.service is not active"
     return 1
   fi
-  if ! ss -H -lun "sport = :${AGENT_WGSHIM_PORT}" | grep -q .; then
-    fail_health "BPC Agent relay UDP listener is unavailable on port ${AGENT_WGSHIM_PORT}"
+  if ! service_owns_udp_port bpc-agent-relay.service "${AGENT_WGSHIM_PORT}"; then
+    fail_health "BPC Agent relay service does not own UDP/${AGENT_WGSHIM_PORT}"
     return 1
   fi
 }
