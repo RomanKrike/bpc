@@ -220,6 +220,6 @@ def test_bootstrap_download_is_repeatable_until_enrollment() -> None:
     assert "expires <= int(time.time())" in bootstrap_method
     assert "binary_path.unlink" in bootstrap_method
     enrollment_block = CONTROL.split("def _enroll", 1)[1].split("def _serve_config", 1)[0]
-    assert 'downloads_dir / f"{download_token}.json"' in enrollment_block
-    assert 'downloads_dir / f"{download_token}.exe"' in enrollment_block
+    assert "self._delete_bootstrap_download(download_token)" in enrollment_block
+    assert "_delete_bootstrap_download" in CONTROL
 
