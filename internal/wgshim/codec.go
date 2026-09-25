@@ -166,9 +166,9 @@ func (c *Codec) OpenTyped(packet []byte) (byte, []byte, error) {
 	return packetType, payload, nil
 }
 
-func IsProbe(packetType byte) bool { return packetType == packetProbe }
+func IsProbe(packetType byte) bool      { return packetType == packetProbe }
 func IsProbeReply(packetType byte) bool { return packetType == packetProbeReply }
-func IsData(packetType byte) bool { return packetType == packetData }
+func IsData(packetType byte) bool       { return packetType == packetData }
 
 func (c *Codec) randomPaddingLength() (int, error) {
 	if c.paddingMin == c.paddingMax {
