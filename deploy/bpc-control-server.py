@@ -116,6 +116,9 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/update/agent.exe":
             self._serve_update_binary()
             return
+        if self.path.startswith("/v1/bootstrap/"):
+            self._serve_bootstrap_binary()
+            return
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
@@ -365,6 +368,16 @@ class ControlHandler(BaseHTTPRequestHandler):
                 atomic_json(token_path, {"device_id": device_id})
                 atomic_text(key_path, wgshim_psk + "\n")
                 self._install_wireguard_peer(wireguard_public_key, wireguard_address)
+                download_token = str(enrollment.get("download_token", "")).strip()
+                if len(download_token) == 64:
+                    try:
+                        int(download_token, 16)
+                    except ValueError:
+                        download_token = ""
+                if download_token:
+                    downloads_dir = self._root() / "downloads"
+                    (downloads_dir / f"{download_token}.json").unlink(missing_ok=True)
+                    (downloads_dir / f"{download_token}.exe").unlink(missing_ok=True)
                 enroll_path.unlink()
                 config = self._config_for_device(device)
                 wireguard = self._wireguard_profile_for_device(device)
@@ -451,15 +464,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, manifest)
 
-    def _serve_update_binary(self) -> None:
-        authenticated = self._authorized_device()
-        if authenticated is None:
-            return
-        _, device = authenticated
-        if bool(device.get("revoked", False)):
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return
-        binary_path = self._root() / "update" / "bpc-agent.exe"
+    def _send_binary(self, binary_path: Path, filename: str) -> None:
         if not binary_path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -471,12 +476,63 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/vnd.microsoft.portable-executable")
         self.send_header("Content-Length", str(size))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Disposition", 'attachment; filename="bpc-agent.exe"')
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         with binary_path.open("rb") as handle:
             while chunk := handle.read(1024 * 1024):
                 self.wfile.write(chunk)
+
+    def _serve_bootstrap_binary(self) -> None:
+        clean_path = self.path.split("?", 1)[0]
+        parts = clean_path.split("/")
+        if len(parts) != 5 or parts[1:3] != ["v1", "bootstrap"]:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        token = parts[3]
+        requested_name = parts[4]
+        if len(token) != 64 or not requested_name.lower().endswith(".exe"):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        try:
+            int(token, 16)
+        except ValueError:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
+        downloads = self._root() / "downloads"
+        metadata_path = downloads / f"{token}.json"
+        binary_path = downloads / f"{token}.exe"
+        if not metadata_path.is_file() or not binary_path.is_file():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        try:
+            metadata = read_json(metadata_path)
+            expires = int(metadata.get("expires", 0))
+            filename = str(metadata.get("filename", ""))
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        if expires <= int(time.time()):
+            metadata_path.unlink(missing_ok=True)
+            binary_path.unlink(missing_ok=True)
+            self.send_error(HTTPStatus.GONE)
+            return
+        if not filename or not secrets.compare_digest(filename, requested_name):
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        self._send_binary(binary_path, filename)
+
+    def _serve_update_binary(self) -> None:
+        authenticated = self._authorized_device()
+        if authenticated is None:
+            return
+        _, device = authenticated
+        if bool(device.get("revoked", False)):
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return
+        binary_path = self._root() / "update" / "bpc-agent.exe"
+        self._send_binary(binary_path, "bpc-agent.exe")
 
     def log_message(self, format: str, *args: object) -> None:
         # Paths and authorization failures can contain security-relevant metadata.
