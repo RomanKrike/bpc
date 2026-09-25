@@ -181,10 +181,12 @@ PY
   local tmp
   tmp="$(mktemp "${device_dir}/.agent.XXXXXX")"
   cp "${generic}" "${tmp}"
-  printf '\nBPC_AGENT_BOOTSTRAP_V2\n%s\nBPC_AGENT_BOOTSTRAP_END\n' "${encoded}" >> "${tmp}"
-  printf '\nBPC_AGENT_WINTUN_V1\n' >> "${tmp}"
-  base64 -w0 < "${wintun}" >> "${tmp}"
-  printf '\nBPC_AGENT_WINTUN_END\n' >> "${tmp}"
+  {
+    printf '\nBPC_AGENT_BOOTSTRAP_V2\n%s\nBPC_AGENT_BOOTSTRAP_END\n' "${encoded}"
+    printf '\nBPC_AGENT_WINTUN_V1\n'
+    base64 -w0 < "${wintun}"
+    printf '\nBPC_AGENT_WINTUN_END\n'
+  } >> "${tmp}"
   chmod 0600 "${tmp}"
   mv -f "${tmp}" "${prepared}"
 
