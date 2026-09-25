@@ -168,6 +168,49 @@ sudo bpc-route-target clear
 
 `clear` restores the normal full-tunnel fail-closed profile where `MATCH` uses `BPC-ROUTE`.
 
+## Self-contained Windows BPC Agent
+
+BPC 0.10 adds a prepared Windows agent that no longer requires WireGuard for
+Windows on a clean machine. The VPS provisions a dedicated per-device
+WireGuard peer and a per-device WGShim key during one-time HTTPS enrollment.
+The agent embeds Wintun and the userspace WireGuard implementation, installs as
+a native Windows service, reports heartbeats, synchronizes runtime
+configuration and applies signed automatic updates.
+
+Enable the HTTPS control plane once on the RU node:
+
+```bash
+sudo bpc-enable-subscription --hostname sub.example.com
+sudo bpc-enable-control
+```
+
+The control-plane command also provisions the dedicated agent data plane:
+`bpcag0` uses `10.253.0.0/24` by default and the public multi-client relay
+listens on UDP/24444. The inner WireGuard listener is restricted to loopback;
+only the WGShim relay port must be exposed by the VPS provider firewall.
+
+Create a one-time installer for a device:
+
+```bash
+sudo bpc-agent create pc004
+```
+
+Copy the generated EXE to that Windows machine and run it. The installer
+elevates once, enrolls the device, stores its private WireGuard key only on the
+client, installs the BPC Agent Windows service and starts the embedded tunnel.
+No separate WireGuard application or hand-edited tunnel profile is required.
+
+Server-side device operations:
+
+```bash
+sudo bpc-agent list
+sudo bpc-agent revoke pc004
+```
+
+Revocation invalidates the control-plane bearer token, removes the device
+WireGuard peer and removes its WGShim relay key. Each active device has a
+separate relay session, so multiple agents can be connected concurrently.
+
 ## WGShim low-latency WireGuard wrapper
 
 WGShim is an experimental, latency-oriented BPC transport for carrying an

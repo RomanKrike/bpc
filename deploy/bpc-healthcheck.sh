@@ -248,6 +248,41 @@ check_wgshim() {
   fi
 }
 
+check_agent_dataplane() {
+  local agent_dir="${BPC_STATE_DIR}/ru-node/agent"
+  local runtime_env="${agent_dir}/runtime.env"
+
+  [[ -f "${agent_dir}/enabled" ]] || return 0
+  if [[ ! -s "${runtime_env}" || ! -s "${agent_dir}/server.key" || \
+    ! -s "${agent_dir}/server.pub" ]]; then
+    fail_health "BPC Agent data-plane state is incomplete"
+    return 1
+  fi
+  if [[ ! -x /usr/local/bin/bpc-agent-relay ]]; then
+    fail_health "bpc-agent-relay binary is missing"
+    return 1
+  fi
+
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  if ! wg show "${AGENT_WG_INTERFACE}" >/dev/null 2>&1; then
+    fail_health "BPC Agent WireGuard interface ${AGENT_WG_INTERFACE} is unavailable"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-agent-relay.service; then
+    fail_health "bpc-agent-relay.service is not active"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-agent-dataplane-firewall.service; then
+    fail_health "bpc-agent-dataplane-firewall.service is not active"
+    return 1
+  fi
+  if ! ss -H -lun "sport = :${AGENT_WGSHIM_PORT}" | grep -q .; then
+    fail_health "BPC Agent relay UDP listener is unavailable on port ${AGENT_WGSHIM_PORT}"
+    return 1
+  fi
+}
+
 check_subscription() {
   local sub_dir="${BPC_STATE_DIR}/ru-node/subscription"
   local runtime_env="${sub_dir}/runtime.env"
@@ -336,6 +371,7 @@ case "${ROLE}" in
     check_ikev2
     check_ssh_rescue
     check_wgshim
+    check_agent_dataplane
     check_subscription
     check_control
     ;;

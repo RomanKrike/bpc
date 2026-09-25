@@ -5,6 +5,7 @@ AGENTCTL = pathlib.Path("internal/agentctl/control.go").read_text(encoding="utf-
 BUILD = pathlib.Path("scripts/build-release.sh").read_text(encoding="utf-8")
 CI = pathlib.Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 CONTROL = pathlib.Path("deploy/bpc-control-server.py").read_text(encoding="utf-8")
+DATAPLANE = pathlib.Path("deploy/bpc-enable-agent-dataplane.sh").read_text(encoding="utf-8")
 ENABLE_CONTROL = pathlib.Path("deploy/bpc-enable-control.sh").read_text(encoding="utf-8")
 HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
 INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
@@ -20,13 +21,17 @@ UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 def test_release_builds_windows_agent() -> None:
     assert "bpc-agent-windows-amd64.exe" in BUILD
     assert "./cmd/bpc-agent" in BUILD
+    assert "bpc-agent-relay-linux-amd64" in BUILD
+    assert "bpc-agent-relay-linux-arm64" in BUILD
     assert "go build ./cmd/bpc-agent" in CI
+    assert "go build ./cmd/bpc-agent-relay" in CI
 
 
 def test_agent_server_commands_are_reconciled() -> None:
     for command in (
         '"bpc-agent:bpc-agent.sh"',
         '"bpc-enable-control:bpc-enable-control.sh"',
+        '"bpc-enable-agent-dataplane:bpc-enable-agent-dataplane.sh"',
     ):
         assert command in INSTALL
         assert command in MIGRATE
@@ -55,6 +60,10 @@ def test_control_plane_has_enrollment_config_heartbeat_and_update_api() -> None:
         assert path in CONTROL
     assert "secrets.compare_digest" in CONTROL
     assert "token_index" in CONTROL
+    assert "wireguard_public_key" in CONTROL
+    assert "_allocate_wireguard_address" in CONTROL
+    assert "wgshim_psk" in CONTROL
+    assert '"wireguard": wireguard' in CONTROL
     assert "revoked" in CONTROL
 
 
@@ -62,7 +71,11 @@ def test_control_plane_is_tls_provisioned_and_health_checked() -> None:
     assert "update-signing-key.pem" in ENABLE_CONTROL
     assert "openssl genpkey -algorithm ED25519" in ENABLE_CONTROL
     assert "bpc-control.service" in ENABLE_CONTROL
+    assert "bpc-enable-agent-dataplane.sh" in ENABLE_CONTROL
     assert "SUBSCRIPTION_CERT" in ENABLE_CONTROL
+    assert "bpc-agent-relay.service" in DATAPLANE
+    assert "wg-quick@" in DATAPLANE
+    assert "AGENT_WGSHIM_KEY_DIR" in DATAPLANE
     assert "check_control" in HEALTH
     assert "bpc-control.service" in HEALTH
     assert "Agent control plane:" in STATUS
@@ -71,6 +84,8 @@ def test_control_plane_is_tls_provisioned_and_health_checked() -> None:
 
 def test_agent_enrolls_syncs_and_reports_heartbeat() -> None:
     assert "agentctl.GenerateIdentity" in AGENT
+    assert "agentctl.GenerateWireGuardKeypair" in AGENT
+    assert "WireGuardPublicKey" in AGENT
     assert "client.Enroll" in AGENT
     assert "control.FetchConfig" in AGENT
     assert "control.Heartbeat" in AGENT
@@ -131,3 +146,20 @@ def test_agent_can_migrate_existing_wireguard_profile() -> None:
     assert "GenerateWireGuardKeypair" in WGPROFILE
     assert "WireGuardProfile" in WGPROFILE
     assert "captureLegacyWireGuardProfile" in AGENT
+
+
+def test_self_contained_agent_gets_per_device_wireguard_and_relay_credentials() -> None:
+    assert 'WireGuardPublicKey string `json:"wireguard_public_key"`' in AGENTCTL
+    assert 'WireGuard   WireGuardProfile `json:"wireguard"`' in AGENTCTL
+    assert "wireGuardProfile := response.WireGuard" in AGENT
+    assert "wireGuardProfile.PrivateKey = wireGuardPrivate" in AGENT
+    assert "wgshim-keys" in DATAPLANE
+    assert "wireguard_address" in CONTROL
+    assert 'run_wg("set"' in CONTROL or '"set",' in CONTROL
+
+
+def test_embedded_tunnel_pins_relay_outside_full_tunnel_route() -> None:
+    assert "resolveWGShimServerIPv4" in TUNNEL
+    assert "Find-NetRoute -RemoteIPAddress" in TUNNEL
+    assert "No physical route to BPC relay" in TUNNEL
+    assert "DestinationPrefix '%s/32'" in TUNNEL

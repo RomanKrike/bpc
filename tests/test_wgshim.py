@@ -5,6 +5,8 @@ ENABLE = pathlib.Path("deploy/bpc-enable-wgshim.sh").read_text(encoding="utf-8")
 HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
 INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
 MAIN = pathlib.Path("cmd/bpc-wgshim/main.go").read_text(encoding="utf-8")
+MULTI = pathlib.Path("internal/wgshim/multi.go").read_text(encoding="utf-8")
+RELAY = pathlib.Path("cmd/bpc-agent-relay/main.go").read_text(encoding="utf-8")
 MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
 STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
@@ -49,3 +51,14 @@ def test_release_cross_builds_linux_and_windows_wgshim() -> None:
     assert "bpc-wgshim-linux-amd64" in BUILD
     assert "bpc-wgshim-linux-arm64" in BUILD
     assert "bpc-wgshim-windows-amd64.exe" in BUILD
+
+
+def test_agent_relay_supports_multiple_independent_device_keys() -> None:
+    assert "RunMultiServer" in MULTI
+    assert "MultiServerPeer" in MULTI
+    assert "LoadPeers" in MULTI
+    assert "sessions" in MULTI
+    assert "--key-dir" not in RELAY
+    assert 'flag.String("key-dir"' in RELAY
+    assert "bpc-agent-relay-linux-amd64" in BUILD
+    assert "bpc-agent-relay-linux-arm64" in BUILD
