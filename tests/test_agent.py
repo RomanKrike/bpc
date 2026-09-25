@@ -210,7 +210,7 @@ def test_prepared_agent_has_expiring_https_download_link() -> None:
     assert 'Download URL:' in SERVER
     assert '${control_url}/v1/bootstrap/${download_token}/${download_name}' in SERVER
     assert '"download_token": sys.argv[5]' in SERVER
-    assert 'downloads_dir / f"{download_token}.exe"' in CONTROL
+    assert 'downloads / f"{token}.exe"' in CONTROL
     assert '"${CONTROL_DIR}/downloads"' in ENABLE_CONTROL
 
 
