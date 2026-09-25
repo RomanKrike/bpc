@@ -18,8 +18,8 @@ TLS_FIX = pathlib.Path("deploy/bpc-fix-mihomo-tls.sh").read_text(encoding="utf-8
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
-def test_release_version_is_080() -> None:
-    assert 'version = "0.8.0"' in PYPROJECT
+def test_release_version_is_090() -> None:
+    assert 'version = "0.9.0"' in PYPROJECT
 
 
 def test_mihomo_transport_pack_is_pinned_and_digest_verified() -> None:
