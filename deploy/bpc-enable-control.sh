@@ -183,7 +183,9 @@ WantedBy=multi-user.target
 UNIT
 
 systemctl daemon-reload
-systemctl enable --now bpc-control.service
+systemctl enable bpc-control.service >/dev/null
+systemctl reset-failed bpc-control.service >/dev/null 2>&1 || true
+systemctl restart bpc-control.service
 sleep 1
 if ! systemctl --quiet is-active bpc-control.service; then
   systemctl status bpc-control.service --no-pager >&2 || true
