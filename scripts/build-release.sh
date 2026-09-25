@@ -14,7 +14,7 @@ OUT_DIR="$(mkdir -p "${OUT_DIR}" && cd "${OUT_DIR}" && pwd)"
 staging="$(mktemp -d)"
 trap 'rm -rf "${staging}"' EXIT
 
-for path in config deploy docs scripts src pyproject.toml README.md LICENSE install.sh go.mod cmd internal; do
+for path in config deploy docs scripts src pyproject.toml README.md LICENSE install.sh go.mod go.sum cmd internal; do
   cp -a "${ROOT_DIR}/${path}" "${staging}/"
 done
 printf '%s\n' "${VERSION}" > "${staging}/VERSION"
