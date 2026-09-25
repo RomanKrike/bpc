@@ -13,6 +13,10 @@ WG_SERVER_ADDRESS="${BPC_AGENT_WG_SERVER_ADDRESS:-10.253.0.1/24}"
 WG_MTU="${BPC_AGENT_WG_MTU:-1360}"
 WG_KEEPALIVE="${BPC_AGENT_WG_KEEPALIVE:-25}"
 WG_ALLOWED_IPS="${BPC_AGENT_ALLOWED_IPS:-0.0.0.0/0}"
+WGSHIM_PORT_EXPLICIT="false"
+if [[ -n "${BPC_AGENT_WGSHIM_PORT:-}" ]]; then
+  WGSHIM_PORT_EXPLICIT="true"
+fi
 WGSHIM_PORT="${BPC_AGENT_WGSHIM_PORT:-24444}"
 WGSHIM_LOCAL_PORT="${BPC_AGENT_WGSHIM_LOCAL_PORT:-24081}"
 WGSHIM_PADDING_MIN="${BPC_AGENT_WGSHIM_PADDING_MIN:-0}"
@@ -71,6 +75,30 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends ca-certificates iproute2 iptables kmod wireguard-tools
 modprobe wireguard 2>/dev/null || true
+
+listener="$(ss -H -lunp "sport = :${WGSHIM_PORT}" 2>/dev/null || true)"
+if [[ -n "${listener}" ]] && ! grep -Fq 'bpc-agent-relay' <<< "${listener}"; then
+  if [[ "${WGSHIM_PORT_EXPLICIT}" == "true" ]]; then
+    echo "BPC Agent relay UDP port ${WGSHIM_PORT} is already in use:" >&2
+    echo "${listener}" >&2
+    exit 4
+  fi
+
+  selected_port=""
+  for candidate in $(seq 24444 24544); do
+    candidate_listener="$(ss -H -lunp "sport = :${candidate}" 2>/dev/null || true)"
+    if [[ -z "${candidate_listener}" ]] || grep -Fq 'bpc-agent-relay' <<< "${candidate_listener}"; then
+      selected_port="${candidate}"
+      break
+    fi
+  done
+  if [[ -z "${selected_port}" ]]; then
+    echo "Unable to find a free UDP port for the BPC Agent relay in 24444-24544" >&2
+    exit 4
+  fi
+  echo "UDP/${WGSHIM_PORT} is occupied by another service; using UDP/${selected_port} for BPC Agent relay."
+  WGSHIM_PORT="${selected_port}"
+fi
 
 install -d -m 0700 "${AGENT_DIR}" "${KEY_DIR}" /etc/wireguard
 install -m 0755 "${relay_binary}" /usr/local/bin/bpc-agent-relay
