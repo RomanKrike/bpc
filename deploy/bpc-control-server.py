@@ -237,6 +237,13 @@ class ControlHandler(BaseHTTPRequestHandler):
         config = {
             "config_version": int(global_config["config_version"]),
             "wgshim_server": str(global_config["wgshim_server"]),
+            "wgshim_servers": [
+                str(item)
+                for item in global_config.get(
+                    "wgshim_servers",
+                    [global_config["wgshim_server"]],
+                )
+            ],
             "wgshim_listen": str(global_config["wgshim_listen"]),
             "wgshim_target": str(global_config["wgshim_target"]),
             "wgshim_psk": str(device["wgshim_psk"]),
