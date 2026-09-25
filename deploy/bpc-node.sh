@@ -495,7 +495,7 @@ if device_id:
 for path, value in records:
     if value.get("role") == "gateway" or bool(value.get("revoked", False)):
         continue
-    current = value.get("manaed_routes", [])
+    current = value.get("managed_routes", [])
     if not isinstance(current, list):
         continue
     filtered = []
