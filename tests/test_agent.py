@@ -12,6 +12,8 @@ MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
 SERVER = pathlib.Path("deploy/bpc-agent.sh").read_text(encoding="utf-8")
 SERVICE = pathlib.Path("cmd/bpc-agent/service_windows.go").read_text(encoding="utf-8")
 STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
+TUNNEL = pathlib.Path("cmd/bpc-agent/tunnel_windows.go").read_text(encoding="utf-8")
+WGPROFILE = pathlib.Path("internal/agentctl/wireguard.go").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
@@ -103,3 +105,28 @@ def test_legacy_wireguard_is_optional_not_required_by_bootstrap() -> None:
     assert "self-contained tunnel backend is not enabled yet" in AGENT
     assert "WireGuardTunnel$" in AGENT
     assert "ProgramData" in AGENT
+
+
+def test_prepared_agent_bundles_wintun_runtime() -> None:
+    assert "wintun-windows-amd64.dll" in SERVER
+    assert "BPC_AGENT_WINTUN_V1" in SERVER
+    assert "BPC_AGENT_WINTUN_END" in SERVER
+    assert "installWintunPayload" in AGENT
+
+
+def test_agent_contains_embedded_userspace_wireguard_backend() -> None:
+    assert 'golang.zx2c4.com/wireguard/device' in TUNNEL
+    assert 'golang.zx2c4.com/wireguard/tun' in TUNNEL
+    assert "tun.CreateTUN" in TUNNEL
+    assert "device.NewDevice" in TUNNEL
+    assert "wgDevice.IpcSet" in TUNNEL
+    assert "wgDevice.Up" in TUNNEL
+    assert "runEmbeddedWireGuard" in AGENT
+    assert "profile.Complete()" in AGENT
+
+
+def test_agent_can_migrate_existing_wireguard_profile() -> None:
+    assert "ParseWireGuardShowConf" in WGPROFILE
+    assert "GenerateWireGuardKeypair" in WGPROFILE
+    assert "WireGuardProfile" in WGPROFILE
+    assert "captureLegacyWireGuardProfile" in AGENT
