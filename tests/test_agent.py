@@ -79,7 +79,7 @@ def test_control_plane_is_tls_provisioned_and_health_checked() -> None:
     assert "check_control" in HEALTH
     assert "bpc-control.service" in HEALTH
     assert "Agent control plane:" in STATUS
-    assert "systemctl restart bpc-control.service" in MIGRATE
+    assert "bpc-enable-control.sh" in MIGRATE
 
 
 def test_agent_enrolls_syncs_and_reports_heartbeat() -> None:
