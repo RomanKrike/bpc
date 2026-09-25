@@ -23,6 +23,7 @@ import (
 
 const (
 	version         = "0.10.0"
+	legacyTaskName = "BPC Agent"
 	bootstrapStart  = "\nBPC_AGENT_BOOTSTRAP_V2\n"
 	bootstrapEnd    = "\nBPC_AGENT_BOOTSTRAP_END\n"
 	defaultLogEvery = 30 * time.Second
@@ -109,6 +110,9 @@ func installAgent() error {
 	current, _ = filepath.Abs(current)
 	exePath, _ = filepath.Abs(exePath)
 
+	// Remove the 0.9.x startup task before switching to the native service.
+	_, _ = runCommand("schtasks.exe", "/End", "/TN", legacyTaskName)
+	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", legacyTaskName, "/F")
 	if err := stopWindowsService(); err != nil {
 		return fmt.Errorf("stop existing BPC Agent service: %w", err)
 	}
@@ -523,6 +527,8 @@ func uninstallAgent() error {
 	if !isAdministrator() {
 		return elevate("uninstall")
 	}
+	_, _ = runCommand("schtasks.exe", "/End", "/TN", legacyTaskName)
+	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", legacyTaskName, "/F")
 	if err := stopWindowsService(); err != nil {
 		return err
 	}
