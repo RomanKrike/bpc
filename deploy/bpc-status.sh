@@ -230,4 +230,19 @@ if [[ "${role}" == "ru-node" ]]; then
   else
     echo 'Subscription: disabled'
   fi
+
+  control_dir="${BPC_STATE_DIR}/ru-node/control"
+  if [[ -f "${control_dir}/enabled" && -f "${control_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${control_dir}/runtime.env"
+    control_state="$(systemctl is-active bpc-control.service 2>/dev/null || true)"
+    registered="0"
+    if [[ -d "${control_dir}/devices" ]]; then
+      registered="$(find "${control_dir}/devices" -maxdepth 1 -type f -name '*.json' | wc -l)"
+    fi
+    printf 'Agent control plane: %s (https://%s:%s; devices=%s)\n' \
+      "${control_state:-unknown}" "${CONTROL_HOST:-unknown}" "${CONTROL_PORT:-unknown}" "${registered}"
+  else
+    echo 'Agent control plane: disabled'
+  fi
 fi
