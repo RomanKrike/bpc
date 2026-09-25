@@ -154,6 +154,48 @@ if [[ -f "${ru_dir}/mihomo-server/enabled" ]]; then
   "${mihomo_tls_fix}"
 fi
 
+# BPC <=0.10.8 assigned the same 10.253.0.0/24 subnet to both the
+# OpenVPN fallback (bpcovpn) and the self-contained Agent overlay (bpcag0).
+# Linux can then route Agent return traffic through bpcovpn even though the
+# Agent handshake succeeds. Move only the legacy default OpenVPN subnet to the
+# dedicated 10.250.0.0/24 range. Credentials and client profiles remain valid
+# because the OpenVPN client does not hard-code its assigned tunnel address.
+if [[ -f "${ru_dir}/openvpn/enabled" && -s "${ru_dir}/openvpn/runtime.env" ]]; then
+  openvpn_runtime="${ru_dir}/openvpn/runtime.env"
+  legacy_openvpn_subnet="$(sed -n 's/^OPENVPN_SUBNET=//p' "${openvpn_runtime}" | head -n1)"
+  legacy_openvpn_network="$(sed -n 's/^OPENVPN_SERVER_NETWORK=//p' "${openvpn_runtime}" | head -n1)"
+
+  if [[ "${legacy_openvpn_subnet}" == "10.253.0.0/24" &&         "${legacy_openvpn_network}" == "10.253.0.0" ]]; then
+    echo "Migrating BPC OpenVPN subnet 10.253.0.0/24 -> 10.250.0.0/24 to avoid Agent collision."
+
+    # Stop the firewall before changing runtime.env so ExecStop removes rules
+    # for the old subnet rather than attempting to remove the new ones.
+    if systemctl cat bpc-openvpn-firewall.service >/dev/null 2>&1; then
+      systemctl stop bpc-openvpn-firewall.service || true
+    fi
+    if systemctl cat openvpn-server@bpc.service >/dev/null 2>&1; then
+      systemctl stop openvpn-server@bpc.service || true
+    fi
+
+    sed -i       -e 's|^OPENVPN_SUBNET=10\.253\.0\.0/24$|OPENVPN_SUBNET=10.250.0.0/24|'       -e 's|^OPENVPN_SERVER_NETWORK=10\.253\.0\.0$|OPENVPN_SERVER_NETWORK=10.250.0.0|'       "${openvpn_runtime}"
+    chmod 0600 "${openvpn_runtime}"
+
+    for openvpn_config in "${ru_dir}/openvpn/server.conf" /etc/openvpn/server/bpc.conf; do
+      if [[ -s "${openvpn_config}" ]]; then
+        sed -i           's|^server 10\.253\.0\.0 255\.255\.255\.0$|server 10.250.0.0 255.255.255.0|'           "${openvpn_config}"
+        chmod 0600 "${openvpn_config}"
+      fi
+    done
+
+    if systemctl cat openvpn-server@bpc.service >/dev/null 2>&1; then
+      systemctl restart openvpn-server@bpc.service
+    fi
+    if systemctl cat bpc-openvpn-firewall.service >/dev/null 2>&1; then
+      systemctl restart bpc-openvpn-firewall.service
+    fi
+  fi
+fi
+
 # BPC 0.7.4 generated an OpenVPN TLS server config without an explicit DH
 # policy. OpenVPN 2.6 refuses to start such a server with "You must define DH
 # file (--dh)". Modern ECDH negotiation does not require a finite-field DH file,
