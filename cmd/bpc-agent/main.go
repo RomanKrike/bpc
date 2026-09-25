@@ -67,6 +67,19 @@ func main() {
 		err = disconnectAgent()
 	case "ui":
 		err = launchWindowsUI()
+	case "install-ui":
+		if !isAdministrator() {
+			err = elevate("install-ui")
+		} else {
+			dir, exePath, _, pathErr := installPaths()
+			if pathErr != nil {
+				err = pathErr
+			} else if installErr := installWindowsUI(exePath, dir); installErr != nil {
+				err = installErr
+			} else {
+				err = startWindowsUI()
+			}
+		}
 	case "update":
 		err = updateNow()
 	case "uninstall":
@@ -307,7 +320,7 @@ func runAgentContext(parent context.Context) error {
 				logger.Printf("heartbeat failed: %v", err)
 			}
 		case <-updateDelay.C:
-			updated, err := checkAndStageUpdate(ctx, control, state, logger)
+			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
 			}
@@ -316,7 +329,7 @@ func runAgentContext(parent context.Context) error {
 				return nil
 			}
 		case <-updateTicker.C:
-			updated, err := checkAndStageUpdate(ctx, control, state, logger)
+			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
 			}
@@ -523,6 +536,7 @@ func checkAndStageUpdate(
 	control *agentctl.Client,
 	state *agentctl.State,
 	logger *log.Logger,
+	installUI bool,
 ) (bool, error) {
 	manifest, err := control.FetchUpdateManifest(ctx)
 	if err != nil {
@@ -549,17 +563,22 @@ func checkAndStageUpdate(
 	}
 	lockDownPath(nextPath)
 	logger.Printf("verified BPC Agent update %s; scheduling replacement", manifest.Version)
-	if err := scheduleReplacement(exePath, nextPath); err != nil {
+	if err := scheduleReplacement(exePath, nextPath, installUI); err != nil {
 		return false, err
 	}
 	return true, nil
 }
 
-func scheduleReplacement(exePath, nextPath string) error {
+func scheduleReplacement(exePath, nextPath string, installUI bool) error {
+	uiStep := ""
+	if installUI {
+		uiStep = fmt.Sprintf("& '%s' install-ui; ", psQuote(exePath))
+	}
 	script := fmt.Sprintf(
-		"Start-Sleep -Seconds 3; Move-Item -LiteralPath '%s' -Destination '%s' -Force; sc.exe start '%s' | Out-Null",
+		"Start-Sleep -Seconds 3; Move-Item -LiteralPath '%s' -Destination '%s' -Force; %ssc.exe start '%s' | Out-Null",
 		psQuote(nextPath),
 		psQuote(exePath),
+		uiStep,
 		psQuote(serviceName),
 	)
 	cmd := exec.Command(
@@ -893,6 +912,7 @@ func usage() {
 		"  bpc-agent.exe connect         Enable the tunnel service\n" +
 		"  bpc-agent.exe disconnect      Disable the tunnel service\n" +
 		"  bpc-agent.exe ui              Open the tray UI\n" +
+		"  bpc-agent.exe install-ui      Install tray UI autostart\n" +
 		"  bpc-agent.exe update          Check, verify and stage a signed update\n" +
 		"  bpc-agent.exe uninstall       Remove the agent and tray UI\n" +
 		"  bpc-agent.exe version\n\n" +
