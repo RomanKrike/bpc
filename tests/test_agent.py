@@ -224,3 +224,18 @@ def test_bootstrap_download_is_repeatable_until_enrollment() -> None:
     assert "self._delete_bootstrap_download(download_token)" in enrollment_block
     assert "_delete_bootstrap_download" in CONTROL
 
+
+
+def test_agent_defaults_to_split_tunnel_and_hot_syncs_routes() -> None:
+    assert 'WG_ALLOWED_IPS="${BPC_AGENT_ALLOWED_IPS:-${WG_SUBNET}}"' in DATAPLANE
+    assert '"config_version": 3' in ENABLE_CONTROL
+    assert '"wireguard": self._wireguard_profile_for_device(device)' in CONTROL
+    assert 'WireGuard     *WireGuardProfile `json:"wireguard,omitempty"`' in AGENTCTL
+    assert "ValidateWireGuardServerProfile" in AGENTCTL
+    assert "syncRuntimeState(ctx, control, state, statePath)" in AGENT
+    startup_sync = AGENT.index("syncRuntimeState(ctx, control, state, statePath)")
+    startup_apply = AGENT.index("supervisor.apply(ctx, state.Config, state.WireGuard, logger)")
+    assert startup_sync < startup_apply
+    assert "profile.PrivateKey = state.WireGuard.PrivateKey" in AGENT
+    assert "state.WireGuard = profile" in AGENT
+    assert 'Tunnel routes: %s' in AGENT
