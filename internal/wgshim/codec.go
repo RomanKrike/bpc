@@ -15,15 +15,13 @@ import (
 	"strings"
 )
 
-const (
-	protocolVersion  byte = 1
-	packetData       byte = 0
-	packetProbe      byte = 1
-	packetProbeReply byte = 2
-	nonceSize             = 12
-	headerSize            = 4
-	maxInnerPacket        = 65507 - nonceSize - 16 - headerSize
-)
+const protocolVersion byte = 1
+const packetData byte = 0
+const packetProbe byte = 1
+const packetProbeReply byte = 2
+const nonceSize = 12
+const headerSize = 4
+const maxInnerPacket = 65507 - nonceSize - 16 - headerSize
 
 var aad = []byte("BPC-WGSHIM-v1")
 
