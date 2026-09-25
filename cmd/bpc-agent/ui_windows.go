@@ -27,6 +27,7 @@ $script:mutexReleased = $false
 $exe = Join-Path $env:ProgramData 'BPC\bpc-agent.exe'
 $statusPath = Join-Path $env:ProgramData 'BPC\ui-status.json'
 $runtimePath = Join-Path $env:ProgramData 'BPC\ui-runtime.json'
+$transportPath = Join-Path $env:ProgramData 'BPC\ui-transport.json'
 
 $logoBytes = [Convert]::FromBase64String('__BPC_LOGO_PNG__')
 $logoStream = New-Object System.IO.MemoryStream(,$logoBytes)
@@ -342,6 +343,18 @@ function Get-BpcStatus {
         if (Test-Path -LiteralPath $runtimePath) {
             try { $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json } catch {}
         }
+        $transport = $null
+        if (Test-Path -LiteralPath $transportPath) {
+            try { $transport = Get-Content -LiteralPath $transportPath -Raw | ConvertFrom-Json } catch {}
+        }
+
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        if ($null -ne $transport) {
+            $transportAge = $now - [Int64]$transport.updated_at
+            if ($transportAge -lt -5 -or $transportAge -gt 90) {
+                $transport = $null
+            }
+        }
 
         $svc = Get-Service -Name BPCAgent -ErrorAction SilentlyContinue
         $service = 'missing'
@@ -349,7 +362,6 @@ function Get-BpcStatus {
             if ($svc.Status -eq 'Running') { $service = 'running' } else { $service = 'stopped' }
         }
 
-        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $connection = 'Disconnected'
         $handshakeAge = -1
         if ($service -eq 'running') {
@@ -368,6 +380,7 @@ function Get-BpcStatus {
         $s | Add-Member -NotePropertyName service -NotePropertyValue $service -Force
         $s | Add-Member -NotePropertyName connection -NotePropertyValue $connection -Force
         $s | Add-Member -NotePropertyName runtime -NotePropertyValue $runtime -Force
+        $s | Add-Member -NotePropertyName transport -NotePropertyValue $transport -Force
         $s | Add-Member -NotePropertyName handshake_age -NotePropertyValue $handshakeAge -Force
         return $s
     } catch {
@@ -428,6 +441,7 @@ function Refresh-Bpc {
         Set-ConnectionVisuals 'Unavailable'
         $deviceValue.Text = '-'
         $ipValue.Text = '-'
+        $relayCaption.Text = 'Relay'
         $relayValue.Text = '-'
         $handshakeValue.Text = '-'
         $trafficValue.Text = 'RX 0 B   TX 0 B'
@@ -447,11 +461,24 @@ function Refresh-Bpc {
         return
     }
 
+    $script:lastStatus = $s
     $versionValue.Text = "v$($s.version)"
     $deviceValue.Text = $s.device
     $ipValue.Text = $s.tunnel_address
-    $relayValue.Text = $s.relay
     $routesValue.Text = ($s.routes -join [Environment]::NewLine)
+
+    if ($null -ne $s.transport) {
+        $relayValue.Text = $s.transport.endpoint
+        $relayCaption.Text = "Relay   $($s.transport.reachable)/$($s.transport.total) ports"
+        if ([Int64]$s.transport.rtt_ms -gt 0) {
+            $latencyValue.Text = "$($s.transport.rtt_ms) ms"
+        } else {
+            $latencyValue.Text = [string][char]0x2014
+        }
+    } else {
+        $relayCaption.Text = 'Relay'
+        $relayValue.Text = $s.relay
+    }
 
     if ($null -ne $s.runtime) {
         if ($s.handshake_age -ge 0) {
@@ -475,7 +502,11 @@ function Refresh-Bpc {
     $connectItem.Enabled = -not $isRunning
     $disconnectItem.Enabled = $isRunning
 
-    Update-Latency $s.relay ($s.connection -eq 'Connected')
+    if ($null -eq $s.transport) {
+        Update-Latency $s.relay ($s.connection -eq 'Connected')
+    } elseif ($s.connection -ne 'Connected') {
+        $latencyValue.Text = [string][char]0x2014
+    }
 }
 
 $doConnect = {
@@ -500,7 +531,7 @@ $disconnectItem.Add_Click($doDisconnect)
 $settings.Add_Click({
     $details = New-Object System.Windows.Forms.Form
     $details.Text = 'Connect details'
-    $details.ClientSize = New-Object System.Drawing.Size(440, 350)
+    $details.ClientSize = New-Object System.Drawing.Size(440, 372)
     $details.StartPosition = 'CenterParent'
     $details.FormBorderStyle = 'FixedDialog'
     $details.MaximizeBox = $false
@@ -512,10 +543,15 @@ $settings.Add_Click({
     $heading = New-Label 'Connection details' 22 18 390 34 16 ([System.Drawing.FontStyle]::Bold) $text
     $details.Controls.Add($heading)
 
+    $poolStatus = '-'
+    if ($null -ne $script:lastStatus -and $null -ne $script:lastStatus.transport) {
+        $poolStatus = "$($script:lastStatus.transport.reachable)/$($script:lastStatus.transport.total) reachable"
+    }
     $rows = @(
         @('Device', $deviceValue.Text),
         @('Tunnel IP', $ipValue.Text),
-        @('Relay', $relayValue.Text),
+        @('UDP endpoint', $relayValue.Text),
+        @('Port pool', $poolStatus),
         @('Last handshake', $handshakeValue.Text),
         @('Version', $versionValue.Text)
     )
@@ -529,7 +565,7 @@ $settings.Add_Click({
         $y += 31
     }
 
-    $routesCaption = New-Label 'Routes' 22 224 130 24 9 ([System.Drawing.FontStyle]::Regular) $muted
+    $routesCaption = New-Label 'Routes' 22 255 130 24 9 ([System.Drawing.FontStyle]::Regular) $muted
     $details.Controls.Add($routesCaption)
 
     $routeBox = New-Object System.Windows.Forms.TextBox
@@ -537,15 +573,15 @@ $settings.Add_Click({
     $routeBox.Multiline = $true
     $routeBox.ScrollBars = 'Vertical'
     $routeBox.BorderStyle = 'FixedSingle'
-    $routeBox.Location = New-Object System.Drawing.Point(156, 222)
-    $routeBox.Size = New-Object System.Drawing.Size(255, 72)
+    $routeBox.Location = New-Object System.Drawing.Point(156, 253)
+    $routeBox.Size = New-Object System.Drawing.Size(255, 50)
     $routeBox.BackColor = $card
     $routeBox.Text = $routesValue.Text
     $details.Controls.Add($routeBox)
 
     $close = New-Object System.Windows.Forms.Button
     $close.Text = 'Close'
-    $close.Location = New-Object System.Drawing.Point(316, 310)
+    $close.Location = New-Object System.Drawing.Point(316, 326)
     $close.Size = New-Object System.Drawing.Size(95, 30)
     $close.FlatStyle = 'Flat'
     $close.FlatAppearance.BorderColor = $line
@@ -668,6 +704,7 @@ func removeWindowsUI() error {
 		_ = os.Remove(filepath.Join(dir, "bpc-ui.ps1"))
 		_ = os.Remove(filepath.Join(dir, "ui-status.json"))
 		_ = os.Remove(filepath.Join(dir, "ui-runtime.json"))
+		_ = os.Remove(filepath.Join(dir, "ui-transport.json"))
 	}
 	if cacheDir, cacheErr := os.UserCacheDir(); cacheErr == nil {
 		_ = os.RemoveAll(filepath.Join(cacheDir, "BPC"))

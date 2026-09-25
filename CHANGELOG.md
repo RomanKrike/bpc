@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.12.0
+
+### Added
+- Persistent per-server Agent UDP port pool that preserves the previous working relay port during upgrade and adds randomized alternate listeners.
+- Authenticated WGShim probe/probe-reply frames for measuring the actual obfuscated UDP transport RTT without forwarding probe traffic into WireGuard.
+- Adaptive Agent endpoint selection with automatic failover, loss-aware preference, switching hysteresis and randomized probe/rotation timing.
+- BPC Connect UI reporting for the selected UDP endpoint, transport RTT and reachable port count.
+
+### Changed
+- Agent control config schema is now version 4 and advertises both the backward-compatible primary `wgshim_server` and the adaptive `wgshim_servers` pool.
+- Agent relay health checks validate every advertised UDP listener; `bpc-status` reports both configured and bound port pools.
+- Existing 0.11.x Agents continue using the preserved primary endpoint until they update to 0.12.0.
+
+### Security
+- Port probes use the existing per-device authenticated WGShim encryption and unauthenticated packets remain silently discarded.
+- Port rotation is deliberately bounded and jittered; it is not claimed to make BPC traffic undetectable against statistical traffic analysis.
+
 ## 0.11.2
 
 ### Changed

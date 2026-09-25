@@ -16,11 +16,13 @@ import (
 )
 
 const (
-	protocolVersion byte = 1
-	packetData      byte = 0
-	nonceSize            = 12
-	headerSize           = 4
-	maxInnerPacket       = 65507 - nonceSize - 16 - headerSize
+	protocolVersion  byte = 1
+	packetData       byte = 0
+	packetProbe      byte = 1
+	packetProbeReply byte = 2
+	nonceSize             = 12
+	headerSize            = 4
+	maxInnerPacket        = 65507 - nonceSize - 16 - headerSize
 )
 
 var aad = []byte("BPC-WGSHIM-v1")
@@ -84,6 +86,21 @@ func NewCodec(key []byte, paddingMin, paddingMax int) (*Codec, error) {
 }
 
 func (c *Codec) Seal(payload []byte) ([]byte, error) {
+	return c.sealType(packetData, payload)
+}
+
+func (c *Codec) SealProbe(payload []byte) ([]byte, error) {
+	return c.sealType(packetProbe, payload)
+}
+
+func (c *Codec) SealProbeReply(payload []byte) ([]byte, error) {
+	return c.sealType(packetProbeReply, payload)
+}
+
+func (c *Codec) sealType(packetType byte, payload []byte) ([]byte, error) {
+	if packetType != packetData && packetType != packetProbe && packetType != packetProbeReply {
+		return nil, fmt.Errorf("unsupported packet type %d", packetType)
+	}
 	if len(payload) > maxInnerPacket || len(payload) > 0xffff {
 		return nil, fmt.Errorf("inner UDP payload too large: %d", len(payload))
 	}
@@ -93,7 +110,7 @@ func (c *Codec) Seal(payload []byte) ([]byte, error) {
 	}
 	plaintext := make([]byte, headerSize+len(payload)+padLen)
 	plaintext[0] = protocolVersion
-	plaintext[1] = packetData
+	plaintext[1] = packetType
 	binary.BigEndian.PutUint16(plaintext[2:4], uint16(len(payload)))
 	copy(plaintext[headerSize:], payload)
 	if padLen > 0 {
@@ -113,26 +130,45 @@ func (c *Codec) Seal(payload []byte) ([]byte, error) {
 }
 
 func (c *Codec) Open(packet []byte) ([]byte, error) {
+	packetType, payload, err := c.OpenTyped(packet)
+	if err != nil {
+		return nil, err
+	}
+	if packetType != packetData {
+		return nil, errors.New("packet is not data")
+	}
+	return payload, nil
+}
+
+func (c *Codec) OpenTyped(packet []byte) (byte, []byte, error) {
 	ns := c.aead.NonceSize()
 	if len(packet) < ns+c.aead.Overhead()+headerSize {
-		return nil, errors.New("outer packet too short")
+		return 0, nil, errors.New("outer packet too short")
 	}
 	nonce := packet[:ns]
 	plaintext, err := c.aead.Open(nil, nonce, packet[ns:], aad)
 	if err != nil {
-		return nil, errors.New("authentication failed")
+		return 0, nil, errors.New("authentication failed")
 	}
-	if len(plaintext) < headerSize || plaintext[0] != protocolVersion || plaintext[1] != packetData {
-		return nil, errors.New("invalid packet header")
+	if len(plaintext) < headerSize || plaintext[0] != protocolVersion {
+		return 0, nil, errors.New("invalid packet header")
+	}
+	packetType := plaintext[1]
+	if packetType != packetData && packetType != packetProbe && packetType != packetProbeReply {
+		return 0, nil, errors.New("unsupported packet type")
 	}
 	payloadLen := int(binary.BigEndian.Uint16(plaintext[2:4]))
 	if payloadLen > len(plaintext)-headerSize {
-		return nil, errors.New("invalid payload length")
+		return 0, nil, errors.New("invalid payload length")
 	}
 	payload := make([]byte, payloadLen)
 	copy(payload, plaintext[headerSize:headerSize+payloadLen])
-	return payload, nil
+	return packetType, payload, nil
 }
+
+func IsProbe(packetType byte) bool      { return packetType == packetProbe }
+func IsProbeReply(packetType byte) bool { return packetType == packetProbeReply }
+func IsData(packetType byte) bool       { return packetType == packetData }
 
 func (c *Codec) randomPaddingLength() (int, error) {
 	if c.paddingMin == c.paddingMax {

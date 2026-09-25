@@ -2,10 +2,13 @@ package wgshim
 
 import (
 	"context"
+	crand "crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"net"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +39,36 @@ type ServerConfig struct {
 	TX            *Codec
 	Logger        *log.Logger
 	StatsInterval time.Duration
+}
+
+type EndpointReport struct {
+	Selected  string
+	RTT       time.Duration
+	Reachable int
+	Total     int
+	Switched  bool
+}
+
+type AdaptiveClientConfig struct {
+	LocalListen      string
+	Servers          []string
+	TX               *Codec
+	RX               *Codec
+	Logger           *log.Logger
+	StatsInterval    time.Duration
+	ProbeTimeout     time.Duration
+	SwitchThreshold  time.Duration
+	OnEndpointReport func(EndpointReport)
+}
+
+type probePending struct {
+	endpoint string
+	sent     time.Time
+}
+
+type probeMeasurement struct {
+	endpoint string
+	rtt      time.Duration
 }
 
 func RunClient(ctx context.Context, cfg ClientConfig) error {
@@ -129,6 +162,394 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	}()
 
 	return <-errCh
+}
+
+func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if len(cfg.Servers) == 0 {
+		return errors.New("adaptive client requires at least one server")
+	}
+	if cfg.ProbeTimeout <= 0 {
+		cfg.ProbeTimeout = 900 * time.Millisecond
+	}
+	if cfg.SwitchThreshold <= 0 {
+		cfg.SwitchThreshold = 10 * time.Millisecond
+	}
+
+	localAddr, err := net.ResolveUDPAddr("udp", cfg.LocalListen)
+	if err != nil {
+		return fmt.Errorf("resolve local listen address: %w", err)
+	}
+	serverAddrs := make([]*net.UDPAddr, 0, len(cfg.Servers))
+	serverNames := make([]string, 0, len(cfg.Servers))
+	seen := map[string]struct{}{}
+	for _, raw := range cfg.Servers {
+		addr, err := net.ResolveUDPAddr("udp", raw)
+		if err != nil {
+			return fmt.Errorf("resolve adaptive server %q: %w", raw, err)
+		}
+		key := addr.String()
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		serverAddrs = append(serverAddrs, addr)
+		serverNames = append(serverNames, key)
+	}
+	if len(serverAddrs) == 0 {
+		return errors.New("adaptive client has no unique servers")
+	}
+
+	localConn, err := net.ListenUDP("udp", localAddr)
+	if err != nil {
+		return fmt.Errorf("listen for WireGuard: %w", err)
+	}
+	defer localConn.Close()
+	outerConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return fmt.Errorf("listen outer UDP: %w", err)
+	}
+	defer outerConn.Close()
+
+	var wgPeerMu sync.RWMutex
+	var wgPeer *net.UDPAddr
+	var selectedMu sync.RWMutex
+	selected := 0
+
+	stats := &Stats{}
+	stopStats := make(chan struct{})
+	defer close(stopStats)
+	if cfg.StatsInterval > 0 {
+		go logStats(stopStats, cfg.Logger, "adaptive-client", stats, cfg.StatsInterval)
+	}
+
+	pending := map[string]probePending{}
+	var pendingMu sync.Mutex
+	probeResults := make(chan probeMeasurement, 128)
+
+	setSelected := func(next int, rtt time.Duration, reachable int, switched bool) {
+		selectedMu.Lock()
+		selected = next
+		selectedMu.Unlock()
+		report := EndpointReport{
+			Selected:  serverNames[next],
+			RTT:       rtt,
+			Reachable: reachable,
+			Total:     len(serverNames),
+			Switched:  switched,
+		}
+		if cfg.OnEndpointReport != nil {
+			cfg.OnEndpointReport(report)
+		}
+		if cfg.Logger != nil && switched {
+			cfg.Logger.Printf(
+				"adaptive endpoint switched endpoint=%s rtt=%s reachable=%d/%d",
+				report.Selected,
+				report.RTT,
+				report.Reachable,
+				report.Total,
+			)
+		}
+	}
+	getSelected := func() (int, *net.UDPAddr) {
+		selectedMu.RLock()
+		defer selectedMu.RUnlock()
+		return selected, cloneUDPAddr(serverAddrs[selected])
+	}
+	setSelected(0, 0, 0, false)
+
+	go func() {
+		<-runCtx.Done()
+		_ = localConn.Close()
+		_ = outerConn.Close()
+	}()
+
+	errCh := make(chan error, 3)
+
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, addr, err := localConn.ReadFromUDP(buf)
+			if err != nil {
+				errCh <- normalizeNetErr(runCtx, err)
+				return
+			}
+			wgPeerMu.Lock()
+			wgPeer = cloneUDPAddr(addr)
+			wgPeerMu.Unlock()
+
+			stats.InnerTX.Add(uint64(n))
+			outer, err := cfg.TX.Seal(buf[:n])
+			if err != nil {
+				errCh <- fmt.Errorf("seal WireGuard packet: %w", err)
+				return
+			}
+			_, endpoint := getSelected()
+			if _, err := outerConn.WriteToUDP(outer, endpoint); err != nil {
+				errCh <- normalizeNetErr(runCtx, fmt.Errorf("send adaptive outer UDP: %w", err))
+				return
+			}
+			stats.OuterTX.Add(uint64(len(outer)))
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, source, err := outerConn.ReadFromUDP(buf)
+			if err != nil {
+				errCh <- normalizeNetErr(runCtx, err)
+				return
+			}
+			stats.OuterRX.Add(uint64(n))
+			packetType, inner, err := cfg.RX.OpenTyped(buf[:n])
+			if err != nil {
+				stats.AuthDrops.Add(1)
+				continue
+			}
+			if IsProbeReply(packetType) {
+				token := hex.EncodeToString(inner)
+				pendingMu.Lock()
+				probe, ok := pending[token]
+				if ok {
+					delete(pending, token)
+				}
+				pendingMu.Unlock()
+				if ok && source.String() == probe.endpoint {
+					select {
+					case probeResults <- probeMeasurement{
+						endpoint: probe.endpoint,
+						rtt:      time.Since(probe.sent),
+					}:
+					default:
+					}
+				}
+				continue
+			}
+			if !IsData(packetType) {
+				continue
+			}
+
+			wgPeerMu.RLock()
+			peer := cloneUDPAddr(wgPeer)
+			wgPeerMu.RUnlock()
+			if peer == nil {
+				stats.NoPeerDrop.Add(1)
+				continue
+			}
+			if _, err := localConn.WriteToUDP(inner, peer); err != nil {
+				errCh <- normalizeNetErr(runCtx, fmt.Errorf("deliver adaptive packet to WireGuard: %w", err))
+				return
+			}
+			stats.InnerRX.Add(uint64(len(inner)))
+		}
+	}()
+
+	go func() {
+		rotationDue := time.Now().Add(randomDuration(15*time.Minute, 45*time.Minute))
+		for runCtx.Err() == nil {
+			measurements := make(map[string][]time.Duration, len(serverNames))
+			expected := 0
+			samplesPerEndpoint := 2 + randomIndex(2)
+			order := make([]int, len(serverAddrs))
+			for i := range order {
+				order[i] = i
+			}
+			for i := len(order) - 1; i > 0; i-- {
+				j := randomIndex(i + 1)
+				order[i], order[j] = order[j], order[i]
+			}
+			for _, i := range order {
+				endpoint := serverAddrs[i]
+				for sample := 0; sample < samplesPerEndpoint; sample++ {
+					token := make([]byte, 8+randomIndex(25))
+					if _, err := crand.Read(token); err != nil {
+						errCh <- fmt.Errorf("generate adaptive probe token: %w", err)
+						return
+					}
+					tokenKey := hex.EncodeToString(token)
+					pendingMu.Lock()
+					pending[tokenKey] = probePending{
+						endpoint: serverNames[i],
+						sent:     time.Now(),
+					}
+					pendingMu.Unlock()
+					packet, err := cfg.TX.SealProbe(token)
+					if err != nil {
+						errCh <- fmt.Errorf("seal adaptive probe: %w", err)
+						return
+					}
+					if _, err := outerConn.WriteToUDP(packet, endpoint); err == nil {
+						stats.OuterTX.Add(uint64(len(packet)))
+						expected++
+					} else {
+						pendingMu.Lock()
+						delete(pending, tokenKey)
+						pendingMu.Unlock()
+					}
+					time.Sleep(randomDuration(5*time.Millisecond, 35*time.Millisecond))
+				}
+			}
+
+			timer := time.NewTimer(cfg.ProbeTimeout)
+			received := 0
+		collect:
+			for received < expected {
+				select {
+				case <-runCtx.Done():
+					timer.Stop()
+					return
+				case result := <-probeResults:
+					measurements[result.endpoint] = append(measurements[result.endpoint], result.rtt)
+					received++
+				case <-timer.C:
+					break collect
+				}
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+
+			pendingMu.Lock()
+			now := time.Now()
+			for token, probe := range pending {
+				if now.Sub(probe.sent) >= cfg.ProbeTimeout {
+					delete(pending, token)
+				}
+			}
+			pendingMu.Unlock()
+
+			type endpointScore struct {
+				index   int
+				rtt     time.Duration
+				replies int
+			}
+			scores := make([]endpointScore, 0, len(serverNames))
+			for i, name := range serverNames {
+				values := measurements[name]
+				if len(values) == 0 {
+					continue
+				}
+				sort.Slice(values, func(a, b int) bool { return values[a] < values[b] })
+				rtt := values[len(values)/2]
+				if len(values) == 2 {
+					rtt = (values[0] + values[1]) / 2
+				}
+				scores = append(scores, endpointScore{
+					index:   i,
+					rtt:     rtt,
+					replies: len(values),
+				})
+			}
+			sort.Slice(scores, func(i, j int) bool {
+				if scores[i].replies != scores[j].replies {
+					return scores[i].replies > scores[j].replies
+				}
+				return scores[i].rtt < scores[j].rtt
+			})
+
+			currentIndex, _ := getSelected()
+			currentRTT := time.Duration(0)
+			currentReplies := 0
+			currentReachable := false
+			for _, score := range scores {
+				if score.index == currentIndex {
+					currentRTT = score.rtt
+					currentReplies = score.replies
+					currentReachable = true
+					break
+				}
+			}
+
+			if len(scores) > 0 {
+				next := currentIndex
+				nextRTT := currentRTT
+				switched := false
+				best := scores[0]
+
+				if !currentReachable {
+					next = best.index
+					nextRTT = best.rtt
+					switched = next != currentIndex
+				} else if best.index != currentIndex &&
+					(best.replies > currentReplies ||
+						(best.replies == currentReplies && best.rtt+cfg.SwitchThreshold < currentRTT)) {
+					next = best.index
+					nextRTT = best.rtt
+					switched = true
+				} else if time.Now().After(rotationDue) {
+					healthy := make([]endpointScore, 0, len(scores))
+					for _, score := range scores {
+						if score.replies == samplesPerEndpoint &&
+							score.rtt <= best.rtt+20*time.Millisecond {
+							healthy = append(healthy, score)
+						}
+					}
+					if len(healthy) > 1 {
+						start := randomIndex(len(healthy))
+						for offset := 0; offset < len(healthy); offset++ {
+							candidate := healthy[(start+offset)%len(healthy)]
+							if candidate.index != currentIndex {
+								next = candidate.index
+								nextRTT = candidate.rtt
+								switched = true
+								break
+							}
+						}
+					}
+					rotationDue = time.Now().Add(randomDuration(15*time.Minute, 45*time.Minute))
+				}
+				setSelected(next, nextRTT, len(scores), switched)
+			} else {
+				setSelected(currentIndex, 0, 0, false)
+			}
+
+			wait := randomDuration(30*time.Second, 60*time.Second)
+			select {
+			case <-runCtx.Done():
+				return
+			case <-time.After(wait):
+			}
+		}
+	}()
+
+	return <-errCh
+}
+
+func randomDuration(minimum, maximum time.Duration) time.Duration {
+	if maximum <= minimum {
+		return minimum
+	}
+	span := uint64(maximum - minimum)
+	var raw [8]byte
+	if _, err := crand.Read(raw[:]); err != nil {
+		return minimum
+	}
+	value := uint64(raw[0]) |
+		uint64(raw[1])<<8 |
+		uint64(raw[2])<<16 |
+		uint64(raw[3])<<24 |
+		uint64(raw[4])<<32 |
+		uint64(raw[5])<<40 |
+		uint64(raw[6])<<48 |
+		uint64(raw[7])<<56
+	return minimum + time.Duration(value%(span+1))
+}
+
+func randomIndex(count int) int {
+	if count <= 1 {
+		return 0
+	}
+	var raw [2]byte
+	if _, err := crand.Read(raw[:]); err != nil {
+		return 0
+	}
+	return int((uint16(raw[0]) | uint16(raw[1])<<8) % uint16(count))
 }
 
 func RunServer(ctx context.Context, cfg ServerConfig) error {

@@ -16,6 +16,9 @@ STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
 TUNNEL = pathlib.Path("cmd/bpc-agent/tunnel_windows.go").read_text(encoding="utf-8")
 UI = pathlib.Path("cmd/bpc-agent/ui_windows.go").read_text(encoding="utf-8")
 WGPROFILE = pathlib.Path("internal/agentctl/wireguard.go").read_text(encoding="utf-8")
+WGSHIM_CODEC = pathlib.Path("internal/wgshim/codec.go").read_text(encoding="utf-8")
+WGSHIM_RELAY = pathlib.Path("internal/wgshim/relay.go").read_text(encoding="utf-8")
+AGENT_RELAY = pathlib.Path("cmd/bpc-agent-relay/main.go").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
@@ -169,7 +172,7 @@ def test_embedded_tunnel_pins_relay_outside_full_tunnel_route() -> None:
 def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_server() -> None:
     assert "WGSHIM_PORT_EXPLICIT" in DATAPLANE
     assert "24444 24544" in DATAPLANE
-    assert "occupied by another service" in DATAPLANE
+    assert "port_available_for_agent" in DATAPLANE
     assert "bpc-agent-relay" in DATAPLANE
     assert 'control_server="${CONTROL_DIR}/bpc-control-server.py"' in ENABLE_CONTROL
     assert 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"' in ENABLE_CONTROL
@@ -190,7 +193,7 @@ def test_agent_services_reset_systemd_start_limits_and_health_checks_owner() -> 
     assert "service_owns_udp_port" in HEALTH
     assert 'systemctl show -p MainPID --value' in HEALTH
     assert 'pid=${pid},' in HEALTH
-    assert "runtime expects" in STATUS
+    assert "udp-pool=" in STATUS
 
 
 def test_agent_relay_uses_bounded_readiness_probe() -> None:
@@ -198,7 +201,7 @@ def test_agent_relay_uses_bounded_readiness_probe() -> None:
     assert "sleep 0.25" in DATAPLANE
     assert 'systemctl show -p MainPID --value bpc-agent-relay.service' in DATAPLANE
     assert 'grep -Fq "pid=${relay_pid},"' in DATAPLANE
-    assert "did not become ready on UDP/" in DATAPLANE
+    assert "did not become ready on UDP pool" in DATAPLANE
 
 
 def test_prepared_agent_has_expiring_https_download_link() -> None:
@@ -229,7 +232,7 @@ def test_bootstrap_download_is_repeatable_until_enrollment() -> None:
 
 def test_agent_defaults_to_split_tunnel_and_hot_syncs_routes() -> None:
     assert 'WG_ALLOWED_IPS="${BPC_AGENT_ALLOWED_IPS:-${WG_SUBNET}}"' in DATAPLANE
-    assert '"config_version": 3' in ENABLE_CONTROL
+    assert '"config_version": 4' in ENABLE_CONTROL
     assert '"wireguard": self._wireguard_profile_for_device(device)' in CONTROL
     assert 'WireGuard     *WireGuardProfile `json:"wireguard,omitempty"`' in AGENTCTL
     assert "ValidateWireGuardServerProfile" in AGENTCTL
@@ -332,3 +335,43 @@ def test_agent_ui_is_rendered_from_current_exe_and_self_refreshes() -> None:
     assert "strings.ReplaceAll(windowsUIScript" in UI
     assert "Restart-BpcUI" in UI
     assert "Start-Process -FilePath $exe -ArgumentList 'ui'" in UI
+
+
+def test_agent_has_persistent_randomized_udp_port_pool() -> None:
+    assert "AGENT_WGSHIM_PORTS" in DATAPLANE
+    assert 'shuf -i 20000-59999 -n 256' in DATAPLANE
+    assert 'WGSHIM_PORTS="$(IFS=,; echo "${wgshim_ports[*]}")"' in DATAPLANE
+    assert '--listen ${relay_listeners}' in DATAPLANE
+    assert '"wgshim_servers": [f"{host}:{port}" for port in ports]' in ENABLE_CONTROL
+    assert '"wgshim_servers": [' in CONTROL
+    assert 'WGShimServers []string' in AGENTCTL
+    assert "service_owns_udp_port bpc-agent-relay.service" in HEALTH
+    assert "udp-pool=" in STATUS
+
+
+def test_agent_adaptive_port_selection_uses_authenticated_rtt_probes() -> None:
+    assert "packetProbe" in WGSHIM_CODEC
+    assert "packetProbeReply" in WGSHIM_CODEC
+    assert "SealProbe" in WGSHIM_CODEC
+    assert "SealProbeReply" in WGSHIM_CODEC
+    assert "OpenTyped" in WGSHIM_CODEC
+    assert "RunAdaptiveClient" in WGSHIM_RELAY
+    assert "ProbeTimeout" in WGSHIM_RELAY
+    assert "SwitchThreshold" in WGSHIM_RELAY
+    assert "30*time.Second" in WGSHIM_RELAY
+    assert "60*time.Second" in WGSHIM_RELAY
+    assert "15*time.Minute" in WGSHIM_RELAY
+    assert "45*time.Minute" in WGSHIM_RELAY
+    assert "splitListeners" in AGENT_RELAY
+    assert "wgshim.RunAdaptiveClient" in AGENT
+
+
+def test_agent_ui_shows_selected_udp_endpoint_and_port_rtt() -> None:
+    assert "ui-transport.json" in AGENT
+    assert "writeUITransportStatus" in AGENT
+    assert "OnEndpointReport" in AGENT
+    assert "UDP endpoint" in UI
+    assert "LATENCY" in UI
+    assert "ports" in UI
+    assert "reachable" in UI
+    assert "rtt_ms" in AGENT
