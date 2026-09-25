@@ -36,15 +36,16 @@ type Bootstrap struct {
 }
 
 type RuntimeConfig struct {
-	ConfigVersion int    `json:"config_version"`
-	WGShimServer  string `json:"wgshim_server"`
-	WGShimListen  string `json:"wgshim_listen"`
-	WGShimTarget  string `json:"wgshim_target"`
-	WGShimPSK     string `json:"wgshim_psk"`
-	PaddingMin    int    `json:"padding_min"`
-	PaddingMax    int    `json:"padding_max"`
-	LegacyTunnel  string `json:"legacy_tunnel,omitempty"`
-	UpdateChannel string `json:"update_channel,omitempty"`
+	ConfigVersion int               `json:"config_version"`
+	WGShimServer  string            `json:"wgshim_server"`
+	WGShimListen  string            `json:"wgshim_listen"`
+	WGShimTarget  string            `json:"wgshim_target"`
+	WGShimPSK     string            `json:"wgshim_psk"`
+	PaddingMin    int               `json:"padding_min"`
+	PaddingMax    int               `json:"padding_max"`
+	LegacyTunnel  string            `json:"legacy_tunnel,omitempty"`
+	UpdateChannel string            `json:"update_channel,omitempty"`
+	WireGuard     *WireGuardProfile `json:"wireguard,omitempty"`
 }
 
 type State struct {
@@ -296,6 +297,11 @@ func ValidateRuntimeConfig(cfg RuntimeConfig) error {
 	}
 	if cfg.PaddingMin < 0 || cfg.PaddingMax < cfg.PaddingMin || cfg.PaddingMax > 255 {
 		return errors.New("runtime padding range is invalid")
+	}
+	if cfg.WireGuard != nil {
+		if err := ValidateWireGuardServerProfile(*cfg.WireGuard); err != nil {
+			return fmt.Errorf("runtime WireGuard profile: %w", err)
+		}
 	}
 	return nil
 }
