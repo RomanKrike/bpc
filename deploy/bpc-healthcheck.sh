@@ -278,6 +278,38 @@ check_subscription() {
   fi
 }
 
+check_control() {
+  local control_dir="${BPC_STATE_DIR}/ru-node/control"
+  local runtime_env="${control_dir}/runtime.env"
+
+  [[ -f "${control_dir}/enabled" ]] || return 0
+  if [[ ! -s "${runtime_env}" || ! -s "${control_dir}/config.json" || \
+    ! -s "${control_dir}/update-signing-key.pem" || \
+    ! -s "${control_dir}/update-signing-public.pem" ]]; then
+    fail_health "BPC control-plane state is incomplete"
+    return 1
+  fi
+
+  # shellcheck disable=SC1090,SC1091
+  source "${runtime_env}"
+  if [[ ! -s "${CONTROL_CERT:-}" || ! -s "${CONTROL_KEY:-}" ]]; then
+    fail_health "BPC control-plane TLS certificate or private key is missing"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-control.service; then
+    fail_health "bpc-control.service is not active"
+    return 1
+  fi
+  if ! [[ "${CONTROL_PORT:-}" =~ ^[0-9]+$ ]]; then
+    fail_health "BPC control-plane port metadata is invalid"
+    return 1
+  fi
+  if ! ss -H -ltn "sport = :${CONTROL_PORT}" | grep -q .; then
+    fail_health "BPC control-plane TCP listener is unavailable on port ${CONTROL_PORT}"
+    return 1
+  fi
+}
+
 case "${ROLE}" in
   ru-node)
     config="${BPC_STATE_DIR}/ru-node/config.json"
@@ -305,6 +337,7 @@ case "${ROLE}" in
     check_ssh_rescue
     check_wgshim
     check_subscription
+    check_control
     ;;
   *)
     fail_health "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}"
