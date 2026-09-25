@@ -96,31 +96,6 @@ func TestClientServerRelayRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected echo: %q", buf[:n])
 	}
 
-	localUDP, err := net.ResolveUDPAddr("udp", clientAddr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wgConn, err := net.DialUDP("udp", nil, localUDP)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer wgConn.Close()
-	if err := wgConn.SetDeadline(time.Now().Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	payload := []byte("adaptive-data-roundtrip")
-	if _, err := wgConn.Write(payload); err != nil {
-		t.Fatal(err)
-	}
-	buf := make([]byte, 256)
-	n, err := wgConn.Read(buf)
-	if err != nil {
-		t.Fatalf("adaptive data did not traverse selected endpoint: %v", err)
-	}
-	if string(buf[:n]) != string(payload) {
-		t.Fatalf("unexpected adaptive data reply: got %q want %q", buf[:n], payload)
-	}
-
 	cancel()
 	select {
 	case err := <-serverErr:
@@ -139,7 +114,6 @@ func TestClientServerRelayRoundTrip(t *testing.T) {
 		t.Fatal("client did not stop")
 	}
 }
-
 
 func TestAdaptiveClientSelectsReachableEndpoint(t *testing.T) {
 	reserve := func() string {
@@ -231,6 +205,31 @@ func TestAdaptiveClientSelectsReachableEndpoint(t *testing.T) {
 		case <-deadline.C:
 			t.Fatalf("adaptive client did not fail over to reachable endpoint %s", liveAddr)
 		}
+	}
+
+	localUDP, err := net.ResolveUDPAddr("udp", clientAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wgConn, err := net.DialUDP("udp", nil, localUDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer wgConn.Close()
+	if err := wgConn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("adaptive-data-roundtrip")
+	if _, err := wgConn.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 256)
+	n, err := wgConn.Read(buf)
+	if err != nil {
+		t.Fatalf("adaptive data did not traverse selected endpoint: %v", err)
+	}
+	if string(buf[:n]) != string(payload) {
+		t.Fatalf("unexpected adaptive data reply: got %q want %q", buf[:n], payload)
 	}
 
 	cancel()
