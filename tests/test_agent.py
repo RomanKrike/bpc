@@ -288,3 +288,36 @@ def test_agent_overlay_allows_server_health_ping() -> None:
     assert "--icmp-type echo-request -j ACCEPT" in DATAPLANE
     down_block = DATAPLANE.split("  down)", 1)[1].split("  *)", 1)[0]
     assert "--icmp-type echo-request -j ACCEPT" in down_block
+
+
+def test_agent_managed_routes_are_per_device_and_remain_split_tunnel() -> None:
+    assert "bpc-agent routes NAME [CIDR ... | --clear]" in SERVER
+    assert '\"managed_routes\": []' in CONTROL
+    assert 'device.get(\"managed_routes\", [])' in CONTROL
+    assert "0.0.0.0/0 is not allowed for managed Agent routes" in SERVER
+    assert "next config sync (up to 30 seconds)" in SERVER
+    assert "profile.AllowedIPs" in TUNNEL
+    assert '! -d \"${AGENT_WG_SUBNET}\" -j MASQUERADE' in DATAPLANE
+
+
+def test_agent_ui_uses_real_wireguard_handshake_and_transfer_telemetry() -> None:
+    assert "wgDevice.IpcGet()" in TUNNEL
+    assert '\"last_handshake_time_sec\"' in TUNNEL
+    assert '\"rx_bytes\"' in TUNNEL
+    assert '\"tx_bytes\"' in TUNNEL
+    assert "ui-runtime.json" in AGENT
+    assert "writeUIRuntimeStatus" in AGENT
+    assert "handshake_at" in UI
+    assert "Connecting..." in UI
+    assert "Last handshake" in UI
+    assert "Traffic" in UI
+    assert "RX $(Format-Bytes" in UI
+    assert "handshakeAge -le 180" in UI
+
+
+def test_agent_ui_is_rendered_from_current_exe_and_self_refreshes() -> None:
+    assert "os.UserCacheDir()" in UI
+    assert "__BPC_UI_VERSION__" in UI
+    assert "strings.ReplaceAll(windowsUIScript" in UI
+    assert "Restart-BpcUI" in UI
+    assert "Start-Process -FilePath $exe -ArgumentList 'ui'" in UI

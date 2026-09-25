@@ -8,7 +8,9 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RomanKrike/bpc/internal/agentctl"
 	"golang.zx2c4.com/wireguard/conn"
@@ -23,6 +25,7 @@ func runEmbeddedWireGuard(
 	cfg agentctl.RuntimeConfig,
 	profile agentctl.WireGuardProfile,
 	logger *log.Logger,
+	reportTelemetry func(tunnelTelemetry),
 ) error {
 	if err := agentctl.ValidateWireGuardProfile(profile); err != nil {
 		return err
@@ -78,17 +81,60 @@ func runEmbeddedWireGuard(
 		profile.MTU,
 	)
 
-	select {
-	case <-ctx.Done():
-		wgDevice.Close()
-		<-wgDevice.Wait()
-		return nil
-	case <-wgDevice.Wait():
-		if ctx.Err() != nil {
-			return nil
-		}
-		return fmt.Errorf("embedded WireGuard device stopped unexpectedly")
+	waitCh := wgDevice.Wait()
+	telemetryTicker := time.NewTicker(2 * time.Second)
+	defer telemetryTicker.Stop()
+
+	if reportTelemetry != nil {
+		reportTelemetry(readEmbeddedTelemetry(wgDevice))
 	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			wgDevice.Close()
+			<-waitCh
+			return nil
+		case <-waitCh:
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("embedded WireGuard device stopped unexpectedly")
+		case <-telemetryTicker.C:
+			if reportTelemetry != nil {
+				reportTelemetry(readEmbeddedTelemetry(wgDevice))
+			}
+		}
+	}
+}
+
+func readEmbeddedTelemetry(wgDevice *device.Device) tunnelTelemetry {
+	stats := tunnelTelemetry{UpdatedAt: time.Now().Unix()}
+	raw, err := wgDevice.IpcGet()
+	if err != nil {
+		return stats
+	}
+	for _, rawLine := range strings.Split(raw, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(rawLine), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "last_handshake_time_sec":
+			if parsed, err := strconv.ParseInt(value, 10, 64); err == nil && parsed > stats.HandshakeAt {
+				stats.HandshakeAt = parsed
+			}
+		case "rx_bytes":
+			if parsed, err := strconv.ParseUint(value, 10, 64); err == nil {
+				stats.RXBytes += parsed
+			}
+		case "tx_bytes":
+			if parsed, err := strconv.ParseUint(value, 10, 64); err == nil {
+				stats.TXBytes += parsed
+			}
+		}
+	}
+	return stats
 }
 
 func embeddedUAPI(cfg agentctl.RuntimeConfig, profile agentctl.WireGuardProfile) (string, error) {
