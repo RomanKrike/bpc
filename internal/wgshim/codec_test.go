@@ -91,7 +91,6 @@ func TestLoadPSK(t *testing.T) {
 	}
 }
 
-
 func TestCodecAuthenticatedProbeRoundTrip(t *testing.T) {
 	psk := testPSK(t)
 	key, err := DeriveKey(psk, ClientToServer)
