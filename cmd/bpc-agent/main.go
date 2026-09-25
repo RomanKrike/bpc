@@ -247,14 +247,17 @@ func runAgentContext(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	var supervisor runtimeSupervisor
-	if err := supervisor.apply(ctx, state.Config, state.WireGuard, logger); err != nil {
-		logger.Printf("initial transport start failed: %v", err)
-	}
-
 	control, err := agentctl.NewClient(state.ControlURL, state.DeviceToken)
 	if err != nil {
 		return err
+	}
+	if err := syncRuntimeState(ctx, control, state, statePath); err != nil {
+		logger.Printf("initial config sync failed: %v", err)
+	}
+
+	var supervisor runtimeSupervisor
+	if err := supervisor.apply(ctx, state.Config, state.WireGuard, logger); err != nil {
+		logger.Printf("initial transport start failed: %v", err)
 	}
 
 	configTicker := time.NewTicker(30 * time.Second)
@@ -269,18 +272,10 @@ func runAgentContext(parent context.Context) error {
 	for {
 		select {
 		case <-configTicker.C:
-			if cfg, err := control.FetchConfig(ctx); err != nil {
+			if err := syncRuntimeState(ctx, control, state, statePath); err != nil {
 				logger.Printf("config sync failed: %v", err)
-			} else if err := agentctl.ValidateRuntimeConfig(*cfg); err != nil {
-				logger.Printf("config sync rejected: %v", err)
-			} else {
-				state.Config = *cfg
-				if err := agentctl.SaveState(statePath, *state); err != nil {
-					logger.Printf("save synced config failed: %v", err)
-				}
-				if err := supervisor.apply(ctx, *cfg, state.WireGuard, logger); err != nil {
-					logger.Printf("apply synced config failed: %v", err)
-				}
+			} else if err := supervisor.apply(ctx, state.Config, state.WireGuard, logger); err != nil {
+				logger.Printf("apply synced config failed: %v", err)
 			}
 		case <-heartbeatTicker.C:
 			status := "control-online-data-plane-pending"
@@ -320,6 +315,35 @@ func runAgentContext(parent context.Context) error {
 			return nil
 		}
 	}
+}
+
+func syncRuntimeState(
+	ctx context.Context,
+	control *agentctl.Client,
+	state *agentctl.State,
+	statePath string,
+) error {
+	cfg, err := control.FetchConfig(ctx)
+	if err != nil {
+		return err
+	}
+	if err := agentctl.ValidateRuntimeConfig(*cfg); err != nil {
+		return err
+	}
+	if cfg.WireGuard != nil {
+		profile := *cfg.WireGuard
+		profile.PrivateKey = state.WireGuard.PrivateKey
+		if strings.TrimSpace(profile.PresharedKey) == "" {
+			profile.PresharedKey = state.WireGuard.PresharedKey
+		}
+		if err := agentctl.ValidateWireGuardProfile(profile); err != nil {
+			return fmt.Errorf("synced WireGuard profile: %w", err)
+		}
+		state.WireGuard = profile
+		cfg.WireGuard = nil
+	}
+	state.Config = *cfg
+	return agentctl.SaveState(statePath, *state)
 }
 
 func (s *runtimeSupervisor) apply(
