@@ -281,3 +281,10 @@ def test_agent_ui_runs_in_interactive_session_without_secret_state_access() -> N
     assert "DeviceToken" not in AGENT.split("type uiStatus struct", 1)[1].split("}", 1)[0]
     assert "PrivateKey" not in AGENT.split("type uiStatus struct", 1)[1].split("}", 1)[0]
     assert "*S-1-5-32-545:RX" in AGENT
+
+
+def test_agent_overlay_allows_server_health_ping() -> None:
+    assert '-i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}"' in DATAPLANE
+    assert "--icmp-type echo-request -j ACCEPT" in DATAPLANE
+    down_block = DATAPLANE.split("  down)", 1)[1].split("  *)", 1)[0]
+    assert "--icmp-type echo-request -j ACCEPT" in down_block
