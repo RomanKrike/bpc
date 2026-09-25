@@ -78,7 +78,7 @@ function New-Label([string]$value, [int]$x, [int]$y, [int]$w, [int]$h, [float]$s
 }
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'BPC Connect'
+$form.Text = 'BP Connect'
 $form.ClientSize = New-Object System.Drawing.Size(520, 660)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
@@ -256,12 +256,12 @@ $clientIcon = [System.Drawing.Icon]::FromHandle($iconHandle)
 $form.Icon = $clientIcon
 
 $tray = New-Object System.Windows.Forms.NotifyIcon
-$tray.Text = 'BPC Connect'
+$tray.Text = 'BP Connect'
 $tray.Icon = $clientIcon
 $tray.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$openItem = $menu.Items.Add('Open BPC Connect')
+$openItem = $menu.Items.Add('Open BP Connect')
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $connectItem = $menu.Items.Add('Connect')
 $disconnectItem = $menu.Items.Add('Disconnect')
@@ -408,28 +408,28 @@ function Set-ConnectionVisuals([string]$state) {
             $statusSubtitle.Text = 'Secure connection to your network'
             $script:ringColor = $green
             $relayDot.ForeColor = $green
-            $tray.Text = 'BPC Connect - Connected'
+            $tray.Text = 'BP Connect - Connected'
         }
         'Connecting' {
             $statusValue.Text = 'Connecting...'
             $statusSubtitle.Text = 'Establishing secure connection'
             $script:ringColor = $orange
             $relayDot.ForeColor = $orange
-            $tray.Text = 'BPC Connect - Connecting'
+            $tray.Text = 'BP Connect - Connecting'
         }
         'Unavailable' {
             $statusValue.Text = 'Unavailable'
             $statusSubtitle.Text = 'Agent status is not available'
             $script:ringColor = $gray
             $relayDot.ForeColor = $gray
-            $tray.Text = 'BPC Connect - Unavailable'
+            $tray.Text = 'BP Connect - Unavailable'
         }
         default {
             $statusValue.Text = 'Disconnected'
             $statusSubtitle.Text = 'Your secure network is offline'
             $script:ringColor = $gray
             $relayDot.ForeColor = $gray
-            $tray.Text = 'BPC Connect - Disconnected'
+            $tray.Text = 'BP Connect - Disconnected'
         }
     }
     $statusRing.Invalidate()
@@ -725,7 +725,7 @@ func launchWindowsUI() error {
 	body := strings.ReplaceAll(windowsUIScript, "__BPC_UI_VERSION__", version)
 	body = strings.ReplaceAll(body, "__BPC_LOGO_PNG__", bpcConnectLogoPNGBase64)
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
-		return fmt.Errorf("write current BPC Connect UI: %w", err)
+		return fmt.Errorf("write current BP Connect UI: %w", err)
 	}
 
 	cmd := exec.Command(
@@ -740,7 +740,7 @@ func launchWindowsUI() error {
 		script,
 	)
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("launch BPC Connect UI: %w", err)
+		return fmt.Errorf("launch BP Connect UI: %w", err)
 	}
 	return nil
 }

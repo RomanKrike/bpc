@@ -74,20 +74,8 @@ def run_wg(*args: str) -> None:
         raise RuntimeError(message or f"wg exited with {completed.returncode}")
 
 
-def sync_wireguard_peers(state_dir: Path) -> None:
-    config = read_json(state_dir / "config.json")
-    interface = str(config["wireguard_interface"])
-    completed = subprocess.run(
-        ["wg", "show", interface, "peers"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if completed.returncode != 0:
-        message = completed.stderr.strip() or f"WireGuard interface {interface} unavailable"
-        raise RuntimeError(message)
-    for peer in completed.stdout.split():
-        run_wg("set", interface, "peer", peer, "remove")
+def active_wireguard_devices(state_dir: Path) -> list[dict[str, Any]]:
+    devices: list[dict[str, Any]] = []
     for path in sorted((state_dir / "devices").glob("*.json")):
         try:
             device = read_json(path)
@@ -99,7 +87,113 @@ def sync_wireguard_peers(state_dir: Path) -> None:
         address = str(device.get("wireguard_address", "")).strip()
         if not valid_wireguard_key(public_key) or not address:
             continue
-        run_wg("set", interface, "peer", public_key, "allowed-ips", address)
+        devices.append(device)
+    return devices
+
+
+def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
+    owners: dict[str, str] = {}
+    networks: list[tuple[ipaddress.IPv4Network, str]] = []
+    for device in devices:
+        if str(device.get("role", "")) != "gateway":
+            continue
+        owner = str(device.get("device", device.get("device_id", "gateway")))
+        advertised = device.get("advertised_routes", [])
+        if not isinstance(advertised, list):
+            raise RuntimeError(f"BP Gateway {owner} has invalid advertised_routes")
+        for raw in advertised:
+            try:
+                network = ipaddress.ip_network(str(raw), strict=False)
+            except ValueError as exc:
+                raise RuntimeError(f"BP Gateway {owner} has invalid route {raw!r}") from exc
+            if network.version != 4 or network.prefixlen == 0:
+                raise RuntimeError(f"BP Gateway {owner} has unsupported route {network}")
+            for existing, existing_owner in networks:
+                if network.overlaps(existing):
+                    raise RuntimeError(
+                        f"BP Gateway route {network} owned by {owner} overlaps "
+                        f"{existing} owned by {existing_owner}"
+                    )
+            canonical = str(network)
+            networks.append((network, owner))
+            owners[canonical] = owner
+    return owners
+
+
+def sync_wireguard_peers(state_dir: Path) -> None:
+    config = read_json(state_dir / "config.json")
+    interface = str(config["wireguard_interface"])
+    devices = active_wireguard_devices(state_dir)
+    gateway_routes(devices)
+
+    completed = subprocess.run(
+        ["wg", "show", interface, "peers"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or f"WireGuard interface {interface} unavailable"
+        raise RuntimeError(message)
+    for peer in completed.stdout.split():
+        run_wg("set", interface, "peer", peer, "remove")
+
+    for device in devices:
+        public_key = str(device["wireguard_public_key"]).strip()
+        address = str(device["wireguard_address"]).strip()
+        allowed = [address]
+        if str(device.get("role", "")) == "gateway":
+            allowed.extend(str(route) for route in device.get("advertised_routes", []))
+        run_wg(
+            "set",
+            interface,
+            "peer",
+            public_key,
+            "allowed-ips",
+            ",".join(allowed),
+        )
+
+
+def sync_gateway_routes(state_dir: Path) -> None:
+    config = read_json(state_dir / "config.json")
+    interface = str(config["wireguard_interface"])
+    routes = sorted(gateway_routes(active_wireguard_devices(state_dir)))
+    state_path = state_dir / "gateway-routes.json"
+
+    previous_routes: list[str] = []
+    previous_interface = interface
+    if state_path.is_file():
+        try:
+            previous = read_json(state_path)
+            previous_interface = str(previous.get("interface", interface))
+            value = previous.get("routes", [])
+            if isinstance(value, list):
+                previous_routes = [str(route) for route in value]
+        except (OSError, ValueError, json.JSONDecodeError):
+            previous_routes = []
+
+    for route in previous_routes:
+        if route in routes and previous_interface == interface:
+            continue
+        subprocess.run(
+            ["ip", "route", "del", route, "dev", previous_interface],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    for route in routes:
+        completed = subprocess.run(
+            ["ip", "route", "replace", route, "dev", interface, "proto", "static", "metric", "50"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            message = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(message or f"failed to install BP Gateway route {route}")
+
+    atomic_json(state_path, {"interface": interface, "routes": routes})
 
 
 class ControlHandler(BaseHTTPRequestHandler):
@@ -607,6 +701,7 @@ def main() -> int:
             raise SystemExit(f"required file is missing: {path}")
 
     sync_wireguard_peers(state_dir)
+    sync_gateway_routes(state_dir)
 
     server = ControlServer((args.listen, args.port), ControlHandler)
     server.state_dir = str(state_dir)
