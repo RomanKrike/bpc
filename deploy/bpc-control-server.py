@@ -66,8 +66,7 @@ def run_wg(*args: str) -> None:
     completed = subprocess.run(
         ["wg", *args],
         check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     if completed.returncode != 0:
@@ -86,7 +85,8 @@ def sync_wireguard_peers(state_dir: Path) -> None:
         text=True,
     )
     if completed.returncode != 0:
-        raise RuntimeError(completed.stderr.strip() or f"WireGuard interface {interface} unavailable")
+        message = completed.stderr.strip() or f"WireGuard interface {interface} unavailable"
+        raise RuntimeError(message)
     for peer in completed.stdout.split():
         run_wg("set", interface, "peer", peer, "remove")
     for path in sorted((state_dir / "devices").glob("*.json")):
