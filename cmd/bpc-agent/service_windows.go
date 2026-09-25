@@ -80,7 +80,7 @@ func installWindowsService(exePath string) error {
 		if cfgErr != nil {
 			return cfgErr
 		}
-		config.BinaryPathName = fmt.Sprintf(""%s" run-service", exePath)
+		config.BinaryPathName = fmt.Sprintf("\\\"%s\\\" run-service", exePath)
 		config.StartType = mgr.StartAutomatic
 		config.DisplayName = "BPC Agent"
 		config.Description = "BPC secure network agent"
