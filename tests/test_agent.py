@@ -268,14 +268,14 @@ def test_agent_has_wireguard_style_tray_ui() -> None:
     assert "schtasks.exe" in UI
 
 
-def test_agent_ui_uses_bpc_connect_branding() -> None:
-    assert "$form.Text = 'BPC Connect'" in UI
+def test_agent_ui_uses_bp_connect_branding() -> None:
+    assert "$form.Text = 'BP Connect'" in UI
     assert "$title.Text = 'Connect'" in UI
     assert "__BPC_LOGO_PNG__" in UI
     assert "bpcConnectLogoPNGBase64" in UI
     assert "System.Windows.Forms.PictureBox" in UI
-    assert "$tray.Text = 'BPC Connect'" in UI
-    assert "Open BPC Connect" in UI
+    assert "$tray.Text = 'BP Connect'" in UI
+    assert "Open BP Connect" in UI
     assert "BPC Agent - Connected" not in UI
 
 
