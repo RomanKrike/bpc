@@ -72,3 +72,16 @@ def test_manual_vpn_commands_are_reconciled_everywhere() -> None:
         assert command in INSTALL
         assert command in MIGRATE
         assert command in UPDATE
+
+
+def test_openvpn_uses_dedicated_subnet_and_migrates_legacy_agent_collision() -> None:
+    assert 'BPC_OPENVPN_SUBNET:-10.250.0.0/24' in OPENVPN
+    assert 'BPC_OPENVPN_SERVER_NETWORK:-10.250.0.0' in OPENVPN
+    assert 'OpenVPN subnet ${OPENVPN_SUBNET} conflicts with the BPC Agent overlay.' in OPENVPN
+    assert '10.253.0.0/24 -> 10.250.0.0/24' in MIGRATE
+    assert 'OPENVPN_SUBNET=10.250.0.0/24' in MIGRATE
+    assert 'OPENVPN_SERVER_NETWORK=10.250.0.0' in MIGRATE
+    assert 'systemctl stop bpc-openvpn-firewall.service' in MIGRATE
+    assert 'systemctl stop openvpn-server@bpc.service' in MIGRATE
+    assert 'systemctl restart openvpn-server@bpc.service' in MIGRATE
+    assert 'OpenVPN subnet ${openvpn_subnet} overlaps the BPC Agent overlay' in HEALTH
