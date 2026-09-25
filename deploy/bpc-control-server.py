@@ -260,14 +260,27 @@ class ControlHandler(BaseHTTPRequestHandler):
         if not isinstance(managed, list):
             raise ValueError("device managed_routes must be a list")
 
+        overlay = ipaddress.ip_network(str(config["wireguard_subnet"]), strict=False)
         allowed_ips: list[str] = []
         seen: set[str] = set()
-        for raw in [*base_allowed, *managed]:
+
+        for raw in base_allowed:
+            network = ipaddress.ip_network(str(raw).strip(), strict=False)
+            if network.version != 4 or network.prefixlen == 0:
+                raise ValueError("invalid base Agent allowed IP")
+            canonical = str(network)
+            if canonical not in seen:
+                seen.add(canonical)
+                allowed_ips.append(canonical)
+
+        for raw in managed:
             network = ipaddress.ip_network(str(raw).strip(), strict=False)
             if network.version != 4:
                 raise ValueError("Agent managed routes currently support IPv4 only")
             if network.prefixlen == 0:
                 raise ValueError("Agent managed routes cannot install a default route")
+            if network.overlaps(overlay):
+                raise ValueError("Agent managed route overlaps the overlay subnet")
             canonical = str(network)
             if canonical not in seen:
                 seen.add(canonical)
