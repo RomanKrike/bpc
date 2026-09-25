@@ -252,14 +252,32 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def _wireguard_profile_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
         config = self._global_config()
-        allowed_ips = config["wireguard_allowed_ips"]
-        if not isinstance(allowed_ips, list) or not allowed_ips:
+        base_allowed = config["wireguard_allowed_ips"]
+        if not isinstance(base_allowed, list) or not base_allowed:
             raise ValueError("wireguard_allowed_ips must be a non-empty list")
+
+        managed = device.get("managed_routes", [])
+        if not isinstance(managed, list):
+            raise ValueError("device managed_routes must be a list")
+
+        allowed_ips: list[str] = []
+        seen: set[str] = set()
+        for raw in [*base_allowed, *managed]:
+            network = ipaddress.ip_network(str(raw).strip(), strict=False)
+            if network.version != 4:
+                raise ValueError("Agent managed routes currently support IPv4 only")
+            if network.prefixlen == 0:
+                raise ValueError("Agent managed routes cannot install a default route")
+            canonical = str(network)
+            if canonical not in seen:
+                seen.add(canonical)
+                allowed_ips.append(canonical)
+
         return {
             "address": str(device["wireguard_address"]),
             "mtu": int(config["wireguard_mtu"]),
             "peer_public_key": str(config["wireguard_server_public_key"]),
-            "allowed_ips": [str(item) for item in allowed_ips],
+            "allowed_ips": allowed_ips,
             "persistent_keepalive": int(config["wireguard_keepalive"]),
         }
 
@@ -371,6 +389,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "wireguard_public_key": wireguard_public_key,
                     "wireguard_address": wireguard_address,
                     "wgshim_psk": wgshim_psk,
+                    "managed_routes": [],
                     "legacy_tunnel": str(enrollment.get("legacy_tunnel", "")),
                     "created": now,
                     "last_seen": now,
