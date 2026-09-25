@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -109,5 +110,42 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 	if info.IsDir() {
 		t.Fatal("state path is a directory")
+	}
+}
+
+
+func TestValidateRuntimeConfigAdaptiveEndpointPool(t *testing.T) {
+	base := RuntimeConfig{
+		ConfigVersion: 4,
+		WGShimServer:  "127.0.0.1:24445",
+		WGShimListen:  "127.0.0.1:24081",
+		WGShimTarget:  "127.0.0.1:51821",
+		WGShimPSK:     base64.StdEncoding.EncodeToString(make([]byte, 32)),
+	}
+	if err := ValidateRuntimeConfig(base); err != nil {
+		t.Fatalf("legacy single endpoint config must remain valid: %v", err)
+	}
+
+	base.WGShimServers = []string{
+		"127.0.0.1:24445",
+		"127.0.0.1:31001",
+		"127.0.0.1:47002",
+	}
+	if err := ValidateRuntimeConfig(base); err != nil {
+		t.Fatalf("valid endpoint pool rejected: %v", err)
+	}
+
+	base.WGShimServers = []string{"127.0.0.1:31001"}
+	if err := ValidateRuntimeConfig(base); err == nil {
+		t.Fatal("pool without backward-compatible primary endpoint was accepted")
+	}
+
+	base.WGShimServers = make([]string, 17)
+	for i := range base.WGShimServers {
+		base.WGShimServers[i] = fmt.Sprintf("127.0.0.1:%d", 30000+i)
+	}
+	base.WGShimServer = base.WGShimServers[0]
+	if err := ValidateRuntimeConfig(base); err == nil {
+		t.Fatal("oversized endpoint pool was accepted")
 	}
 }
