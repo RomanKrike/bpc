@@ -25,7 +25,7 @@ def test_agent_server_command_is_reconciled() -> None:
 def test_prepared_executable_contains_embedded_bootstrap() -> None:
     assert "BPC_AGENT_BOOTSTRAP_V1" in SERVER
     assert "BPC_AGENT_BOOTSTRAP_END" in SERVER
-    assert 'chmod 0600 "${prepared}"' in SERVER
+    assert 'chmod 0600 "${tmp}"' in SERVER
     assert "WGSHIM_TARGET_HOST" in SERVER
     assert "WGSHIM_TARGET_PORT" in SERVER
 
