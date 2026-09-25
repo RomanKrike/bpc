@@ -108,6 +108,31 @@ func installWindowsService(exePath string) error {
 	return configureServiceRecovery()
 }
 
+func setWindowsServiceAutomatic(enabled bool) error {
+	manager, err := mgr.Connect()
+	if err != nil {
+		return err
+	}
+	defer manager.Disconnect()
+
+	service, err := manager.OpenService(serviceName)
+	if err != nil {
+		return err
+	}
+	defer service.Close()
+
+	config, err := service.Config()
+	if err != nil {
+		return err
+	}
+	if enabled {
+		config.StartType = mgr.StartAutomatic
+	} else {
+		config.StartType = mgr.StartManual
+	}
+	return service.UpdateConfig(config)
+}
+
 func startWindowsService() error {
 	manager, err := mgr.Connect()
 	if err != nil {
