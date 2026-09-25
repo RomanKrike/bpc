@@ -194,6 +194,21 @@ if [[ "${role}" == "ru-node" ]]; then
     echo 'WGShim low-latency relay: disabled'
   fi
 
+  agent_dir="${BPC_STATE_DIR}/ru-node/agent"
+  if [[ -f "${agent_dir}/enabled" && -f "${agent_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${agent_dir}/runtime.env"
+    agent_relay_state="$(systemctl is-active bpc-agent-relay.service 2>/dev/null || true)"
+    agent_wg_state="$(systemctl is-active "wg-quick@${AGENT_WG_INTERFACE}.service" 2>/dev/null || true)"
+    peers="$(wg show "${AGENT_WG_INTERFACE}" peers 2>/dev/null | wc -w || true)"
+    printf 'Agent data plane: relay=%s wg=%s (%s:%s/udp; subnet=%s; peers=%s)\n' \
+      "${agent_relay_state:-unknown}" "${agent_wg_state:-unknown}" \
+      "${AGENT_PUBLIC_HOST:-${host:-unknown}}" "${AGENT_WGSHIM_PORT:-24444}" \
+      "${AGENT_WG_SUBNET:-unknown}" "${peers:-0}"
+  else
+    echo 'Agent data plane: disabled'
+  fi
+
   ssh_dir="${BPC_STATE_DIR}/ru-node/ssh-rescue"
   if [[ -f "${ssh_dir}/enabled" && -f "${ssh_dir}/runtime.env" ]]; then
     # shellcheck disable=SC1090,SC1091
@@ -229,5 +244,20 @@ if [[ "${role}" == "ru-node" ]]; then
       "${sub_state:-unknown}" "${SUBSCRIPTION_HOST:-unknown}" "${SUBSCRIPTION_PORT:-unknown}"
   else
     echo 'Subscription: disabled'
+  fi
+
+  control_dir="${BPC_STATE_DIR}/ru-node/control"
+  if [[ -f "${control_dir}/enabled" && -f "${control_dir}/runtime.env" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "${control_dir}/runtime.env"
+    control_state="$(systemctl is-active bpc-control.service 2>/dev/null || true)"
+    registered="0"
+    if [[ -d "${control_dir}/devices" ]]; then
+      registered="$(find "${control_dir}/devices" -maxdepth 1 -type f -name '*.json' | wc -l)"
+    fi
+    printf 'Agent control plane: %s (https://%s:%s; devices=%s)\n' \
+      "${control_state:-unknown}" "${CONTROL_HOST:-unknown}" "${CONTROL_PORT:-unknown}" "${registered}"
+  else
+    echo 'Agent control plane: disabled'
   fi
 fi

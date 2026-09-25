@@ -236,6 +236,8 @@ for spec in \
   "bpc-enable-wg:bpc-enable-wg.sh" \
   "bpc-enable-wgshim:bpc-enable-wgshim.sh" \
   "bpc-agent:bpc-agent.sh" \
+    "bpc-enable-control:bpc-enable-control.sh" \
+    "bpc-enable-agent-dataplane:bpc-enable-agent-dataplane.sh" \
   "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
   "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
   "bpc-enable-ikev2:bpc-enable-ikev2.sh" \
@@ -314,6 +316,7 @@ Commands:
   bpc-enable-wg
   bpc-enable-wgshim
   bpc-agent
+  bpc-enable-control
   bpc-enable-mihomo-transports
   bpc-enable-openvpn
   bpc-enable-ikev2

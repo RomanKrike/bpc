@@ -36,7 +36,12 @@ jobs:
           go-version: "1.23.x"
           cache: false
       - name: Check Go formatting
-        run: test -z "$(gofmt -l cmd internal)"
+        run: |
+          files="$(gofmt -l cmd internal)"
+          if [[ -n "$files" ]]; then
+            printf 'Files requiring gofmt:\n%s\n' "$files"
+            exit 1
+          fi
       - run: go test ./...
       - run: go vet ./...
       - name: Cross-build WGShim
@@ -45,6 +50,10 @@ jobs:
           rm -f bpc-wgshim
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/bpc-wgshim
           rm -f bpc-wgshim
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/bpc-agent-relay
+          rm -f bpc-agent-relay
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build ./cmd/bpc-agent-relay
+          rm -f bpc-agent-relay
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/bpc-wgshim
           rm -f bpc-wgshim.exe
           CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./cmd/bpc-agent
