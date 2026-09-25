@@ -55,6 +55,8 @@ func main() {
 		err = installAgent()
 	case "run":
 		err = runAgent()
+	case "run-service":
+		err = runWindowsService()
 	case "status":
 		err = printStatus()
 	case "update":
@@ -108,7 +110,9 @@ func installAgent() error {
 	current, _ = filepath.Abs(current)
 	exePath, _ = filepath.Abs(exePath)
 
-	_, _ = runCommand("schtasks.exe", "/End", "/TN", taskName)
+	if err := stopWindowsService(); err != nil {
+		return fmt.Errorf("stop existing BPC Agent service: %w", err)
+	}
 	if !samePath(current, exePath) {
 		if err := copyFile(current, exePath); err != nil {
 			return fmt.Errorf("install agent binary: %w", err)
@@ -118,20 +122,11 @@ func installAgent() error {
 	lockDownPath(exePath)
 	lockDownPath(statePath)
 
-	action := fmt.Sprintf("\"%s\" run", exePath)
-	if out, err := runCommand(
-		"schtasks.exe", "/Create",
-		"/TN", taskName,
-		"/TR", action,
-		"/SC", "ONSTART",
-		"/RU", "SYSTEM",
-		"/RL", "HIGHEST",
-		"/F",
-	); err != nil {
-		return fmt.Errorf("create startup task: %w: %s", err, strings.TrimSpace(out))
+	if err := installWindowsService(exePath); err != nil {
+		return fmt.Errorf("install BPC Agent service: %w", err)
 	}
-	if out, err := runCommand("schtasks.exe", "/Run", "/TN", taskName); err != nil {
-		return fmt.Errorf("start agent task: %w: %s", err, strings.TrimSpace(out))
+	if err := startWindowsService(); err != nil {
+		return fmt.Errorf("start BPC Agent service: %w", err)
 	}
 
 	fmt.Printf("BPC Agent %s installed.\n", version)
@@ -188,6 +183,10 @@ func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, stateP
 }
 
 func runAgent() error {
+	return runAgentContext(context.Background())
+}
+
+func runAgentContext(parent context.Context) error {
 	_, _, statePath, err := installPaths()
 	if err != nil {
 		return err
@@ -213,7 +212,7 @@ func runAgent() error {
 		state.ControlURL,
 	)
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
 	var supervisor runtimeSupervisor
@@ -472,10 +471,10 @@ func checkAndStageUpdate(
 
 func scheduleReplacement(exePath, nextPath string) error {
 	script := fmt.Sprintf(
-		"Start-Sleep -Seconds 3; Move-Item -LiteralPath '%s' -Destination '%s' -Force; schtasks.exe /Run /TN '%s' | Out-Null",
+		"Start-Sleep -Seconds 3; Move-Item -LiteralPath '%s' -Destination '%s' -Force; sc.exe start '%s' | Out-Null",
 		psQuote(nextPath),
 		psQuote(exePath),
-		psQuote(taskName),
+		psQuote(serviceName),
 	)
 	cmd := exec.Command(
 		"powershell.exe",
@@ -525,9 +524,13 @@ func uninstallAgent() error {
 	if !isAdministrator() {
 		return elevate("uninstall")
 	}
-	_, _ = runCommand("schtasks.exe", "/End", "/TN", taskName)
-	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", taskName, "/F")
-	fmt.Println("BPC Agent startup task removed.")
+	if err := stopWindowsService(); err != nil {
+		return err
+	}
+	if err := removeWindowsService(); err != nil {
+		return err
+	}
+	fmt.Println("BPC Agent Windows service removed.")
 	fmt.Println("Device revocation remains server-side; use bpc-agent revoke NAME on the VPS.")
 	return nil
 }
@@ -546,6 +549,7 @@ func printStatus() error {
 	fmt.Printf("Device: %s\n", state.DeviceName)
 	fmt.Printf("Device ID: %s\n", state.DeviceID)
 	fmt.Printf("Control: %s\n", state.ControlURL)
+	fmt.Printf("Windows service: %s\n", windowsServiceStatus())
 	fmt.Printf("WGShim server: %s\n", state.Config.WGShimServer)
 	fmt.Printf("WGShim target: %s\n", state.Config.WGShimTarget)
 	if state.Config.LegacyTunnel == "" {
@@ -739,7 +743,7 @@ func usage() {
 		"Usage:\n" +
 		"  bpc-agent.exe                 Enroll and install a prepared agent package\n" +
 		"  bpc-agent.exe install         Enroll/reinstall and start at boot\n" +
-		"  bpc-agent.exe run             Run the background agent loop\n" +
+		"  bpc-agent.exe run             Run the foreground agent loop (diagnostics)\n" +
 		"  bpc-agent.exe status          Show local agent state\n" +
 		"  bpc-agent.exe update          Check, verify and stage a signed update\n" +
 		"  bpc-agent.exe uninstall       Remove the startup task\n" +
