@@ -1,24 +1,40 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"strings"
 	"testing"
+
+	"github.com/RomanKrike/bpc/internal/agentctl"
 )
 
-func TestParseBootstrapBytes(t *testing.T) {
-	cfg := bootstrap{
-		Version:    1,
-		Device:     "pc004",
-		Tunnel:     "blinpi.home",
-		Server:     "176.32.38.65:24444",
-		Listen:     "127.0.0.1:24081",
-		Target:     "176.32.35.91:24081",
-		PaddingMin: 0,
-		PaddingMax: 31,
-		PSK:        base64.StdEncoding.EncodeToString(make([]byte, 32)),
+func testBootstrap(t *testing.T, device string) agentctl.Bootstrap {
+	t.Helper()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
 	}
+	der, err := x509.MarshalPKIXPublicKey(publicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	return agentctl.Bootstrap{
+		Version:         agentctl.BootstrapVersion,
+		Device:          device,
+		ControlURL:      "https://control.example.invalid:8444",
+		EnrollToken:     strings.Repeat("a", 64),
+		UpdatePublicKey: base64.StdEncoding.EncodeToString(publicPEM),
+	}
+}
+
+func TestParseBootstrapBytes(t *testing.T) {
+	cfg := testBootstrap(t, "pc004")
 	raw, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -30,21 +46,18 @@ func TestParseBootstrapBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Device != cfg.Device || got.Tunnel != cfg.Tunnel || got.Server != cfg.Server || got.Target != cfg.Target {
+	if got.Device != cfg.Device || got.ControlURL != cfg.ControlURL || got.EnrollToken != cfg.EnrollToken {
 		t.Fatalf("unexpected bootstrap: %#v", got)
 	}
-	if err := validateBootstrap(got); err != nil {
+	if err := agentctl.ValidateBootstrap(*got); err != nil {
 		t.Fatalf("valid bootstrap rejected: %v", err)
 	}
 }
 
 func TestParseBootstrapUsesLastOverlay(t *testing.T) {
-	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
 	makeOverlay := func(device string) string {
-		raw, err := json.Marshal(bootstrap{
-			Version: 1, Device: device, Tunnel: "wg", Server: "1.1.1.1:1",
-			Listen: "127.0.0.1:2", Target: "2.2.2.2:3", PSK: key,
-		})
+		cfg := testBootstrap(t, device)
+		raw, err := json.Marshal(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
