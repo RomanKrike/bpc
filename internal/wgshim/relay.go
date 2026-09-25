@@ -165,6 +165,9 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 }
 
 func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	if len(cfg.Servers) == 0 {
 		return errors.New("adaptive client requires at least one server")
 	}
@@ -258,7 +261,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	setSelected(0, 0, 0, false)
 
 	go func() {
-		<-ctx.Done()
+		<-runCtx.Done()
 		_ = localConn.Close()
 		_ = outerConn.Close()
 	}()
@@ -270,7 +273,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		for {
 			n, addr, err := localConn.ReadFromUDP(buf)
 			if err != nil {
-				errCh <- normalizeNetErr(ctx, err)
+				errCh <- normalizeNetErr(runCtx, err)
 				return
 			}
 			wgPeerMu.Lock()
@@ -285,7 +288,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 			}
 			_, endpoint := getSelected()
 			if _, err := outerConn.WriteToUDP(outer, endpoint); err != nil {
-				errCh <- normalizeNetErr(ctx, fmt.Errorf("send adaptive outer UDP: %w", err))
+				errCh <- normalizeNetErr(runCtx, fmt.Errorf("send adaptive outer UDP: %w", err))
 				return
 			}
 			stats.OuterTX.Add(uint64(len(outer)))
@@ -295,9 +298,9 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	go func() {
 		buf := make([]byte, 65535)
 		for {
-			n, _, err := outerConn.ReadFromUDP(buf)
+			n, source, err := outerConn.ReadFromUDP(buf)
 			if err != nil {
-				errCh <- normalizeNetErr(ctx, err)
+				errCh <- normalizeNetErr(runCtx, err)
 				return
 			}
 			stats.OuterRX.Add(uint64(n))
@@ -314,7 +317,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 					delete(pending, token)
 				}
 				pendingMu.Unlock()
-				if ok {
+				if ok && source.String() == probe.endpoint {
 					select {
 					case probeResults <- probeMeasurement{
 						endpoint: probe.endpoint,
@@ -337,7 +340,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 				continue
 			}
 			if _, err := localConn.WriteToUDP(inner, peer); err != nil {
-				errCh <- normalizeNetErr(ctx, fmt.Errorf("deliver adaptive packet to WireGuard: %w", err))
+				errCh <- normalizeNetErr(runCtx, fmt.Errorf("deliver adaptive packet to WireGuard: %w", err))
 				return
 			}
 			stats.InnerRX.Add(uint64(len(inner)))
@@ -346,7 +349,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 
 	go func() {
 		rotationDue := time.Now().Add(randomDuration(15*time.Minute, 45*time.Minute))
-		for ctx.Err() == nil {
+		for runCtx.Err() == nil {
 			measurements := make(map[string][]time.Duration, len(serverNames))
 			expected := 0
 			samplesPerEndpoint := 2 + randomIndex(2)
@@ -395,7 +398,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		collect:
 			for received < expected {
 				select {
-				case <-ctx.Done():
+				case <-runCtx.Done():
 					timer.Stop()
 					return
 				case result := <-probeResults:
@@ -508,7 +511,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 
 			wait := randomDuration(30*time.Second, 60*time.Second)
 			select {
-			case <-ctx.Done():
+			case <-runCtx.Done():
 				return
 			case <-time.After(wait):
 			}
