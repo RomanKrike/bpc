@@ -299,10 +299,19 @@ check_agent_dataplane() {
     fail_health "bpc-agent-dataplane-firewall.service is not active"
     return 1
   fi
-  if ! service_owns_udp_port bpc-agent-relay.service "${AGENT_WGSHIM_PORT}"; then
-    fail_health "BPC Agent relay service does not own UDP/${AGENT_WGSHIM_PORT}"
-    return 1
-  fi
+  agent_ports="${AGENT_WGSHIM_PORTS:-${AGENT_WGSHIM_PORT}}"
+  IFS=',' read -r -a agent_port_list <<< "${agent_ports}"
+  for port in "${agent_port_list[@]}"; do
+    port="${port//[[:space:]]/}"
+    if ! [[ "${port}" =~ ^[0-9]+$ ]]; then
+      fail_health "BPC Agent relay pool contains invalid port metadata: ${port}"
+      return 1
+    fi
+    if ! service_owns_udp_port bpc-agent-relay.service "${port}"; then
+      fail_health "BPC Agent relay service does not own advertised UDP/${port}"
+      return 1
+    fi
+  done
 }
 
 check_subscription() {
