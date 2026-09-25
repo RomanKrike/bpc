@@ -168,6 +168,10 @@ fi
 touch "${CONTROL_DIR}/enabled"
 chmod 0600 "${CONTROL_DIR}/enabled"
 
+if [[ -x "${BPC_ROOT}/current/deploy/bpc-agent.sh" ]]; then
+  "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update
+fi
+
 cat <<DONE
 BPC Agent control plane is active.
 
