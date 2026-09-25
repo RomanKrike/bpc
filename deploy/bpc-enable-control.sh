@@ -92,6 +92,9 @@ apt-get install -y --no-install-recommends openssl python3 ca-certificates
 
 install -d -m 0700   "${CONTROL_DIR}"   "${CONTROL_DIR}/enroll"   "${CONTROL_DIR}/devices"   "${CONTROL_DIR}/tokens"   "${CONTROL_DIR}/update"
 
+control_server="${CONTROL_DIR}/bpc-control-server.py"
+install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py" "${control_server}"
+
 signing_key="${CONTROL_DIR}/update-signing-key.pem"
 signing_public="${CONTROL_DIR}/update-signing-public.pem"
 if [[ ! -s "${signing_key}" || ! -s "${signing_public}" ]]; then
@@ -154,7 +157,7 @@ Requires=wg-quick@${AGENT_WG_INTERFACE}.service bpc-agent-relay.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 ${BPC_ROOT}/current/deploy/bpc-control-server.py --listen 0.0.0.0 --port ${PORT} --state-dir ${CONTROL_DIR} --cert-file ${SUBSCRIPTION_CERT} --key-file ${SUBSCRIPTION_KEY}
+ExecStart=/usr/bin/python3 ${control_server} --listen 0.0.0.0 --port ${PORT} --state-dir ${CONTROL_DIR} --cert-file ${SUBSCRIPTION_CERT} --key-file ${SUBSCRIPTION_KEY}
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
