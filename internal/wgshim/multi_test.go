@@ -134,7 +134,6 @@ func assertOuterReply(t *testing.T, conn *net.UDPConn, codec *Codec, want string
 	}
 }
 
-
 func TestMultiServerAnswersAuthenticatedProbe(t *testing.T) {
 	targetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 	if err != nil {
