@@ -15,10 +15,10 @@ import (
 	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
-const version = "0.11.1"
+const version = "0.12.0"
 
 func main() {
-	listen := flag.String("listen", "0.0.0.0:24444", "public WGShim UDP listen address")
+	listen := flag.String("listen", "0.0.0.0:24444", "comma-separated public WGShim UDP listen addresses")
 	target := flag.String("target", "127.0.0.1:51821", "local WireGuard UDP target")
 	keyDir := flag.String("key-dir", "", "directory containing one base64 PSK per device")
 	paddingMin := flag.Int("padding-min", 0, "minimum random padding bytes per packet")
@@ -41,19 +41,49 @@ func main() {
 	ctx, stop := signalContext()
 	defer stop()
 
-	err := wgshim.RunMultiServer(ctx, wgshim.MultiServerConfig{
-		Listen: *listen,
-		Target: *target,
-		LoadPeers: func() (map[string]wgshim.MultiServerPeer, error) {
-			return loadPeers(*keyDir, *paddingMin, *paddingMax)
-		},
-		ReloadInterval: *reloadInterval,
-		Logger:         logger,
-		StatsInterval:  *statsInterval,
-	})
-	if err != nil {
+	listeners := splitListeners(*listen)
+	if len(listeners) == 0 {
+		logger.Fatal("at least one WGShim listen address is required")
+	}
+	logger.Printf("starting adaptive port pool listeners=%s target=%s", strings.Join(listeners, ","), *target)
+
+	errCh := make(chan error, len(listeners))
+	for _, listener := range listeners {
+		listener := listener
+		go func() {
+			errCh <- wgshim.RunMultiServer(ctx, wgshim.MultiServerConfig{
+				Listen: listener,
+				Target: *target,
+				LoadPeers: func() (map[string]wgshim.MultiServerPeer, error) {
+					return loadPeers(*keyDir, *paddingMin, *paddingMax)
+				},
+				ReloadInterval: *reloadInterval,
+				Logger:         logger,
+				StatsInterval:  *statsInterval,
+			})
+		}()
+	}
+	if err := <-errCh; err != nil {
+		stop()
 		logger.Fatal(err)
 	}
+}
+
+func splitListeners(raw string) []string {
+	seen := make(map[string]struct{})
+	var listeners []string
+	for _, value := range strings.Split(raw, ",") {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		listeners = append(listeners, value)
+	}
+	return listeners
 }
 
 func loadPeers(dir string, paddingMin, paddingMax int) (map[string]wgshim.MultiServerPeer, error) {
