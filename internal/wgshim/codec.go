@@ -16,13 +16,13 @@ import (
 )
 
 const (
-	protocolVersion byte = 1
-	packetData      byte = 0
-	packetProbe     byte = 1
+	protocolVersion  byte = 1
+	packetData       byte = 0
+	packetProbe      byte = 1
 	packetProbeReply byte = 2
-	nonceSize            = 12
-	headerSize           = 4
-	maxInnerPacket       = 65507 - nonceSize - 16 - headerSize
+	nonceSize             = 12
+	headerSize            = 4
+	maxInnerPacket        = 65507 - nonceSize - 16 - headerSize
 )
 
 var aad = []byte("BPC-WGSHIM-v1")
