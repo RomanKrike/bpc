@@ -147,6 +147,15 @@ func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, stateP
 		return nil, err
 	}
 
+	var wireGuardProfile agentctl.WireGuardProfile
+	if bootstrap.LegacyTunnel != "" {
+		profile, err := captureLegacyWireGuardProfile(bootstrap.LegacyTunnel)
+		if err != nil {
+			return nil, fmt.Errorf("capture legacy WireGuard profile: %w", err)
+		}
+		wireGuardProfile = profile
+	}
+
 	publicKey, privateKey, err := agentctl.GenerateIdentity()
 	if err != nil {
 		return nil, fmt.Errorf("generate device identity: %w", err)
@@ -178,6 +187,7 @@ func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, stateP
 		ControlURL:   bootstrap.ControlURL,
 		UpdatePubKey: bootstrap.UpdatePublicKey,
 		Config:       response.Config,
+		WireGuard:    wireGuardProfile,
 	}
 	if err := agentctl.SaveState(statePath, *state); err != nil {
 		return nil, err
