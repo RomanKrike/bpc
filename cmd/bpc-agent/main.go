@@ -59,6 +59,14 @@ func main() {
 		err = runWindowsService()
 	case "status":
 		err = printStatus()
+	case "status-json":
+		err = printStatusJSON()
+	case "connect":
+		err = connectAgent()
+	case "disconnect":
+		err = disconnectAgent()
+	case "ui":
+		err = launchWindowsUI()
 	case "update":
 		err = updateNow()
 	case "uninstall":
@@ -117,6 +125,7 @@ func installAgent() error {
 	// Remove the 0.9.x startup task before switching to the native service.
 	_, _ = runCommand("schtasks.exe", "/End", "/TN", legacyTaskName)
 	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", legacyTaskName, "/F")
+	_ = removeWindowsUI()
 	if err := stopWindowsService(); err != nil {
 		return fmt.Errorf("stop existing BPC Agent service: %w", err)
 	}
@@ -125,9 +134,13 @@ func installAgent() error {
 			return fmt.Errorf("install agent binary: %w", err)
 		}
 	}
+	if err := installWindowsUI(exePath, dir); err != nil {
+		return fmt.Errorf("install BPC Agent UI: %w", err)
+	}
 	lockDownPath(dir)
 	lockDownPath(exePath)
 	lockDownPath(statePath)
+	lockDownPath(filepath.Join(dir, "bpc-ui.ps1"))
 
 	if err := installWindowsService(exePath); err != nil {
 		return fmt.Errorf("install BPC Agent service: %w", err)
@@ -135,6 +148,7 @@ func installAgent() error {
 	if err := startWindowsService(); err != nil {
 		return fmt.Errorf("start BPC Agent service: %w", err)
 	}
+	_ = startWindowsUI()
 
 	fmt.Printf("BPC Agent %s installed.\n", version)
 	fmt.Printf("Device: %s\nDevice ID: %s\n", state.DeviceName, state.DeviceID)
@@ -609,6 +623,56 @@ func uninstallAgent() error {
 	return nil
 }
 
+func connectAgent() error {
+	if !isAdministrator() {
+		return elevate("connect")
+	}
+	return startWindowsService()
+}
+
+func disconnectAgent() error {
+	if !isAdministrator() {
+		return elevate("disconnect")
+	}
+	return stopWindowsService()
+}
+
+func printStatusJSON() error {
+	_, _, statePath, err := installPaths()
+	if err != nil {
+		return err
+	}
+	state, err := agentctl.LoadState(statePath)
+	if err != nil {
+		return err
+	}
+	payload := struct {
+		Version       string   `json:"version"`
+		Device        string   `json:"device"`
+		DeviceID      string   `json:"device_id"`
+		Service       string   `json:"service"`
+		Control       string   `json:"control"`
+		Relay         string   `json:"relay"`
+		TunnelAddress string   `json:"tunnel_address"`
+		Routes        []string `json:"routes"`
+	}{
+		Version:       version,
+		Device:        state.DeviceName,
+		DeviceID:      state.DeviceID,
+		Service:       windowsServiceStatus(),
+		Control:       state.ControlURL,
+		Relay:         state.Config.WGShimServer,
+		TunnelAddress: state.WireGuard.Address,
+		Routes:        state.WireGuard.AllowedIPs,
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(encoded))
+	return nil
+}
+
 func printStatus() error {
 	_, _, statePath, err := installPaths()
 	if err != nil {
@@ -826,8 +890,11 @@ func usage() {
 		"  bpc-agent.exe install         Enroll/reinstall and start at boot\n" +
 		"  bpc-agent.exe run             Run the foreground agent loop (diagnostics)\n" +
 		"  bpc-agent.exe status          Show local agent state\n" +
+		"  bpc-agent.exe connect         Enable the tunnel service\n" +
+		"  bpc-agent.exe disconnect      Disable the tunnel service\n" +
+		"  bpc-agent.exe ui              Open the tray UI\n" +
 		"  bpc-agent.exe update          Check, verify and stage a signed update\n" +
-		"  bpc-agent.exe uninstall       Remove the startup task\n" +
+		"  bpc-agent.exe uninstall       Remove the agent and tray UI\n" +
 		"  bpc-agent.exe version\n\n" +
 		"Prepared binaries are generated on the BPC VPS with:\n" +
 		"  bpc-agent create NAME")
