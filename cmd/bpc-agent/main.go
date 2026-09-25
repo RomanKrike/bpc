@@ -29,6 +29,13 @@ const (
 	defaultLogEvery = 30 * time.Second
 )
 
+type tunnelTelemetry struct {
+	UpdatedAt   int64  `json:"updated_at"`
+	HandshakeAt int64  `json:"handshake_at"`
+	RXBytes     uint64 `json:"rx_bytes"`
+	TXBytes     uint64 `json:"tx_bytes"`
+}
+
 type runtimeSupervisor struct {
 	mu          sync.Mutex
 	fingerprint string
@@ -276,6 +283,8 @@ func runAgentContext(parent context.Context) error {
 		return err
 	}
 	_ = writeUIStatus(state)
+	_ = clearUIRuntimeStatus()
+	defer clearUIRuntimeStatus()
 
 	logger, closer, err := newFileLogger()
 	if err != nil {
@@ -427,7 +436,12 @@ func (s *runtimeSupervisor) apply(
 	go runWGShimLoop(ctx, cfg, logger)
 	if profile.Complete() {
 		go func() {
-			if err := runEmbeddedWireGuard(ctx, cfg, profile, logger); err != nil && ctx.Err() == nil {
+			telemetry := func(stats tunnelTelemetry) {
+				if err := writeUIRuntimeStatus(stats); err != nil && ctx.Err() == nil {
+					logger.Printf("write UI tunnel telemetry: %v", err)
+				}
+			}
+			if err := runEmbeddedWireGuard(ctx, cfg, profile, logger, telemetry); err != nil && ctx.Err() == nil {
 				logger.Printf("embedded WireGuard stopped: %v", err)
 			}
 		}()
@@ -693,6 +707,10 @@ type uiStatus struct {
 	Relay         string   `json:"relay"`
 	TunnelAddress string   `json:"tunnel_address"`
 	Routes        []string `json:"routes"`
+	UpdatedAt     int64    `json:"updated_at,omitempty"`
+	HandshakeAt   int64    `json:"handshake_at,omitempty"`
+	RXBytes       uint64   `json:"rx_bytes,omitempty"`
+	TXBytes       uint64   `json:"tx_bytes,omitempty"`
 }
 
 func uiStatusPath() (string, error) {
@@ -701,6 +719,44 @@ func uiStatusPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "ui-status.json"), nil
+}
+
+func uiRuntimeStatusPath() (string, error) {
+	dir, _, _, err := installPaths()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "ui-runtime.json"), nil
+}
+
+func writeUIRuntimeStatus(stats tunnelTelemetry) error {
+	path, err := uiRuntimeStatusPath()
+	if err != nil {
+		return err
+	}
+	_, statErr := os.Stat(path)
+	encoded, err := json.Marshal(stats)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, encoded, 0o644); err != nil {
+		return err
+	}
+	if errors.Is(statErr, os.ErrNotExist) {
+		allowUsersReadPath(path)
+	}
+	return nil
+}
+
+func clearUIRuntimeStatus() error {
+	path, err := uiRuntimeStatusPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 func writeUIStatus(state *agentctl.State) error {
@@ -742,6 +798,17 @@ func printStatusJSON() error {
 		return err
 	}
 	payload.Service = windowsServiceStatus()
+	if runtimePath, runtimeErr := uiRuntimeStatusPath(); runtimeErr == nil {
+		if runtimeRaw, readErr := os.ReadFile(runtimePath); readErr == nil {
+			var runtimeStatus tunnelTelemetry
+			if json.Unmarshal(runtimeRaw, &runtimeStatus) == nil {
+				payload.UpdatedAt = runtimeStatus.UpdatedAt
+				payload.HandshakeAt = runtimeStatus.HandshakeAt
+				payload.RXBytes = runtimeStatus.RXBytes
+				payload.TXBytes = runtimeStatus.TXBytes
+			}
+		}
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
