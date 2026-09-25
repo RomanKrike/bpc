@@ -36,6 +36,14 @@ type tunnelTelemetry struct {
 	TXBytes     uint64 `json:"tx_bytes"`
 }
 
+type transportTelemetry struct {
+	UpdatedAt int64  `json:"updated_at"`
+	Endpoint  string `json:"endpoint"`
+	RTTMS     int64  `json:"rtt_ms"`
+	Reachable int    `json:"reachable"`
+	Total     int    `json:"total"`
+}
+
 type runtimeSupervisor struct {
 	mu          sync.Mutex
 	fingerprint string
@@ -283,7 +291,9 @@ func runAgentContext(parent context.Context) error {
 	}
 	_ = writeUIStatus(state)
 	_ = clearUIRuntimeStatus()
+	_ = clearUITransportStatus()
 	defer clearUIRuntimeStatus()
+	defer clearUITransportStatus()
 
 	logger, closer, err := newFileLogger()
 	if err != nil {
@@ -488,14 +498,55 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 			logger.Printf("create RX codec: %v", err)
 			return
 		}
-		err = wgshim.RunClient(ctx, wgshim.ClientConfig{
-			LocalListen:   cfg.WGShimListen,
-			Server:        cfg.WGShimServer,
-			TX:            tx,
-			RX:            rx,
-			Logger:        logger,
-			StatsInterval: defaultLogEvery,
-		})
+		servers := append([]string(nil), cfg.WGShimServers...)
+		if len(servers) == 0 {
+			servers = []string{cfg.WGShimServer}
+		}
+		if len(servers) > 1 {
+			err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
+				LocalListen:     cfg.WGShimListen,
+				Servers:         servers,
+				TX:              tx,
+				RX:              rx,
+				Logger:          logger,
+				StatsInterval:   defaultLogEvery,
+				ProbeTimeout:    900 * time.Millisecond,
+				SwitchThreshold: 10 * time.Millisecond,
+				OnEndpointReport: func(report wgshim.EndpointReport) {
+					rttMS := int64(0)
+					if report.RTT > 0 {
+						rttMS = report.RTT.Milliseconds()
+						if rttMS == 0 {
+							rttMS = 1
+						}
+					}
+					if writeErr := writeUITransportStatus(transportTelemetry{
+						UpdatedAt: time.Now().Unix(),
+						Endpoint:  report.Selected,
+						RTTMS:     rttMS,
+						Reachable: report.Reachable,
+						Total:     report.Total,
+					}); writeErr != nil && ctx.Err() == nil {
+						logger.Printf("write UI transport telemetry: %v", writeErr)
+					}
+				},
+			})
+		} else {
+			_ = writeUITransportStatus(transportTelemetry{
+				UpdatedAt: time.Now().Unix(),
+				Endpoint:  cfg.WGShimServer,
+				Reachable: 1,
+				Total:     1,
+			})
+			err = wgshim.RunClient(ctx, wgshim.ClientConfig{
+				LocalListen:   cfg.WGShimListen,
+				Server:        cfg.WGShimServer,
+				TX:            tx,
+				RX:            rx,
+				Logger:        logger,
+				StatsInterval: defaultLogEvery,
+			})
+		}
 		if ctx.Err() != nil {
 			return
 		}
@@ -704,6 +755,7 @@ type uiStatus struct {
 	Service       string   `json:"service"`
 	Control       string   `json:"control"`
 	Relay         string   `json:"relay"`
+	RelayPool     []string `json:"relay_pool,omitempty"`
 	TunnelAddress string   `json:"tunnel_address"`
 	Routes        []string `json:"routes"`
 	UpdatedAt     int64    `json:"updated_at,omitempty"`
@@ -758,6 +810,44 @@ func clearUIRuntimeStatus() error {
 	return nil
 }
 
+func uiTransportStatusPath() (string, error) {
+	dir, _, _, err := installPaths()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "ui-transport.json"), nil
+}
+
+func writeUITransportStatus(stats transportTelemetry) error {
+	path, err := uiTransportStatusPath()
+	if err != nil {
+		return err
+	}
+	_, statErr := os.Stat(path)
+	encoded, err := json.Marshal(stats)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, encoded, 0o644); err != nil {
+		return err
+	}
+	if errors.Is(statErr, os.ErrNotExist) {
+		allowUsersReadPath(path)
+	}
+	return nil
+}
+
+func clearUITransportStatus() error {
+	path, err := uiTransportStatusPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 func writeUIStatus(state *agentctl.State) error {
 	path, err := uiStatusPath()
 	if err != nil {
@@ -769,6 +859,7 @@ func writeUIStatus(state *agentctl.State) error {
 		DeviceID:      state.DeviceID,
 		Control:       state.ControlURL,
 		Relay:         state.Config.WGShimServer,
+		RelayPool:     append([]string(nil), state.Config.WGShimServers...),
 		TunnelAddress: state.WireGuard.Address,
 		Routes:        append([]string(nil), state.WireGuard.AllowedIPs...),
 	}
