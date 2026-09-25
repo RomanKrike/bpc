@@ -46,10 +46,6 @@ validate_tunnel() {
   [[ "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
 }
 
-json_escape() {
-  python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
-}
-
 create_agent() {
   local name="${1:-}"
   shift || true
@@ -121,7 +117,7 @@ create_agent() {
   local padding_max="${WGSHIM_PADDING_MAX:-31}"
 
   local json
-  json="$(printf '{"version":1,"device":%s,"tunnel":%s,"server":%s,"listen":%s,"target":%s,"padding_min":%s,"padding_max":%s,"psk":%s}'     "$(json_escape "${name}")"     "$(json_escape "${tunnel}")"     "$(json_escape "${server}")"     "$(json_escape "${listen}")"     "$(json_escape "${target}")"     "${padding_min}"     "${padding_max}"     "$(json_escape "${psk}")")"
+  json="$(printf '{"version":1,"device":"%s","tunnel":"%s","server":"%s","listen":"%s","target":"%s","padding_min":%s,"padding_max":%s,"psk":"%s"}' "${name}" "${tunnel}" "${server}" "${listen}" "${target}" "${padding_min}" "${padding_max}" "${psk}")"
 
   local encoded
   encoded="$(printf '%s' "${json}" | base64 -w0)"
