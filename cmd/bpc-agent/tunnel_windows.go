@@ -27,6 +27,10 @@ func runEmbeddedWireGuard(
 		return err
 	}
 
+	if cfg.LegacyTunnel != "" {
+		_, _ = runCommand("sc.exe", "stop", "WireGuardTunnel$"+cfg.LegacyTunnel)
+	}
+
 	tunDevice, err := tun.CreateTUN(embeddedInterfaceName, profile.MTU)
 	if err != nil {
 		return fmt.Errorf("create Wintun adapter: %w", err)
