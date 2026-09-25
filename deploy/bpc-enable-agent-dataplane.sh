@@ -246,8 +246,24 @@ if ! systemctl --quiet is-active bpc-agent-relay.service; then
   systemctl status bpc-agent-relay.service --no-pager >&2 || true
   exit 5
 fi
-if ! ss -H -lun "sport = :${WGSHIM_PORT}" | grep -q .; then
-  echo "BPC agent relay UDP listener is unavailable on ${WGSHIM_PORT}" >&2
+
+relay_ready="false"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  relay_pid="$(systemctl show -p MainPID --value bpc-agent-relay.service 2>/dev/null || true)"
+  if [[ "${relay_pid}" =~ ^[1-9][0-9]*$ ]] && \
+    ss -H -lunp "sport = :${WGSHIM_PORT}" 2>/dev/null | grep -Fq "pid=${relay_pid},"; then
+    relay_ready="true"
+    break
+  fi
+  if ! systemctl --quiet is-active bpc-agent-relay.service; then
+    break
+  fi
+  sleep 0.25
+done
+if [[ "${relay_ready}" != "true" ]]; then
+  echo "BPC agent relay did not become ready on UDP/${WGSHIM_PORT}" >&2
+  systemctl status bpc-agent-relay.service --no-pager >&2 || true
+  journalctl -u bpc-agent-relay.service -n 30 --no-pager >&2 || true
   exit 5
 fi
 
