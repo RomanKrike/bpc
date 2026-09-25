@@ -297,6 +297,9 @@ func ValidateRuntimeConfig(cfg RuntimeConfig) error {
 	if len(servers) == 0 {
 		servers = []string{cfg.WGShimServer}
 	}
+	if len(servers) > 16 {
+		return fmt.Errorf("runtime WGShim server pool is too large: %d", len(servers))
+	}
 	seenServers := map[string]struct{}{}
 	for _, endpoint := range servers {
 		endpoint = strings.TrimSpace(endpoint)
@@ -310,6 +313,11 @@ func ValidateRuntimeConfig(cfg RuntimeConfig) error {
 			return fmt.Errorf("duplicate WGShim server endpoint %q", endpoint)
 		}
 		seenServers[endpoint] = struct{}{}
+	}
+	if len(cfg.WGShimServers) > 0 {
+		if _, ok := seenServers[strings.TrimSpace(cfg.WGShimServer)]; !ok {
+			return errors.New("runtime WGShim server pool does not contain the primary endpoint")
+		}
 	}
 	key, err := base64.StdEncoding.DecodeString(cfg.WGShimPSK)
 	if err != nil || len(key) != 32 {
