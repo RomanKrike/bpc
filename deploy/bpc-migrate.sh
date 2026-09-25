@@ -209,15 +209,27 @@ if [[ -f "${ru_dir}/subscription/enabled" ]] && \
   systemctl restart bpc-subscription.service
 fi
 
-# The control plane also executes code through /opt/bpc/current. Restart it
-# after a release switch while preserving enrollment/device/update state.
-if [[ -f "${ru_dir}/control/enabled" ]] && \
-  systemctl --quiet is-enabled bpc-control.service 2>/dev/null; then
-  if [[ -x "${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh" ]]; then
-    "${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh"
-  fi
-  systemctl restart bpc-control.service
-  if [[ -x "${BPC_ROOT}/current/deploy/bpc-agent.sh" ]]; then
-    "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update
-  fi
+# Repair the self-contained Agent data plane independently from the control
+# plane. A failed first-time bpc-enable-control can leave agent/enabled behind
+# before control/enabled is written; release health checks must not roll back
+# before the new release gets a chance to repair that partial state.
+if [[ -f "${ru_dir}/agent/enabled" ]] && \
+  [[ -x "${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh" ]]; then
+  "${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh"
+fi
+
+# Reconcile both fully-enabled and interrupted control-plane installations.
+# The interrupted case is identified by an enabled systemd unit plus the
+# generated runtime/config state, even when control/enabled was never reached.
+control_should_reconcile="false"
+if [[ -f "${ru_dir}/control/enabled" ]]; then
+  control_should_reconcile="true"
+elif systemctl --quiet is-enabled bpc-control.service 2>/dev/null && \
+  [[ -s "${ru_dir}/control/runtime.env" && -s "${ru_dir}/control/config.json" ]]; then
+  control_should_reconcile="true"
+fi
+
+if [[ "${control_should_reconcile}" == "true" ]] && \
+  [[ -x "${BPC_ROOT}/current/deploy/bpc-enable-control.sh" ]]; then
+  "${BPC_ROOT}/current/deploy/bpc-enable-control.sh"
 fi
