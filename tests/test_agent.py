@@ -39,7 +39,7 @@ def test_prepared_executable_uses_one_time_control_plane_bootstrap() -> None:
     assert "update-signing-public.pem" in SERVER
     bootstrap_block = SERVER.split("local json", 1)[1].split("local encoded", 1)[0]
     assert "wgshim_psk" not in bootstrap_block
-    assert 'chmod 0600 "\${tmp}"' in SERVER
+    assert 'chmod 0600 "${tmp}"' in SERVER
 
 
 def test_control_plane_has_enrollment_config_heartbeat_and_update_api() -> None:
@@ -89,7 +89,7 @@ def test_agent_signed_auto_update_is_fail_closed() -> None:
 
 def test_agent_runs_as_native_windows_service() -> None:
     assert "svc.Run" in SERVICE
-    assert "mgr.CreateService" in SERVICE
+    assert "manager.CreateService" in SERVICE
     assert "mgr.StartAutomatic" in SERVICE
     assert "configureServiceRecovery" in SERVICE
     assert "run-service" in SERVICE
