@@ -25,10 +25,11 @@ $script:mutexReleased = $false
 $exe = Join-Path $env:ProgramData 'BPC\bpc-agent.exe'
 $statusPath = Join-Path $env:ProgramData 'BPC\ui-status.json'
 $runtimePath = Join-Path $env:ProgramData 'BPC\ui-runtime.json'
+$transportPath = Join-Path $env:ProgramData 'BPC\ui-transport.json'
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'BPC Agent'
-$form.ClientSize = New-Object System.Drawing.Size(540, 405)
+$form.ClientSize = New-Object System.Drawing.Size(540, 433)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
@@ -83,14 +84,15 @@ function Add-Row([string]$caption, [int]$y) {
 
 $deviceValue = Add-Row 'Device' 96
 $ipValue = Add-Row 'Tunnel IP' 124
-$relayValue = Add-Row 'Relay' 152
-$handshakeValue = Add-Row 'Last handshake' 180
-$trafficValue = Add-Row 'Traffic' 208
+$relayValue = Add-Row 'UDP endpoint' 152
+$portValue = Add-Row 'Port RTT' 180
+$handshakeValue = Add-Row 'Last handshake' 208
+$trafficValue = Add-Row 'Traffic' 236
 
 $routesCaption = New-Object System.Windows.Forms.Label
 $routesCaption.Text = 'Routes'
 $routesCaption.ForeColor = [System.Drawing.Color]::DimGray
-$routesCaption.Location = New-Object System.Drawing.Point(20, 238)
+$routesCaption.Location = New-Object System.Drawing.Point(20, 266)
 $routesCaption.Size = New-Object System.Drawing.Size(120, 22)
 $form.Controls.Add($routesCaption)
 
@@ -99,20 +101,20 @@ $routesValue.ReadOnly = $true
 $routesValue.Multiline = $true
 $routesValue.ScrollBars = 'Vertical'
 $routesValue.BorderStyle = 'FixedSingle'
-$routesValue.Location = New-Object System.Drawing.Point(150, 236)
+$routesValue.Location = New-Object System.Drawing.Point(150, 264)
 $routesValue.Size = New-Object System.Drawing.Size(365, 90)
 $routesValue.BackColor = [System.Drawing.SystemColors]::Window
 $form.Controls.Add($routesValue)
 
 $connect = New-Object System.Windows.Forms.Button
 $connect.Text = 'Connect'
-$connect.Location = New-Object System.Drawing.Point(150, 348)
+$connect.Location = New-Object System.Drawing.Point(150, 376)
 $connect.Size = New-Object System.Drawing.Size(140, 36)
 $form.Controls.Add($connect)
 
 $disconnect = New-Object System.Windows.Forms.Button
 $disconnect.Text = 'Disconnect'
-$disconnect.Location = New-Object System.Drawing.Point(305, 348)
+$disconnect.Location = New-Object System.Drawing.Point(305, 376)
 $disconnect.Size = New-Object System.Drawing.Size(140, 36)
 $form.Controls.Add($disconnect)
 
@@ -155,6 +157,10 @@ function Get-BpcStatus {
         if (Test-Path -LiteralPath $runtimePath) {
             try { $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json } catch {}
         }
+        $transport = $null
+        if (Test-Path -LiteralPath $transportPath) {
+            try { $transport = Get-Content -LiteralPath $transportPath -Raw | ConvertFrom-Json } catch {}
+        }
 
         $svc = Get-Service -Name BPCAgent -ErrorAction SilentlyContinue
         $service = 'missing'
@@ -181,6 +187,7 @@ function Get-BpcStatus {
         $s | Add-Member -NotePropertyName service -NotePropertyValue $service -Force
         $s | Add-Member -NotePropertyName connection -NotePropertyValue $connection -Force
         $s | Add-Member -NotePropertyName runtime -NotePropertyValue $runtime -Force
+        $s | Add-Member -NotePropertyName transport -NotePropertyValue $transport -Force
         $s | Add-Member -NotePropertyName handshake_age -NotePropertyValue $handshakeAge -Force
         return $s
     } catch {
@@ -209,6 +216,7 @@ function Refresh-Bpc {
         $deviceValue.Text = '-'
         $ipValue.Text = '-'
         $relayValue.Text = '-'
+        $portValue.Text = '-'
         $handshakeValue.Text = '-'
         $trafficValue.Text = '-'
         $routesValue.Text = ''
@@ -228,8 +236,21 @@ function Refresh-Bpc {
     $versionValue.Text = "v$($s.version)"
     $deviceValue.Text = $s.device
     $ipValue.Text = $s.tunnel_address
-    $relayValue.Text = $s.relay
     $routesValue.Text = ($s.routes -join [Environment]::NewLine)
+
+    if ($null -ne $s.transport) {
+        $relayValue.Text = $s.transport.endpoint
+        if ([Int64]$s.transport.rtt_ms -gt 0) {
+            $portValue.Text = "$($s.transport.rtt_ms) ms   $($s.transport.reachable)/$($s.transport.total) reachable"
+        } else {
+            $portValue.Text = "Testing...   $($s.transport.reachable)/$($s.transport.total) reachable"
+        }
+    } else {
+        $relayValue.Text = $s.relay
+        $poolCount = 1
+        if ($null -ne $s.relay_pool -and $s.relay_pool.Count -gt 0) { $poolCount = $s.relay_pool.Count }
+        $portValue.Text = "Waiting for probe   0/$poolCount reachable"
+    }
 
     if ($null -ne $s.runtime) {
         if ($s.handshake_age -ge 0) {
@@ -391,6 +412,7 @@ func removeWindowsUI() error {
 		_ = os.Remove(filepath.Join(dir, "bpc-ui.ps1"))
 		_ = os.Remove(filepath.Join(dir, "ui-status.json"))
 		_ = os.Remove(filepath.Join(dir, "ui-runtime.json"))
+		_ = os.Remove(filepath.Join(dir, "ui-transport.json"))
 	}
 	if cacheDir, cacheErr := os.UserCacheDir(); cacheErr == nil {
 		_ = os.RemoveAll(filepath.Join(cacheDir, "BPC"))
