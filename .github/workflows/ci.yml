@@ -36,7 +36,12 @@ jobs:
           go-version: "1.23.x"
           cache: false
       - name: Check Go formatting
-        run: test -z "$(gofmt -l cmd internal)"
+        run: |
+          files="$(gofmt -l cmd internal)"
+          if [[ -n "$files" ]]; then
+            printf 'Files requiring gofmt:\n%s\n' "$files"
+            exit 1
+          fi
       - run: go test ./...
       - run: go vet ./...
       - name: Cross-build WGShim

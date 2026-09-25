@@ -80,8 +80,7 @@ def sync_wireguard_peers(state_dir: Path) -> None:
     completed = subprocess.run(
         ["wg", "show", interface, "peers"],
         check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
     )
     if completed.returncode != 0:
