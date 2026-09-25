@@ -117,6 +117,12 @@ create_agent() {
     echo "Windows agent binary is missing: ${generic}" >&2
     exit 3
   fi
+  local wintun="${BPC_ROOT}/current/bin/wintun-windows-amd64.dll"
+  if [[ ! -s "${wintun}" ]]; then
+    echo "Wintun runtime is missing: ${wintun}" >&2
+    echo "Update BPC to a release containing the self-contained Windows runtime." >&2
+    exit 3
+  fi
   if [[ ! -s "${CONTROL_DIR}/update-signing-public.pem" ]]; then
     echo "Update signing public key is missing" >&2
     exit 3
@@ -176,6 +182,9 @@ PY
   tmp="$(mktemp "${device_dir}/.agent.XXXXXX")"
   cp "${generic}" "${tmp}"
   printf '\nBPC_AGENT_BOOTSTRAP_V2\n%s\nBPC_AGENT_BOOTSTRAP_END\n' "${encoded}" >> "${tmp}"
+  printf '\nBPC_AGENT_WINTUN_V1\n' >> "${tmp}"
+  base64 -w0 < "${wintun}" >> "${tmp}"
+  printf '\nBPC_AGENT_WINTUN_END\n' >> "${tmp}"
   chmod 0600 "${tmp}"
   mv -f "${tmp}" "${prepared}"
 
