@@ -87,7 +87,6 @@ func bytesOf(value byte) []byte {
 	return out
 }
 
-
 func TestValidateWireGuardServerProfileAllowsMissingPrivateKey(t *testing.T) {
 	publicKey := base64.StdEncoding.EncodeToString(bytesOf(7))
 	profile := WireGuardProfile{
