@@ -95,7 +95,8 @@ $logo.Location = New-Object System.Drawing.Point(24, 18)
 $logo.Size = New-Object System.Drawing.Size(48, 48)
 $form.Controls.Add($logo)
 
-$title = New-Label 'Connect' 84 22 220 38 20 ([System.Drawing.FontStyle]::Bold) $text
+$title = New-Label '' 84 22 220 38 20 ([System.Drawing.FontStyle]::Bold) $text
+$title.Text = 'Connect'
 $form.Controls.Add($title)
 
 $settings = New-Object System.Windows.Forms.Button
@@ -181,7 +182,7 @@ $latencyCard.Controls.Add($latencyValue)
 $trafficCard = New-Card 268 394 228 86
 $form.Controls.Add($trafficCard)
 
-$trafficCaption = New-Label 'TRAFFIC' 18 13 190 20 8.5 ([System.Drawing.FontStyle]::Bold) $muted
+$trafficCaption = New-Label 'Traffic' 18 13 190 20 8.5 ([System.Drawing.FontStyle]::Bold) $muted
 $trafficCard.Controls.Add($trafficCaption)
 
 $trafficValue = New-Label 'RX 0 B   TX 0 B' 18 39 194 32 11 ([System.Drawing.FontStyle]::Bold) $text
@@ -259,7 +260,7 @@ $tray.Icon = $clientIcon
 $tray.Visible = $true
 
 $menu = New-Object System.Windows.Forms.ContextMenuStrip
-$openItem = $menu.Items.Add('Open Connect')
+$openItem = $menu.Items.Add('Open BPC Connect')
 $menu.Items.Add((New-Object System.Windows.Forms.ToolStripSeparator)) | Out-Null
 $connectItem = $menu.Items.Add('Connect')
 $disconnectItem = $menu.Items.Add('Disconnect')
