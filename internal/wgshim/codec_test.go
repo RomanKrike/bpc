@@ -90,3 +90,55 @@ func TestLoadPSK(t *testing.T) {
 		t.Fatal("loaded PSK mismatch")
 	}
 }
+
+
+func TestCodecAuthenticatedProbeRoundTrip(t *testing.T) {
+	psk := testPSK(t)
+	key, err := DeriveKey(psk, ClientToServer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codec, err := NewCodec(key, 3, 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("probe-token")
+	outer, err := codec.SealProbe(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packetType, inner, err := codec.OpenTyped(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsProbe(packetType) {
+		t.Fatalf("expected probe packet type, got %d", packetType)
+	}
+	if !bytes.Equal(inner, payload) {
+		t.Fatalf("probe payload mismatch: %q != %q", inner, payload)
+	}
+	if _, err := codec.Open(outer); err == nil {
+		t.Fatal("data-only Open accepted a probe packet")
+	}
+}
+
+func TestCodecProbeReplyRoundTrip(t *testing.T) {
+	psk := testPSK(t)
+	key, _ := DeriveKey(psk, ServerToClient)
+	codec, _ := NewCodec(key, 0, 7)
+	payload := []byte("reply-token")
+	outer, err := codec.SealProbeReply(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packetType, inner, err := codec.OpenTyped(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsProbeReply(packetType) {
+		t.Fatalf("expected probe reply packet type, got %d", packetType)
+	}
+	if !bytes.Equal(inner, payload) {
+		t.Fatalf("probe reply payload mismatch: %q != %q", inner, payload)
+	}
+}
