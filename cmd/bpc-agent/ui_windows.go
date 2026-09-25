@@ -32,102 +32,219 @@ $logoBytes = [Convert]::FromBase64String('__BPC_LOGO_PNG__')
 $logoStream = New-Object System.IO.MemoryStream(,$logoBytes)
 $logoImage = [System.Drawing.Image]::FromStream($logoStream)
 
+$bg = [System.Drawing.Color]::FromArgb(247, 249, 251)
+$card = [System.Drawing.Color]::White
+$text = [System.Drawing.Color]::FromArgb(15, 23, 42)
+$muted = [System.Drawing.Color]::FromArgb(100, 116, 139)
+$line = [System.Drawing.Color]::FromArgb(226, 232, 240)
+$green = [System.Drawing.Color]::FromArgb(22, 163, 74)
+$greenSoft = [System.Drawing.Color]::FromArgb(236, 253, 245)
+$orange = [System.Drawing.Color]::FromArgb(217, 119, 6)
+$gray = [System.Drawing.Color]::FromArgb(148, 163, 184)
+$red = [System.Drawing.Color]::FromArgb(220, 38, 38)
+$redSoft = [System.Drawing.Color]::FromArgb(254, 242, 242)
+
+function Set-RoundedRegion($control, [int]$radius) {
+    $diameter = $radius * 2
+    $path = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $path.StartFigure()
+    $path.AddArc(0, 0, $diameter, $diameter, 180, 90)
+    $path.AddArc($control.Width - $diameter - 1, 0, $diameter, $diameter, 270, 90)
+    $path.AddArc($control.Width - $diameter - 1, $control.Height - $diameter - 1, $diameter, $diameter, 0, 90)
+    $path.AddArc(0, $control.Height - $diameter - 1, $diameter, $diameter, 90, 90)
+    $path.CloseFigure()
+    $control.Region = New-Object System.Drawing.Region($path)
+    $path.Dispose()
+}
+
+function New-Card([int]$x, [int]$y, [int]$w, [int]$h) {
+    $panel = New-Object System.Windows.Forms.Panel
+    $panel.Location = New-Object System.Drawing.Point($x, $y)
+    $panel.Size = New-Object System.Drawing.Size($w, $h)
+    $panel.BackColor = $card
+    Set-RoundedRegion $panel 14
+    return $panel
+}
+
+function New-Label([string]$value, [int]$x, [int]$y, [int]$w, [int]$h, [float]$size, [System.Drawing.FontStyle]$style, [System.Drawing.Color]$color) {
+    $label = New-Object System.Windows.Forms.Label
+    $label.Text = $value
+    $label.Location = New-Object System.Drawing.Point($x, $y)
+    $label.Size = New-Object System.Drawing.Size($w, $h)
+    $label.Font = New-Object System.Drawing.Font('Segoe UI', $size, $style)
+    $label.ForeColor = $color
+    return $label
+}
+
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'BPC Connect'
-$form.ClientSize = New-Object System.Drawing.Size(540, 425)
+$form.ClientSize = New-Object System.Drawing.Size(520, 660)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
 $form.MinimizeBox = $true
 $form.ShowInTaskbar = $true
+$form.BackColor = $bg
 $form.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+$form.AutoScaleMode = 'Dpi'
 
 $logo = New-Object System.Windows.Forms.PictureBox
 $logo.Image = $logoImage
 $logo.SizeMode = 'Zoom'
-$logo.Location = New-Object System.Drawing.Point(18, 10)
-$logo.Size = New-Object System.Drawing.Size(50, 50)
+$logo.Location = New-Object System.Drawing.Point(24, 18)
+$logo.Size = New-Object System.Drawing.Size(48, 48)
 $form.Controls.Add($logo)
 
-$title = New-Object System.Windows.Forms.Label
+$title = New-Label '' 84 22 220 38 20 ([System.Drawing.FontStyle]::Bold) $text
 $title.Text = 'Connect'
-$title.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 19, [System.Drawing.FontStyle]::Regular)
-$title.AutoSize = $true
-$title.Location = New-Object System.Drawing.Point(78, 18)
 $form.Controls.Add($title)
 
-$versionValue = New-Object System.Windows.Forms.Label
-$versionValue.Text = "v$uiVersion"
-$versionValue.ForeColor = [System.Drawing.Color]::DimGray
-$versionValue.Location = New-Object System.Drawing.Point(430, 24)
-$versionValue.Size = New-Object System.Drawing.Size(90, 22)
-$versionValue.TextAlign = 'MiddleRight'
-$form.Controls.Add($versionValue)
+$settings = New-Object System.Windows.Forms.Button
+$settings.Text = [char]0x2699
+$settings.Font = New-Object System.Drawing.Font('Segoe UI Symbol', 17)
+$settings.Location = New-Object System.Drawing.Point(448, 20)
+$settings.Size = New-Object System.Drawing.Size(46, 46)
+$settings.FlatStyle = 'Flat'
+$settings.FlatAppearance.BorderSize = 0
+$settings.BackColor = $card
+$settings.ForeColor = $muted
+$settings.Cursor = [System.Windows.Forms.Cursors]::Hand
+Set-RoundedRegion $settings 12
+$form.Controls.Add($settings)
 
-$statusDot = New-Object System.Windows.Forms.Label
-$statusDot.Text = [char]0x25CF
-$statusDot.Font = New-Object System.Drawing.Font('Segoe UI', 14)
-$statusDot.Location = New-Object System.Drawing.Point(20, 72)
-$statusDot.Size = New-Object System.Drawing.Size(24, 25)
-$form.Controls.Add($statusDot)
+$script:ringColor = $gray
+$statusRing = New-Object System.Windows.Forms.Panel
+$statusRing.Location = New-Object System.Drawing.Point(193, 86)
+$statusRing.Size = New-Object System.Drawing.Size(134, 134)
+$statusRing.BackColor = $bg
+$statusRing.Add_Paint({
+    param($sender, $eventArgs)
+    $g = $eventArgs.Graphics
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $c = $script:ringColor
 
-$statusValue = New-Object System.Windows.Forms.Label
-$statusValue.Text = 'Checking...'
-$statusValue.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
-$statusValue.Location = New-Object System.Drawing.Point(48, 75)
-$statusValue.Size = New-Object System.Drawing.Size(180, 24)
+    $glow = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(28, $c))
+    $g.FillEllipse($glow, 3, 3, 128, 128)
+    $glow.Dispose()
+
+    $ring = New-Object System.Drawing.Pen($c, 8)
+    $g.DrawEllipse($ring, 20, 20, 94, 94)
+    $ring.Dispose()
+
+    $lockPen = New-Object System.Drawing.Pen($c, 5)
+    $g.DrawArc($lockPen, 50, 42, 34, 34, 180, 180)
+    $lockPen.Dispose()
+
+    $lockBrush = New-Object System.Drawing.SolidBrush($c)
+    $g.FillRectangle($lockBrush, 47, 61, 40, 34)
+    $lockBrush.Dispose()
+
+    $keyBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
+    $g.FillEllipse($keyBrush, 64, 72, 7, 7)
+    $g.FillRectangle($keyBrush, 66, 77, 3, 8)
+    $keyBrush.Dispose()
+})
+$form.Controls.Add($statusRing)
+
+$statusValue = New-Label 'Checking...' 60 230 400 42 22 ([System.Drawing.FontStyle]::Bold) $text
+$statusValue.TextAlign = 'MiddleCenter'
 $form.Controls.Add($statusValue)
 
-function Add-Row([string]$caption, [int]$y) {
-    $c = New-Object System.Windows.Forms.Label
-    $c.Text = $caption
-    $c.ForeColor = [System.Drawing.Color]::DimGray
-    $c.Location = New-Object System.Drawing.Point(20, $y)
-    $c.Size = New-Object System.Drawing.Size(120, 22)
-    $form.Controls.Add($c)
+$statusSubtitle = New-Label 'Checking secure connection' 50 270 420 28 10.5 ([System.Drawing.FontStyle]::Regular) $muted
+$statusSubtitle.TextAlign = 'MiddleCenter'
+$form.Controls.Add($statusSubtitle)
 
-    $v = New-Object System.Windows.Forms.Label
-    $v.Text = '-'
-    $v.Location = New-Object System.Drawing.Point(150, $y)
-    $v.Size = New-Object System.Drawing.Size(365, 22)
-    $form.Controls.Add($v)
-    return $v
-}
+$relayCard = New-Card 24 310 472 70
+$form.Controls.Add($relayCard)
 
-$deviceValue = Add-Row 'Device' 110
-$ipValue = Add-Row 'Tunnel IP' 138
-$relayValue = Add-Row 'Relay' 166
-$handshakeValue = Add-Row 'Last handshake' 194
-$trafficValue = Add-Row 'Traffic' 222
+$relayDot = New-Label ([char]0x25CF) 18 17 28 28 15 ([System.Drawing.FontStyle]::Regular) $green
+$relayCard.Controls.Add($relayDot)
 
-$routesCaption = New-Object System.Windows.Forms.Label
-$routesCaption.Text = 'Routes'
-$routesCaption.ForeColor = [System.Drawing.Color]::DimGray
-$routesCaption.Location = New-Object System.Drawing.Point(20, 252)
-$routesCaption.Size = New-Object System.Drawing.Size(120, 22)
-$form.Controls.Add($routesCaption)
+$relayCaption = New-Label 'Relay' 54 11 270 26 10.5 ([System.Drawing.FontStyle]::Bold) $text
+$relayCard.Controls.Add($relayCaption)
 
-$routesValue = New-Object System.Windows.Forms.TextBox
-$routesValue.ReadOnly = $true
-$routesValue.Multiline = $true
-$routesValue.ScrollBars = 'Vertical'
-$routesValue.BorderStyle = 'FixedSingle'
-$routesValue.Location = New-Object System.Drawing.Point(150, 250)
-$routesValue.Size = New-Object System.Drawing.Size(365, 90)
-$routesValue.BackColor = [System.Drawing.SystemColors]::Window
-$form.Controls.Add($routesValue)
+$relayValue = New-Label '-' 54 36 300 23 9.5 ([System.Drawing.FontStyle]::Regular) $muted
+$relayCard.Controls.Add($relayValue)
+
+$handshakeValue = New-Label '-' 338 24 112 24 9 ([System.Drawing.FontStyle]::Regular) $muted
+$handshakeValue.TextAlign = 'MiddleRight'
+$relayCard.Controls.Add($handshakeValue)
+
+$latencyCard = New-Card 24 394 228 86
+$form.Controls.Add($latencyCard)
+
+$latencyCaption = New-Label 'LATENCY' 18 13 190 20 8.5 ([System.Drawing.FontStyle]::Bold) $muted
+$latencyCard.Controls.Add($latencyCaption)
+
+$latencyValue = New-Label ([char]0x2014) 18 37 190 35 20 ([System.Drawing.FontStyle]::Bold) $text
+$latencyCard.Controls.Add($latencyValue)
+
+$trafficCard = New-Card 268 394 228 86
+$form.Controls.Add($trafficCard)
+
+$trafficCaption = New-Label 'Traffic' 18 13 190 20 8.5 ([System.Drawing.FontStyle]::Bold) $muted
+$trafficCard.Controls.Add($trafficCaption)
+
+$trafficValue = New-Label 'RX 0 B   TX 0 B' 18 39 194 32 11 ([System.Drawing.FontStyle]::Bold) $text
+$trafficCard.Controls.Add($trafficValue)
+
+$deviceCard = New-Card 24 494 472 68
+$form.Controls.Add($deviceCard)
+
+$deviceCaption = New-Label 'Device' 22 11 185 20 8.5 ([System.Drawing.FontStyle]::Regular) $muted
+$deviceCard.Controls.Add($deviceCaption)
+
+$deviceValue = New-Label '-' 22 31 185 27 11 ([System.Drawing.FontStyle]::Bold) $text
+$deviceCard.Controls.Add($deviceValue)
+
+$divider = New-Object System.Windows.Forms.Panel
+$divider.Location = New-Object System.Drawing.Point(234, 14)
+$divider.Size = New-Object System.Drawing.Size(1, 40)
+$divider.BackColor = $line
+$deviceCard.Controls.Add($divider)
+
+$ipCaption = New-Label 'Tunnel IP' 258 11 190 20 8.5 ([System.Drawing.FontStyle]::Regular) $muted
+$deviceCard.Controls.Add($ipCaption)
+
+$ipValue = New-Label '-' 258 31 190 27 11 ([System.Drawing.FontStyle]::Bold) $text
+$deviceCard.Controls.Add($ipValue)
 
 $connect = New-Object System.Windows.Forms.Button
 $connect.Text = 'Connect'
-$connect.Location = New-Object System.Drawing.Point(150, 366)
-$connect.Size = New-Object System.Drawing.Size(140, 36)
+$connect.Location = New-Object System.Drawing.Point(24, 582)
+$connect.Size = New-Object System.Drawing.Size(472, 50)
+$connect.FlatStyle = 'Flat'
+$connect.FlatAppearance.BorderSize = 0
+$connect.BackColor = $green
+$connect.ForeColor = [System.Drawing.Color]::White
+$connect.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+$connect.Cursor = [System.Windows.Forms.Cursors]::Hand
+Set-RoundedRegion $connect 13
 $form.Controls.Add($connect)
 
 $disconnect = New-Object System.Windows.Forms.Button
 $disconnect.Text = 'Disconnect'
-$disconnect.Location = New-Object System.Drawing.Point(305, 366)
-$disconnect.Size = New-Object System.Drawing.Size(140, 36)
+$disconnect.Location = New-Object System.Drawing.Point(24, 582)
+$disconnect.Size = New-Object System.Drawing.Size(472, 50)
+$disconnect.FlatStyle = 'Flat'
+$disconnect.FlatAppearance.BorderSize = 1
+$disconnect.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(254, 202, 202)
+$disconnect.BackColor = $redSoft
+$disconnect.ForeColor = $red
+$disconnect.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+$disconnect.Cursor = [System.Windows.Forms.Cursors]::Hand
+Set-RoundedRegion $disconnect 13
 $form.Controls.Add($disconnect)
+
+$versionValue = New-Label "v$uiVersion" 24 637 472 18 8 ([System.Drawing.FontStyle]::Regular) $gray
+$versionValue.TextAlign = 'MiddleCenter'
+$form.Controls.Add($versionValue)
+
+$routesValue = New-Object System.Windows.Forms.TextBox
+$routesValue.ReadOnly = $true
+$routesValue.Multiline = $true
+$routesValue.Visible = $false
+$form.Controls.Add($routesValue)
 
 $iconBitmap = New-Object System.Drawing.Bitmap 32, 32
 $iconGraphics = [System.Drawing.Graphics]::FromImage($iconBitmap)
@@ -162,10 +279,59 @@ function Format-Age([Int64]$seconds) {
     if ($seconds -lt 0) { $seconds = 0 }
     if ($seconds -lt 60) { return "$seconds sec ago" }
     $minutes = [math]::Floor($seconds / 60)
-    $remain = $seconds % 60
-    if ($minutes -lt 60) { return "$minutes min $remain sec ago" }
+    if ($minutes -lt 60) { return "$minutes min ago" }
     $hours = [math]::Floor($minutes / 60)
     return "$hours h $($minutes % 60) min ago"
+}
+
+function Get-RelayHost([string]$relay) {
+    $value = $relay.Trim()
+    if ($value -match '^\[(.+)\]:(\d+)$') { return $Matches[1] }
+    if ($value -match '^([^:]+):(\d+)$') { return $Matches[1] }
+    return $value
+}
+
+$script:lastLatencyAt = [DateTime]::MinValue
+$script:lastLatency = $null
+
+function Update-Latency([string]$relay, [bool]$connected) {
+    if (-not $connected) {
+        $script:lastLatency = $null
+        $latencyValue.Text = [string][char]0x2014
+        return
+    }
+
+    $now = Get-Date
+    if (($now - $script:lastLatencyAt).TotalSeconds -lt 4) {
+        if ($null -eq $script:lastLatency) {
+            $latencyValue.Text = [string][char]0x2014
+        } else {
+            $latencyValue.Text = "$($script:lastLatency) ms"
+        }
+        return
+    }
+
+    $script:lastLatencyAt = $now
+    try {
+        $hostName = Get-RelayHost $relay
+        if ([string]::IsNullOrWhiteSpace($hostName)) { throw 'empty relay host' }
+        $ping = New-Object System.Net.NetworkInformation.Ping
+        try {
+            $reply = $ping.Send($hostName, 650)
+            if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
+                $script:lastLatency = [Int64]$reply.RoundtripTime
+                $latencyValue.Text = "$($script:lastLatency) ms"
+            } else {
+                $script:lastLatency = $null
+                $latencyValue.Text = [string][char]0x2014
+            }
+        } finally {
+            $ping.Dispose()
+        }
+    } catch {
+        $script:lastLatency = $null
+        $latencyValue.Text = [string][char]0x2014
+    }
 }
 
 function Get-BpcStatus {
@@ -222,22 +388,57 @@ function Restart-BpcUI {
     [System.Windows.Forms.Application]::Exit()
 }
 
+function Set-ConnectionVisuals([string]$state) {
+    switch ($state) {
+        'Connected' {
+            $statusValue.Text = 'Connected'
+            $statusSubtitle.Text = 'Secure connection to your network'
+            $script:ringColor = $green
+            $relayDot.ForeColor = $green
+            $tray.Text = 'BPC Connect - Connected'
+        }
+        'Connecting' {
+            $statusValue.Text = 'Connecting...'
+            $statusSubtitle.Text = 'Establishing secure connection'
+            $script:ringColor = $orange
+            $relayDot.ForeColor = $orange
+            $tray.Text = 'BPC Connect - Connecting'
+        }
+        'Unavailable' {
+            $statusValue.Text = 'Unavailable'
+            $statusSubtitle.Text = 'Agent status is not available'
+            $script:ringColor = $gray
+            $relayDot.ForeColor = $gray
+            $tray.Text = 'BPC Connect - Unavailable'
+        }
+        default {
+            $statusValue.Text = 'Disconnected'
+            $statusSubtitle.Text = 'Your secure network is offline'
+            $script:ringColor = $gray
+            $relayDot.ForeColor = $gray
+            $tray.Text = 'BPC Connect - Disconnected'
+        }
+    }
+    $statusRing.Invalidate()
+}
+
 function Refresh-Bpc {
     $s = Get-BpcStatus
     if ($null -eq $s) {
-        $statusValue.Text = 'Unavailable'
-        $statusDot.ForeColor = [System.Drawing.Color]::DarkGray
+        Set-ConnectionVisuals 'Unavailable'
         $deviceValue.Text = '-'
         $ipValue.Text = '-'
         $relayValue.Text = '-'
         $handshakeValue.Text = '-'
-        $trafficValue.Text = '-'
+        $trafficValue.Text = 'RX 0 B   TX 0 B'
         $routesValue.Text = ''
+        $latencyValue.Text = [string][char]0x2014
         $connect.Enabled = $true
+        $connect.Visible = $true
         $disconnect.Enabled = $false
+        $disconnect.Visible = $false
         $connectItem.Enabled = $true
         $disconnectItem.Enabled = $false
-        $tray.Text = 'BPC Connect - Unavailable'
         return
     }
 
@@ -256,45 +457,36 @@ function Refresh-Bpc {
         if ($s.handshake_age -ge 0) {
             $handshakeValue.Text = Format-Age ([Int64]$s.handshake_age)
         } else {
-            $handshakeValue.Text = 'Waiting for handshake'
+            $handshakeValue.Text = 'No handshake'
         }
-        $trafficValue.Text = "RX $(Format-Bytes ([UInt64]$s.runtime.rx_bytes))    TX $(Format-Bytes ([UInt64]$s.runtime.tx_bytes))"
+        $trafficValue.Text = "RX $(Format-Bytes ([UInt64]$s.runtime.rx_bytes))   TX $(Format-Bytes ([UInt64]$s.runtime.tx_bytes))"
     } else {
-        $handshakeValue.Text = 'No tunnel telemetry'
-        $trafficValue.Text = 'RX 0 B    TX 0 B'
+        $handshakeValue.Text = 'No telemetry'
+        $trafficValue.Text = 'RX 0 B   TX 0 B'
     }
 
-    switch ($s.connection) {
-        'Connected' {
-            $statusValue.Text = 'Connected'
-            $statusDot.ForeColor = [System.Drawing.Color]::SeaGreen
-            $tray.Text = 'BPC Connect - Connected'
-        }
-        'Connecting' {
-            $statusValue.Text = 'Connecting...'
-            $statusDot.ForeColor = [System.Drawing.Color]::DarkOrange
-            $tray.Text = 'BPC Connect - Connecting'
-        }
-        default {
-            $statusValue.Text = 'Disconnected'
-            $statusDot.ForeColor = [System.Drawing.Color]::DarkGray
-            $tray.Text = 'BPC Connect - Disconnected'
-        }
-    }
+    Set-ConnectionVisuals $s.connection
 
     $isRunning = $s.service -eq 'running'
     $connect.Enabled = -not $isRunning
+    $connect.Visible = -not $isRunning
     $disconnect.Enabled = $isRunning
+    $disconnect.Visible = $isRunning
     $connectItem.Enabled = -not $isRunning
     $disconnectItem.Enabled = $isRunning
+
+    Update-Latency $s.relay ($s.connection -eq 'Connected')
 }
 
 $doConnect = {
+    $connect.Enabled = $false
     & $exe connect | Out-Null
     Start-Sleep -Milliseconds 400
     Refresh-Bpc
 }
+
 $doDisconnect = {
+    $disconnect.Enabled = $false
     & $exe disconnect | Out-Null
     Start-Sleep -Milliseconds 400
     Refresh-Bpc
@@ -304,6 +496,66 @@ $connect.Add_Click($doConnect)
 $disconnect.Add_Click($doDisconnect)
 $connectItem.Add_Click($doConnect)
 $disconnectItem.Add_Click($doDisconnect)
+
+$settings.Add_Click({
+    $details = New-Object System.Windows.Forms.Form
+    $details.Text = 'Connect details'
+    $details.ClientSize = New-Object System.Drawing.Size(440, 350)
+    $details.StartPosition = 'CenterParent'
+    $details.FormBorderStyle = 'FixedDialog'
+    $details.MaximizeBox = $false
+    $details.MinimizeBox = $false
+    $details.BackColor = $bg
+    $details.Font = New-Object System.Drawing.Font('Segoe UI', 9)
+    $details.ShowInTaskbar = $false
+
+    $heading = New-Label 'Connection details' 22 18 390 34 16 ([System.Drawing.FontStyle]::Bold) $text
+    $details.Controls.Add($heading)
+
+    $rows = @(
+        @('Device', $deviceValue.Text),
+        @('Tunnel IP', $ipValue.Text),
+        @('Relay', $relayValue.Text),
+        @('Last handshake', $handshakeValue.Text),
+        @('Version', $versionValue.Text)
+    )
+
+    $y = 66
+    foreach ($row in $rows) {
+        $caption = New-Label $row[0] 22 $y 130 24 9 ([System.Drawing.FontStyle]::Regular) $muted
+        $value = New-Label $row[1] 156 $y 255 24 9 ([System.Drawing.FontStyle]::Bold) $text
+        $details.Controls.Add($caption)
+        $details.Controls.Add($value)
+        $y += 31
+    }
+
+    $routesCaption = New-Label 'Routes' 22 224 130 24 9 ([System.Drawing.FontStyle]::Regular) $muted
+    $details.Controls.Add($routesCaption)
+
+    $routeBox = New-Object System.Windows.Forms.TextBox
+    $routeBox.ReadOnly = $true
+    $routeBox.Multiline = $true
+    $routeBox.ScrollBars = 'Vertical'
+    $routeBox.BorderStyle = 'FixedSingle'
+    $routeBox.Location = New-Object System.Drawing.Point(156, 222)
+    $routeBox.Size = New-Object System.Drawing.Size(255, 72)
+    $routeBox.BackColor = $card
+    $routeBox.Text = $routesValue.Text
+    $details.Controls.Add($routeBox)
+
+    $close = New-Object System.Windows.Forms.Button
+    $close.Text = 'Close'
+    $close.Location = New-Object System.Drawing.Point(316, 310)
+    $close.Size = New-Object System.Drawing.Size(95, 30)
+    $close.FlatStyle = 'Flat'
+    $close.FlatAppearance.BorderColor = $line
+    $close.BackColor = $card
+    $close.Add_Click({ $details.Close() })
+    $details.Controls.Add($close)
+
+    [void]$details.ShowDialog($form)
+    $details.Dispose()
+})
 
 $openAction = {
     if (-not $form.Visible) { $form.Show() }
