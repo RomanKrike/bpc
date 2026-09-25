@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	version         = "0.10.6"
+	version         = "0.10.7"
 	legacyTaskName  = "BPC Agent"
 	bootstrapStart  = "\nBPC_AGENT_BOOTSTRAP_V2\n"
 	bootstrapEnd    = "\nBPC_AGENT_BOOTSTRAP_END\n"
@@ -77,6 +77,16 @@ func main() {
 			} else if installErr := installWindowsUI(exePath, dir); installErr != nil {
 				err = installErr
 			} else {
+				_, _, statePath, _ := installPaths()
+				if state, loadErr := agentctl.LoadState(statePath); loadErr == nil {
+					_ = writeUIStatus(state)
+				}
+				allowUsersReadPath(dir)
+				allowUsersReadPath(exePath)
+				allowUsersReadPath(filepath.Join(dir, "bpc-ui.ps1"))
+				if statusPath, statusErr := uiStatusPath(); statusErr == nil {
+					allowUsersReadPath(statusPath)
+				}
 				err = startWindowsUI()
 			}
 		}
@@ -147,13 +157,21 @@ func installAgent() error {
 			return fmt.Errorf("install agent binary: %w", err)
 		}
 	}
-	if err := installWindowsUI(exePath, dir); err != nil {
-		return fmt.Errorf("install BPC Agent UI: %w", err)
-	}
 	lockDownPath(dir)
 	lockDownPath(exePath)
 	lockDownPath(statePath)
-	lockDownPath(filepath.Join(dir, "bpc-ui.ps1"))
+	if err := installWindowsUI(exePath, dir); err != nil {
+		return fmt.Errorf("install BPC Agent UI: %w", err)
+	}
+	if err := writeUIStatus(state); err != nil {
+		return fmt.Errorf("write UI status: %w", err)
+	}
+	allowUsersReadPath(dir)
+	allowUsersReadPath(exePath)
+	allowUsersReadPath(filepath.Join(dir, "bpc-ui.ps1"))
+	if statusPath, statusErr := uiStatusPath(); statusErr == nil {
+		allowUsersReadPath(statusPath)
+	}
 
 	if err := installWindowsService(exePath); err != nil {
 		return fmt.Errorf("install BPC Agent service: %w", err)
@@ -257,6 +275,7 @@ func runAgentContext(parent context.Context) error {
 	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
 		return err
 	}
+	_ = writeUIStatus(state)
 
 	logger, closer, err := newFileLogger()
 	if err != nil {
@@ -370,7 +389,10 @@ func syncRuntimeState(
 		cfg.WireGuard = nil
 	}
 	state.Config = *cfg
-	return agentctl.SaveState(statePath, *state)
+	if err := agentctl.SaveState(statePath, *state); err != nil {
+		return err
+	}
+	return writeUIStatus(state)
 }
 
 func (s *runtimeSupervisor) apply(
@@ -662,34 +684,64 @@ func disconnectAgent() error {
 	return setWindowsServiceAutomatic(false)
 }
 
-func printStatusJSON() error {
-	_, _, statePath, err := installPaths()
+type uiStatus struct {
+	Version       string   `json:"version"`
+	Device        string   `json:"device"`
+	DeviceID      string   `json:"device_id"`
+	Service       string   `json:"service"`
+	Control       string   `json:"control"`
+	Relay         string   `json:"relay"`
+	TunnelAddress string   `json:"tunnel_address"`
+	Routes        []string `json:"routes"`
+}
+
+func uiStatusPath() (string, error) {
+	dir, _, _, err := installPaths()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "ui-status.json"), nil
+}
+
+func writeUIStatus(state *agentctl.State) error {
+	path, err := uiStatusPath()
 	if err != nil {
 		return err
 	}
-	state, err := agentctl.LoadState(statePath)
-	if err != nil {
-		return err
-	}
-	payload := struct {
-		Version       string   `json:"version"`
-		Device        string   `json:"device"`
-		DeviceID      string   `json:"device_id"`
-		Service       string   `json:"service"`
-		Control       string   `json:"control"`
-		Relay         string   `json:"relay"`
-		TunnelAddress string   `json:"tunnel_address"`
-		Routes        []string `json:"routes"`
-	}{
+	payload := uiStatus{
 		Version:       version,
 		Device:        state.DeviceName,
 		DeviceID:      state.DeviceID,
-		Service:       windowsServiceStatus(),
 		Control:       state.ControlURL,
 		Relay:         state.Config.WGShimServer,
 		TunnelAddress: state.WireGuard.Address,
-		Routes:        state.WireGuard.AllowedIPs,
+		Routes:        append([]string(nil), state.WireGuard.AllowedIPs...),
 	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(path, encoded, 0o644); err != nil {
+		return err
+	}
+	allowUsersReadPath(path)
+	return nil
+}
+
+func printStatusJSON() error {
+	path, err := uiStatusPath()
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var payload uiStatus
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return err
+	}
+	payload.Service = windowsServiceStatus()
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return err
@@ -901,6 +953,15 @@ func lockDownPath(path string) {
 		"/grant:r",
 		"*S-1-5-18:F",
 		"*S-1-5-32-544:F",
+	)
+}
+
+func allowUsersReadPath(path string) {
+	_, _ = runCommand(
+		"icacls.exe",
+		path,
+		"/grant",
+		"*S-1-5-32-545:RX",
 	)
 }
 

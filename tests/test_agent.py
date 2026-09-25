@@ -258,11 +258,26 @@ def test_agent_has_wireguard_style_tray_ui() -> None:
     assert "& $exe disconnect" in UI
     assert "setWindowsServiceAutomatic(true)" in AGENT
     assert "setWindowsServiceAutomatic(false)" in AGENT
-    assert "New-ScheduledTaskTrigger -AtLogOn" in UI
-    assert "RunLevel Highest" in UI
+    assert "CurrentVersion\\Run" in UI
+    assert "schtasks.exe" in UI
 
 
 def test_manual_update_migrates_existing_install_to_tray_ui() -> None:
     assert "scheduleReplacement(exePath, nextPath, installUI)" in AGENT
     assert "checkAndStageUpdate(context.Background(), control, state, logger, true)" in AGENT
     assert "install-ui" in AGENT
+
+
+def test_agent_ui_runs_in_interactive_session_without_secret_state_access() -> None:
+    assert "Local\\BPCAgentUI" in UI
+    assert "ui-status.json" in UI
+    assert "Get-Service -Name BPCAgent" in UI
+    assert "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" in UI
+    launch_block = UI.split("func launchWindowsUI() error", 1)[1]
+    assert 'elevate("ui")' not in launch_block
+    assert "powershell.exe" in launch_block
+    assert "writeUIStatus" in AGENT
+    assert "uiStatus struct" in AGENT
+    assert "DeviceToken" not in AGENT.split("type uiStatus struct", 1)[1].split("}", 1)[0]
+    assert "PrivateKey" not in AGENT.split("type uiStatus struct", 1)[1].split("}", 1)[0]
+    assert "*S-1-5-32-545:RX" in AGENT
