@@ -348,13 +348,20 @@ function Get-BpcStatus {
             try { $transport = Get-Content -LiteralPath $transportPath -Raw | ConvertFrom-Json } catch {}
         }
 
+        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        if ($null -ne $transport) {
+            $transportAge = $now - [Int64]$transport.updated_at
+            if ($transportAge -lt -5 -or $transportAge -gt 90) {
+                $transport = $null
+            }
+        }
+
         $svc = Get-Service -Name BPCAgent -ErrorAction SilentlyContinue
         $service = 'missing'
         if ($null -ne $svc) {
             if ($svc.Status -eq 'Running') { $service = 'running' } else { $service = 'stopped' }
         }
 
-        $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         $connection = 'Disconnected'
         $handshakeAge = -1
         if ($service -eq 'running') {
