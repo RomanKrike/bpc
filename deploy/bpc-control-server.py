@@ -133,6 +133,17 @@ class ControlHandler(BaseHTTPRequestHandler):
     def _root(self) -> Path:
         return Path(self.server.state_dir)  # type: ignore[attr-defined]
 
+    def _delete_bootstrap_download(self, token: str) -> None:
+        if len(token) != 64:
+            return
+        try:
+            int(token, 16)
+        except ValueError:
+            return
+        downloads = self._root() / "downloads"
+        (downloads / f"{token}.json").unlink(missing_ok=True)
+        (downloads / f"{token}.exe").unlink(missing_ok=True)
+
     def _read_body_json(self) -> dict[str, Any] | None:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -331,6 +342,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         expires = int(enrollment.get("expires", 0))
         if expires <= int(time.time()):
+            self._delete_bootstrap_download(str(enrollment.get("download_token", "")).strip())
             enroll_path.unlink(missing_ok=True)
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return
@@ -369,15 +381,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 atomic_text(key_path, wgshim_psk + "\n")
                 self._install_wireguard_peer(wireguard_public_key, wireguard_address)
                 download_token = str(enrollment.get("download_token", "")).strip()
-                if len(download_token) == 64:
-                    try:
-                        int(download_token, 16)
-                    except ValueError:
-                        download_token = ""
-                if download_token:
-                    downloads_dir = self._root() / "downloads"
-                    (downloads_dir / f"{download_token}.json").unlink(missing_ok=True)
-                    (downloads_dir / f"{download_token}.exe").unlink(missing_ok=True)
+                self._delete_bootstrap_download(download_token)
                 enroll_path.unlink()
                 config = self._config_for_device(device)
                 wireguard = self._wireguard_profile_for_device(device)
@@ -514,8 +518,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         if expires <= int(time.time()):
-            metadata_path.unlink(missing_ok=True)
-            binary_path.unlink(missing_ok=True)
+            self._delete_bootstrap_download(token)
             self.send_error(HTTPStatus.GONE)
             return
         if not filename or not secrets.compare_digest(filename, requested_name):
