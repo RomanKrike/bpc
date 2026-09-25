@@ -6,7 +6,6 @@ BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RU_DIR="${BPC_STATE_DIR}/ru-node"
 WGSHIM_DIR="${RU_DIR}/wgshim"
 AGENTS_DIR="${RU_DIR}/agents"
-SUB_DIR="${RU_DIR}/subscription"
 
 usage() {
   cat <<'USAGE'
@@ -122,15 +121,7 @@ create_agent() {
   local padding_max="${WGSHIM_PADDING_MAX:-31}"
 
   local json
-  json="$(printf '{"version":1,"device":%s,"tunnel":%s,"server":%s,"listen":%s,"target":%s,"padding_min":%s,"padding_max":%s,"psk":%s}' \
-    "$(json_escape "${name}")" \
-    "$(json_escape "${tunnel}")" \
-    "$(json_escape "${server}")" \
-    "$(json_escape "${listen}")" \
-    "$(json_escape "${target}")" \
-    "${padding_min}" \
-    "${padding_max}" \
-    "$(json_escape "${psk}")")"
+  json="$(printf '{"version":1,"device":%s,"tunnel":%s,"server":%s,"listen":%s,"target":%s,"padding_min":%s,"padding_max":%s,"psk":%s}'     "$(json_escape "${name}")"     "$(json_escape "${tunnel}")"     "$(json_escape "${server}")"     "$(json_escape "${listen}")"     "$(json_escape "${target}")"     "${padding_min}"     "${padding_max}"     "$(json_escape "${psk}")")"
 
   local encoded
   encoded="$(printf '%s' "${json}" | base64 -w0)"
@@ -141,41 +132,13 @@ create_agent() {
 
   local tmp
   tmp="$(mktemp "${device_dir}/.agent.XXXXXX")"
-  trap 'rm -f "${tmp:-}"' RETURN
   cp "${generic}" "${tmp}"
   printf '\nBPC_AGENT_BOOTSTRAP_V1\n%s\nBPC_AGENT_BOOTSTRAP_END\n' "${encoded}" >> "${tmp}"
   chmod 0600 "${tmp}"
   mv -f "${tmp}" "${prepared}"
-  trap - RETURN
 
   if [[ -n "${extra_output}" ]]; then
     install -m 0600 "${prepared}" "${extra_output}"
-  fi
-
-  local old_download="${device_dir}/download.token"
-  if [[ -s "${old_download}" ]]; then
-    local previous_token
-    previous_token="$(tr -d '\r\n' < "${old_download}")"
-    if [[ "${previous_token}" =~ ^[0-9a-f]{48}$ ]]; then
-      rm -f "${SUB_DIR}/agents/${previous_token}.exe"
-    fi
-  fi
-
-  local download_url=""
-  if [[ -f "${SUB_DIR}/enabled" && -s "${SUB_DIR}/runtime.env" ]] && systemctl --quiet is-active bpc-subscription.service; then
-    # shellcheck disable=SC1090,SC1091
-    source "${SUB_DIR}/runtime.env"
-    local download_token
-    download_token="$(openssl rand -hex 24)"
-    install -d -m 0700 "${SUB_DIR}/agents"
-    install -m 0600 "${prepared}" "${SUB_DIR}/agents/${download_token}.exe"
-    printf '%s\n' "${download_token}" > "${old_download}"
-    chmod 0600 "${old_download}"
-    download_url="https://${SUBSCRIPTION_HOST}:${SUBSCRIPTION_PORT}/agent/${download_token}.exe"
-
-    # Existing 0.8.x service definitions point at /opt/bpc/current, so a restart
-    # is sufficient to load the 0.9.0 HTTP handler that serves agent packages.
-    systemctl restart bpc-subscription.service
   fi
 
   cat > "${device_dir}/info.txt" <<INFO
@@ -193,23 +156,13 @@ Prepared BPC Windows agent created.
 Device: ${name}
 Tunnel: ${tunnel}
 File: ${prepared}
-DONE
-  if [[ -n "${download_url}" ]]; then
-    cat <<DONE
-Download URL:
-  ${download_url}
-DONE
-  else
-    cat <<DONE
-HTTPS publishing is unavailable because the BPC subscription service is not active.
-Copy the file with SCP instead.
-DONE
-  fi
-  cat <<'DONE'
 
-On Windows, run the downloaded EXE. It requests Administrator elevation,
-installs itself under ProgramData, starts at boot, runs WGShim internally and
-repoints the selected existing WireGuard tunnel to the local WGShim endpoint.
+Copy it to Windows with SCP, for example:
+  scp root@${BPC_RU_HOST}:${prepared} .
+
+Then run the EXE. It requests Administrator elevation, installs itself under
+ProgramData, starts at boot, runs WGShim internally and repoints the selected
+existing WireGuard tunnel to the local WGShim endpoint.
 DONE
 }
 
