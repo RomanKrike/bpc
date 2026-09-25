@@ -326,9 +326,27 @@ if (-not $script:mutexReleased) {
 `
 
 func installWindowsUI(exePath, dir string) error {
+	// Terminate only the legacy 0.10.x PowerShell UI before removing its
+	// ProgramData script. This lets the first 0.11.0 manual update replace the
+	// already-running tray process instead of losing to its single-instance mutex.
+	legacyScript := filepath.Join(dir, "bpc-ui.ps1")
+	legacyCleanup := fmt.Sprintf(
+		"$old='%s'; Get-CimInstance Win32_Process -Filter \"Name='powershell.exe'\" | "+
+			"Where-Object { $_.CommandLine -and $_.CommandLine.Contains($old) } | "+
+			"ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }",
+		psQuote(legacyScript),
+	)
+	_, _ = runCommand(
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-Command",
+		legacyCleanup,
+	)
+
 	// 0.11.0+ renders the UI script from the current EXE into the active
-	// user's LocalAppData on each launch. Remove the old ProgramData copy.
-	_ = os.Remove(filepath.Join(dir, "bpc-ui.ps1"))
+	// user's LocalAppData on each launch.
+	_ = os.Remove(legacyScript)
 
 	_, _ = runCommand("schtasks.exe", "/End", "/TN", uiTaskName)
 	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", uiTaskName, "/F")
