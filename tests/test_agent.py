@@ -173,3 +173,11 @@ def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_server()
     assert 'control_server="${CONTROL_DIR}/bpc-control-server.py"' in ENABLE_CONTROL
     assert 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"' in ENABLE_CONTROL
     assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
+
+
+def test_update_migration_repairs_partial_agent_and_control_runtime() -> None:
+    assert '[[ -f "${ru_dir}/agent/enabled" ]]' in MIGRATE
+    assert '"${BPC_ROOT}/current/deploy/bpc-enable-agent-dataplane.sh"' in MIGRATE
+    assert 'control_should_reconcile="false"' in MIGRATE
+    assert 'systemctl --quiet is-enabled bpc-control.service' in MIGRATE
+    assert '"${BPC_ROOT}/current/deploy/bpc-enable-control.sh"' in MIGRATE
