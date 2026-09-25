@@ -133,3 +133,97 @@ func assertOuterReply(t *testing.T, conn *net.UDPConn, codec *Codec, want string
 		t.Fatalf("unexpected reply: got %q want %q", payload, want)
 	}
 }
+
+func TestMultiServerAnswersAuthenticatedProbe(t *testing.T) {
+	targetConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer targetConn.Close()
+
+	serverProbe, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverAddr := serverProbe.LocalAddr().String()
+	_ = serverProbe.Close()
+
+	psk := testPSK(t)
+	c2sKey, _ := DeriveKey(psk, ClientToServer)
+	s2cKey, _ := DeriveKey(psk, ServerToClient)
+	c2s, _ := NewCodec(c2sKey, 0, 11)
+	s2c, _ := NewCodec(s2cKey, 0, 11)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- RunMultiServer(ctx, MultiServerConfig{
+			Listen: serverAddr,
+			Target: targetConn.LocalAddr().String(),
+			LoadPeers: func() (map[string]MultiServerPeer, error) {
+				return map[string]MultiServerPeer{
+					"probe-peer": {
+						Fingerprint: "probe-peer",
+						RX:          c2s,
+						TX:          s2c,
+					},
+				}, nil
+			},
+			ReloadInterval: 25 * time.Millisecond,
+		})
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	serverUDP, err := net.ResolveUDPAddr("udp", serverAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := net.DialUDP("udp", nil, serverUDP)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	token := []byte("latency-probe")
+	packet, err := c2s.SealProbe(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write(packet); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	n, err := client.Read(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	packetType, payload, err := s2c.OpenTyped(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !IsProbeReply(packetType) {
+		t.Fatalf("expected probe reply, got packet type %d", packetType)
+	}
+	if string(payload) != string(token) {
+		t.Fatalf("unexpected probe payload: got %q want %q", payload, token)
+	}
+
+	_ = targetConn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if n, _, err := targetConn.ReadFromUDP(buf); err == nil {
+		t.Fatalf("probe leaked into WireGuard target (%d bytes)", n)
+	}
+
+	cancel()
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("multi-server exit: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("multi-server did not stop")
+	}
+}

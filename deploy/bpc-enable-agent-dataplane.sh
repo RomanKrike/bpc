@@ -14,10 +14,23 @@ WG_MTU="${BPC_AGENT_WG_MTU:-1360}"
 WG_KEEPALIVE="${BPC_AGENT_WG_KEEPALIVE:-25}"
 WG_ALLOWED_IPS="${BPC_AGENT_ALLOWED_IPS:-${WG_SUBNET}}"
 WGSHIM_PORT_EXPLICIT="false"
+WGSHIM_PORTS_EXPLICIT="false"
 if [[ -n "${BPC_AGENT_WGSHIM_PORT:-}" ]]; then
   WGSHIM_PORT_EXPLICIT="true"
 fi
-WGSHIM_PORT="${BPC_AGENT_WGSHIM_PORT:-24444}"
+if [[ -n "${BPC_AGENT_WGSHIM_PORTS:-}" ]]; then
+  WGSHIM_PORTS_EXPLICIT="true"
+fi
+
+existing_wgshim_port=""
+existing_wgshim_ports=""
+if [[ -s "${AGENT_DIR}/runtime.env" ]]; then
+  existing_wgshim_port="$(sed -n 's/^AGENT_WGSHIM_PORT=//p' "${AGENT_DIR}/runtime.env" | head -n1)"
+  existing_wgshim_ports="$(sed -n 's/^AGENT_WGSHIM_PORTS=//p' "${AGENT_DIR}/runtime.env" | head -n1)"
+fi
+
+WGSHIM_PORT="${BPC_AGENT_WGSHIM_PORT:-${existing_wgshim_port:-24444}}"
+WGSHIM_PORTS_RAW="${BPC_AGENT_WGSHIM_PORTS:-${existing_wgshim_ports}}"
 WGSHIM_LOCAL_PORT="${BPC_AGENT_WGSHIM_LOCAL_PORT:-24081}"
 WGSHIM_PADDING_MIN="${BPC_AGENT_WGSHIM_PADDING_MIN:-0}"
 WGSHIM_PADDING_MAX="${BPC_AGENT_WGSHIM_PADDING_MAX:-31}"
@@ -32,6 +45,15 @@ for value in "${WG_PORT}" "${WGSHIM_PORT}" "${WGSHIM_LOCAL_PORT}" "${WG_KEEPALIV
     exit 2
   fi
 done
+if [[ -n "${WGSHIM_PORTS_RAW}" ]]; then
+  IFS=',' read -r -a requested_wgshim_ports <<< "${WGSHIM_PORTS_RAW}"
+  for value in "${requested_wgshim_ports[@]}"; do
+    if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1024 || value > 65535 )); then
+      echo "BPC Agent WGShim pool ports must be between 1024 and 65535" >&2
+      exit 2
+    fi
+  done
+fi
 if ! [[ "${WG_MTU}" =~ ^[0-9]+$ ]] || (( WG_MTU < 1200 || WG_MTU > 1500 )); then
   echo "BPC agent WireGuard MTU must be between 1200 and 1500" >&2
   exit 2
@@ -76,29 +98,92 @@ apt-get update
 apt-get install -y --no-install-recommends ca-certificates iproute2 iptables kmod wireguard-tools
 modprobe wireguard 2>/dev/null || true
 
-listener="$(ss -H -lunp "sport = :${WGSHIM_PORT}" 2>/dev/null || true)"
-if [[ -n "${listener}" ]] && ! grep -Fq 'bpc-agent-relay' <<< "${listener}"; then
+port_available_for_agent() {
+  local port="$1"
+  local listener
+  listener="$(ss -H -lunp "sport = :${port}" 2>/dev/null || true)"
+  [[ -z "${listener}" ]] || grep -Fq 'bpc-agent-relay' <<< "${listener}"
+}
+
+if ! port_available_for_agent "${WGSHIM_PORT}"; then
   if [[ "${WGSHIM_PORT_EXPLICIT}" == "true" ]]; then
-    echo "BPC Agent relay UDP port ${WGSHIM_PORT} is already in use:" >&2
-    echo "${listener}" >&2
+    echo "BPC Agent relay UDP port ${WGSHIM_PORT} is already in use" >&2
     exit 4
   fi
-
   selected_port=""
   for candidate in $(seq 24444 24544); do
-    candidate_listener="$(ss -H -lunp "sport = :${candidate}" 2>/dev/null || true)"
-    if [[ -z "${candidate_listener}" ]] || grep -Fq 'bpc-agent-relay' <<< "${candidate_listener}"; then
+    if port_available_for_agent "${candidate}"; then
       selected_port="${candidate}"
       break
     fi
   done
   if [[ -z "${selected_port}" ]]; then
-    echo "Unable to find a free UDP port for the BPC Agent relay in 24444-24544" >&2
+    echo "Unable to find a free primary UDP port for the BPC Agent relay" >&2
     exit 4
   fi
-  echo "UDP/${WGSHIM_PORT} is occupied by another service; using UDP/${selected_port} for BPC Agent relay."
+  echo "UDP/${WGSHIM_PORT} is occupied; preserving Agent service on UDP/${selected_port}."
   WGSHIM_PORT="${selected_port}"
 fi
+
+declare -a wgshim_ports=()
+declare -A wgshim_seen=()
+
+add_wgshim_port() {
+  local port="$1"
+  [[ -n "${port}" ]] || return 0
+  if [[ -n "${wgshim_seen[${port}]:-}" ]]; then
+    return 0
+  fi
+  if ! port_available_for_agent "${port}"; then
+    return 1
+  fi
+  wgshim_seen["${port}"]=1
+  wgshim_ports+=("${port}")
+}
+
+if [[ -n "${WGSHIM_PORTS_RAW}" ]]; then
+  IFS=',' read -r -a requested_wgshim_ports <<< "${WGSHIM_PORTS_RAW}"
+  for port in "${requested_wgshim_ports[@]}"; do
+    port="${port//[[:space:]]/}"
+    if ! add_wgshim_port "${port}"; then
+      if [[ "${WGSHIM_PORTS_EXPLICIT}" == "true" ]]; then
+        echo "Requested BPC Agent UDP pool port ${port} is already in use" >&2
+        exit 4
+      fi
+    fi
+  done
+fi
+
+# Keep the pre-0.12 working endpoint first for a seamless migration.
+if [[ -z "${wgshim_seen[${WGSHIM_PORT}]:-}" ]]; then
+  wgshim_ports=("${WGSHIM_PORT}" "${wgshim_ports[@]}")
+  wgshim_seen["${WGSHIM_PORT}"]=1
+fi
+
+# Generate a persistent six-port pool only when the installation does not
+# already have one. The resulting CSV is stored in runtime.env and reused.
+if (( ${#wgshim_ports[@]} < 6 )) && [[ "${WGSHIM_PORTS_EXPLICIT}" != "true" ]]; then
+  while read -r candidate; do
+    [[ "${candidate}" == "${WG_PORT}" || "${candidate}" == "${WGSHIM_LOCAL_PORT}" ]] && continue
+    add_wgshim_port "${candidate}" || true
+    (( ${#wgshim_ports[@]} >= 6 )) && break
+  done < <(shuf -i 20000-59999 -n 256)
+fi
+
+if (( ${#wgshim_ports[@]} == 0 )); then
+  echo "BPC Agent relay has no usable UDP ports" >&2
+  exit 4
+fi
+
+WGSHIM_PORT="${wgshim_ports[0]}"
+WGSHIM_PORTS="$(IFS=,; echo "${wgshim_ports[*]}")"
+relay_listeners=""
+for port in "${wgshim_ports[@]}"; do
+  if [[ -n "${relay_listeners}" ]]; then
+    relay_listeners+=","
+  fi
+  relay_listeners+="0.0.0.0:${port}"
+done
 
 install -d -m 0700 "${AGENT_DIR}" "${KEY_DIR}" /etc/wireguard
 install -m 0755 "${relay_binary}" /usr/local/bin/bpc-agent-relay
@@ -131,6 +216,7 @@ AGENT_WG_MTU=${WG_MTU}
 AGENT_WG_KEEPALIVE=${WG_KEEPALIVE}
 AGENT_WG_ALLOWED_IPS=${WG_ALLOWED_IPS}
 AGENT_WGSHIM_PORT=${WGSHIM_PORT}
+AGENT_WGSHIM_PORTS=${WGSHIM_PORTS}
 AGENT_WGSHIM_LOCAL_PORT=${WGSHIM_LOCAL_PORT}
 AGENT_WGSHIM_PADDING_MIN=${WGSHIM_PADDING_MIN}
 AGENT_WGSHIM_PADDING_MAX=${WGSHIM_PADDING_MAX}
@@ -186,6 +272,7 @@ case "${ACTION}" in
   down)
     iptables -D FORWARD -i "${AGENT_WG_INTERFACE}" -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+    iptables -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE 2>/dev/null || true
     iptables -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" -o "${DEFAULT_IF}" -j MASQUERADE 2>/dev/null || true
     iptables -D INPUT -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
       -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || true
@@ -223,7 +310,7 @@ Requires=wg-quick@${WG_INTERFACE}.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bpc-agent-relay --listen 0.0.0.0:${WGSHIM_PORT} --target 127.0.0.1:${WG_PORT} --key-dir ${KEY_DIR} --padding-min ${WGSHIM_PADDING_MIN} --padding-max ${WGSHIM_PADDING_MAX}
+ExecStart=/usr/local/bin/bpc-agent-relay --listen ${relay_listeners} --target 127.0.0.1:${WG_PORT} --key-dir ${KEY_DIR} --padding-min ${WGSHIM_PADDING_MIN} --padding-max ${WGSHIM_PADDING_MAX}
 Restart=always
 RestartSec=1
 NoNewPrivileges=true
@@ -261,8 +348,18 @@ fi
 relay_ready="false"
 for _ in 1 2 3 4 5 6 7 8 9 10; do
   relay_pid="$(systemctl show -p MainPID --value bpc-agent-relay.service 2>/dev/null || true)"
-  if [[ "${relay_pid}" =~ ^[1-9][0-9]*$ ]] && \
-    ss -H -lunp "sport = :${WGSHIM_PORT}" 2>/dev/null | grep -Fq "pid=${relay_pid},"; then
+  all_ports_ready="true"
+  if ! [[ "${relay_pid}" =~ ^[1-9][0-9]*$ ]]; then
+    all_ports_ready="false"
+  else
+    for port in "${wgshim_ports[@]}"; do
+      if ! ss -H -lunp "sport = :${port}" 2>/dev/null | grep -Fq "pid=${relay_pid},"; then
+        all_ports_ready="false"
+        break
+      fi
+    done
+  fi
+  if [[ "${all_ports_ready}" == "true" ]]; then
     relay_ready="true"
     break
   fi
@@ -272,7 +369,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.25
 done
 if [[ "${relay_ready}" != "true" ]]; then
-  echo "BPC agent relay did not become ready on UDP/${WGSHIM_PORT}" >&2
+  echo "BPC agent relay did not become ready on UDP pool ${WGSHIM_PORTS}" >&2
   systemctl status bpc-agent-relay.service --no-pager >&2 || true
   journalctl -u bpc-agent-relay.service -n 30 --no-pager >&2 || true
   exit 5
@@ -283,11 +380,11 @@ chmod 0600 "${AGENT_DIR}/enabled"
 cat <<DONE
 BPC Agent data plane is active.
 
-Public relay: ${BPC_RU_HOST}:${WGSHIM_PORT}/udp
+Public relay pool: ${BPC_RU_HOST} UDP ports ${WGSHIM_PORTS}
 Internal WireGuard: ${WG_INTERFACE} ${WG_SERVER_ADDRESS} on loopback UDP/${WG_PORT}
 Device subnet: ${WG_SUBNET}
 Device key directory: ${KEY_DIR}
 
-Allow inbound UDP/${WGSHIM_PORT} in the VPS provider firewall.
+Allow inbound UDP ports ${WGSHIM_PORTS} in the VPS provider firewall.
 Do not expose UDP/${WG_PORT}; BPC blocks it outside loopback.
 DONE
