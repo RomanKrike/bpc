@@ -12,12 +12,14 @@ usage() {
 Usage:
   bpc-agent create NAME [--legacy-tunnel TUNNEL] [--ttl SECONDS] [--output FILE]
   bpc-agent publish-update [--version VERSION] [--file FILE]
+  bpc-agent routes NAME [CIDR ... | --clear]
   bpc-agent list
   bpc-agent revoke NAME
 
 Commands:
   create NAME       Build a prepared Windows bootstrap executable
   publish-update    Publish and sign the Windows agent served by the control plane
+  routes NAME       Show or replace selective routes assigned to a device
   list              List prepared and enrolled devices
   revoke NAME       Revoke registered devices with this device name
 
@@ -384,12 +386,101 @@ for path in files:
         f"  {value.get('device', '?')}: id={value.get('device_id', '?')} "
         f"revoked={bool(value.get('revoked', False))} "
         f"version={value.get('last_version', '?')} "
-        f"last_seen={value.get('last_seen', '?')}"
+        f"last_seen={value.get('last_seen', '?')} "
+        f"routes={','.join(map(str, value.get('managed_routes', []))) or '-'}"
     )
 PY
   else
     echo "  none"
   fi
+}
+
+manage_routes() {
+  local name="${1:-}"
+  shift || true
+  if ! validate_name "${name}"; then
+    echo "A valid device NAME is required" >&2
+    exit 2
+  fi
+  require_control
+
+  local mode="show"
+  if [[ $# -gt 0 ]]; then
+    if [[ "${1}" == "--clear" ]]; then
+      if [[ $# -ne 1 ]]; then
+        echo "--clear cannot be combined with CIDRs" >&2
+        exit 2
+      fi
+      mode="clear"
+      shift
+    else
+      mode="set"
+    fi
+  fi
+
+  python3 - "${CONTROL_DIR}" "${name}" "${mode}" "$@" <<'PY'
+import ipaddress
+import json
+import os
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+name = sys.argv[2]
+mode = sys.argv[3]
+raw_routes = sys.argv[4:]
+
+routes: list[str] = []
+if mode == "set":
+    seen: set[str] = set()
+    for raw in raw_routes:
+        try:
+            network = ipaddress.ip_network(raw, strict=False)
+        except ValueError as exc:
+            raise SystemExit(f"Invalid CIDR {raw!r}: {exc}")
+        if network.version != 4:
+            raise SystemExit(f"Only IPv4 managed routes are supported: {raw}")
+        if network.prefixlen == 0:
+            raise SystemExit("0.0.0.0/0 is not allowed for managed Agent routes")
+        canonical = str(network)
+        if canonical not in seen:
+            seen.add(canonical)
+            routes.append(canonical)
+
+matches: list[tuple[Path, dict]] = []
+for path in sorted((root / "devices").glob("*.json")):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    if value.get("device") != name or bool(value.get("revoked", False)):
+        continue
+    matches.append((path, value))
+
+if not matches:
+    raise SystemExit(f"No active enrolled device named {name!r}")
+
+if mode == "show":
+    for _, value in matches:
+        current = value.get("managed_routes", [])
+        if not isinstance(current, list):
+            current = []
+        print(f"{value.get('device', name)}: " + (", ".join(map(str, current)) or "(overlay only)"))
+    raise SystemExit(0)
+
+if mode == "clear":
+    routes = []
+
+for path, value in matches:
+    value["managed_routes"] = routes
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+print(f"Updated {len(matches)} device(s): " + (", ".join(routes) or "(overlay only)"))
+print("Agents will apply the new selective routes on their next config sync (up to 30 seconds).")
+PY
 }
 
 revoke_agent() {
@@ -460,6 +551,10 @@ case "${command}" in
   publish-update)
     shift
     publish_update "$@"
+    ;;
+  routes)
+    shift
+    manage_routes "$@"
     ;;
   list)
     shift
