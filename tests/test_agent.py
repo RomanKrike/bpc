@@ -163,3 +163,13 @@ def test_embedded_tunnel_pins_relay_outside_full_tunnel_route() -> None:
     assert "Find-NetRoute -RemoteIPAddress" in TUNNEL
     assert "No physical route to BPC relay" in TUNNEL
     assert "DestinationPrefix '%s/32'" in TUNNEL
+
+
+def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_server() -> None:
+    assert "WGSHIM_PORT_EXPLICIT" in DATAPLANE
+    assert "24444 24544" in DATAPLANE
+    assert "occupied by another service" in DATAPLANE
+    assert "bpc-agent-relay" in DATAPLANE
+    assert 'control_server="${CONTROL_DIR}/bpc-control-server.py"' in ENABLE_CONTROL
+    assert 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"' in ENABLE_CONTROL
+    assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
