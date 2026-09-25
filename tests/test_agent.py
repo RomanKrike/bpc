@@ -258,8 +258,8 @@ def test_agent_has_wireguard_style_tray_ui() -> None:
     assert "& $exe disconnect" in UI
     assert "setWindowsServiceAutomatic(true)" in AGENT
     assert "setWindowsServiceAutomatic(false)" in AGENT
-    assert "New-ScheduledTaskTrigger -AtLogOn" in UI
-    assert "RunLevel Highest" in UI
+    assert "CurrentVersion\\Run" in UI
+    assert "schtasks.exe" in UI
 
 
 def test_manual_update_migrates_existing_install_to_tray_ui() -> None:
@@ -272,7 +272,7 @@ def test_agent_ui_runs_in_interactive_session_without_secret_state_access() -> N
     assert "Local\\BPCAgentUI" in UI
     assert "ui-status.json" in UI
     assert "Get-Service -Name BPCAgent" in UI
-    assert "HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run" in UI
+    assert "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" in UI
     launch_block = UI.split("func launchWindowsUI() error", 1)[1]
     assert 'elevate("ui")' not in launch_block
     assert "powershell.exe" in launch_block
