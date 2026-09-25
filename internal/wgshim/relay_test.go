@@ -115,7 +115,6 @@ func TestClientServerRelayRoundTrip(t *testing.T) {
 	}
 }
 
-
 func TestAdaptiveClientSelectsReachableEndpoint(t *testing.T) {
 	reserve := func() string {
 		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
