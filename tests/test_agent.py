@@ -13,7 +13,7 @@ MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
 SERVER = pathlib.Path("deploy/bpc-agent.sh").read_text(encoding="utf-8")
 SERVICE = pathlib.Path("cmd/bpc-agent/service_windows.go").read_text(encoding="utf-8")
 STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
-TUNNEL = pathlib.Path("cmd/bpc-agent/tunnel_windows.go").read_text(encoding="utf-8")
+TUNNEL = pathlib.Path("cmd/bpc-agent/tunnel_windows.go").read_text(encoding="utf-8")\nUI = pathlib.Path("cmd/bpc-agent/ui_windows.go").read_text(encoding="utf-8")
 WGPROFILE = pathlib.Path("internal/agentctl/wireguard.go").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
@@ -239,3 +239,27 @@ def test_agent_defaults_to_split_tunnel_and_hot_syncs_routes() -> None:
     assert "profile.PrivateKey = state.WireGuard.PrivateKey" in AGENT
     assert "state.WireGuard = profile" in AGENT
     assert 'Tunnel routes: %s' in AGENT
+
+
+def test_agent_has_wireguard_style_tray_ui() -> None:
+    assert '"status-json"' in AGENT
+    assert '"connect"' in AGENT
+    assert '"disconnect"' in AGENT
+    assert '"ui"' in AGENT
+    assert '"install-ui"' in AGENT
+    assert "installWindowsUI" in AGENT
+    assert "startWindowsUI" in AGENT
+    assert "BPC Agent UI" in UI
+    assert "System.Windows.Forms.NotifyIcon" in UI
+    assert "Connect" in UI
+    assert "Disconnect" in UI
+    assert "Start-Service -Name BPCAgent" in UI
+    assert "Stop-Service -Name BPCAgent" in UI
+    assert "New-ScheduledTaskTrigger -AtLogOn" in UI
+    assert "RunLevel Highest" in UI
+
+
+def test_manual_update_migrates_existing_install_to_tray_ui() -> None:
+    assert "scheduleReplacement(exePath, nextPath, installUI)" in AGENT
+    assert "checkAndStageUpdate(context.Background(), control, state, logger, true)" in AGENT
+    assert "install-ui" in AGENT
