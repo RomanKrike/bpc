@@ -198,3 +198,29 @@ def test_agent_relay_uses_bounded_readiness_probe() -> None:
     assert 'systemctl show -p MainPID --value bpc-agent-relay.service' in DATAPLANE
     assert 'grep -Fq "pid=${relay_pid},"' in DATAPLANE
     assert "did not become ready on UDP/" in DATAPLANE
+
+
+def test_prepared_agent_has_expiring_https_download_link() -> None:
+    assert "/v1/bootstrap/" in CONTROL
+    assert "_serve_bootstrap_binary" in CONTROL
+    assert 'downloads = self._root() / "downloads"' in CONTROL
+    assert "HTTPStatus.GONE" in CONTROL
+    assert "download_token" in SERVER
+    assert '"${CONTROL_DIR}/downloads"' in SERVER
+    assert 'Download URL:' in SERVER
+    assert '${control_url}/v1/bootstrap/${download_token}/${download_name}' in SERVER
+    assert '"download_token": sys.argv[5]' in SERVER
+    assert 'downloads / f"{token}.exe"' in CONTROL
+    assert '"${CONTROL_DIR}/downloads"' in ENABLE_CONTROL
+
+
+def test_bootstrap_download_is_repeatable_until_enrollment() -> None:
+    bootstrap_method = CONTROL.split("def _serve_bootstrap_binary", 1)[1]
+    bootstrap_method = bootstrap_method.split("def _serve_update_binary", 1)[0]
+    assert "expires <= int(time.time())" in bootstrap_method
+    assert "self._delete_bootstrap_download(token)" in bootstrap_method
+    enrollment_block = CONTROL.split("def _enroll", 1)[1]
+    enrollment_block = enrollment_block.split("def _serve_config", 1)[0]
+    assert "self._delete_bootstrap_download(download_token)" in enrollment_block
+    assert "_delete_bootstrap_download" in CONTROL
+

@@ -130,11 +130,13 @@ create_agent() {
 
   local enroll_token
   enroll_token="$(openssl rand -hex 32)"
+  local download_token
+  download_token="$(openssl rand -hex 32)"
   local expires
   expires="$(( $(date +%s) + ttl ))"
 
-  install -d -m 0700 "${CONTROL_DIR}/enroll" "${AGENTS_DIR}"
-  python3 - "${CONTROL_DIR}/enroll/${enroll_token}.json" "${name}" "${legacy_tunnel}" "${expires}" <<'PY'
+  install -d -m 0700 "${CONTROL_DIR}/enroll" "${CONTROL_DIR}/downloads" "${AGENTS_DIR}"
+  python3 - "${CONTROL_DIR}/enroll/${enroll_token}.json" "${name}" "${legacy_tunnel}" "${expires}" "${download_token}" <<'PY'
 import json
 import os
 import sys
@@ -145,6 +147,7 @@ value = {
     "device": sys.argv[2],
     "legacy_tunnel": sys.argv[3],
     "expires": int(sys.argv[4]),
+    "download_token": sys.argv[5],
 }
 tmp = path.with_suffix(".tmp")
 tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
@@ -190,6 +193,29 @@ PY
   chmod 0600 "${tmp}"
   mv -f "${tmp}" "${prepared}"
 
+  local download_name="bpc-agent-${name}.exe"
+  local download_binary="${CONTROL_DIR}/downloads/${download_token}.exe"
+  local download_metadata="${CONTROL_DIR}/downloads/${download_token}.json"
+  local download_url="${control_url}/v1/bootstrap/${download_token}/${download_name}"
+  install -m 0600 "${prepared}" "${download_binary}"
+  python3 - "${download_metadata}" "${name}" "${download_name}" "${expires}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+value = {
+    "device": sys.argv[2],
+    "filename": sys.argv[3],
+    "expires": int(sys.argv[4]),
+}
+tmp = path.with_suffix(".tmp")
+tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
+
   if [[ -n "${extra_output}" ]]; then
     install -m 0600 "${prepared}" "${extra_output}"
   fi
@@ -200,6 +226,7 @@ Control: ${control_url}
 Enrollment expires: ${expires}
 Legacy tunnel: ${legacy_tunnel:-none}
 Prepared executable: ${prepared}
+Download URL: ${download_url}
 INFO
   chmod 0600 "${device_dir}/info.txt"
 
@@ -211,9 +238,12 @@ Control: ${control_url}
 Enrollment token lifetime: ${ttl}s
 Legacy tunnel: ${legacy_tunnel:-none}
 File: ${prepared}
+Download URL:
+  ${download_url}
 
-Copy it to Windows with SCP, for example:
-  scp root@${CONTROL_HOST}:${prepared} .
+The HTTPS download link remains valid until the enrollment TTL expires and may
+be fetched more than once before registration. After successful enrollment the
+server removes the staged download automatically.
 
 The enrollment token is one-time and is removed after successful registration.
 The prepared EXE does not contain the WGShim PSK; runtime secrets are delivered
