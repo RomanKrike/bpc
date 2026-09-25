@@ -431,6 +431,8 @@ mode = sys.argv[3]
 raw_routes = sys.argv[4:]
 
 routes: list[str] = []
+config = json.loads((root / "config.json").read_text(encoding="utf-8"))
+overlay = ipaddress.ip_network(str(config["wireguard_subnet"]), strict=False)
 if mode == "set":
     seen: set[str] = set()
     for raw in raw_routes:
@@ -442,6 +444,10 @@ if mode == "set":
             raise SystemExit(f"Only IPv4 managed routes are supported: {raw}")
         if network.prefixlen == 0:
             raise SystemExit("0.0.0.0/0 is not allowed for managed Agent routes")
+        if network.overlaps(overlay):
+            raise SystemExit(
+                f"Managed route {network} overlaps the Agent overlay {overlay}"
+            )
         canonical = str(network)
         if canonical not in seen:
             seen.add(canonical)
