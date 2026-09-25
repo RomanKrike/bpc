@@ -235,6 +235,7 @@ systemctl restart "wg-quick@${WG_INTERFACE}.service"
 systemctl enable bpc-agent-dataplane-firewall.service >/dev/null
 systemctl restart bpc-agent-dataplane-firewall.service
 systemctl enable bpc-agent-relay.service >/dev/null
+systemctl reset-failed bpc-agent-relay.service >/dev/null 2>&1 || true
 systemctl restart bpc-agent-relay.service
 
 if ! systemctl --quiet is-active "wg-quick@${WG_INTERFACE}.service"; then
