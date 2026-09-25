@@ -255,7 +255,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		defer selectedMu.RUnlock()
 		return selected, cloneUDPAddr(serverAddrs[selected])
 	}
-	setSelected(0, 0, len(serverNames), false)
+	setSelected(0, 0, 0, false)
 
 	go func() {
 		<-ctx.Done()
