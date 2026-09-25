@@ -613,7 +613,7 @@ func updateNow() error {
 		return err
 	}
 	logger := log.New(os.Stderr, "bpc-agent ", log.LstdFlags)
-	updated, err := checkAndStageUpdate(context.Background(), control, state, logger)
+	updated, err := checkAndStageUpdate(context.Background(), control, state, logger, true)
 	if err != nil {
 		return err
 	}
