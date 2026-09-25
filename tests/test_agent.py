@@ -190,3 +190,11 @@ def test_agent_services_reset_systemd_start_limits_and_health_checks_owner() -> 
     assert 'systemctl show -p MainPID --value' in HEALTH
     assert 'pid=${pid},' in HEALTH
     assert "runtime expects" in STATUS
+
+
+def test_agent_relay_uses_bounded_readiness_probe() -> None:
+    assert 'relay_ready="false"' in DATAPLANE
+    assert "sleep 0.25" in DATAPLANE
+    assert 'systemctl show -p MainPID --value bpc-agent-relay.service' in DATAPLANE
+    assert 'grep -Fq "pid=${relay_pid},"' in DATAPLANE
+    assert "did not become ready on UDP/" in DATAPLANE
