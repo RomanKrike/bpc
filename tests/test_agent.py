@@ -99,10 +99,11 @@ def test_agent_runs_as_native_windows_service() -> None:
     assert "startWindowsService" in AGENT
 
 
-def test_legacy_wireguard_is_optional_not_required_by_bootstrap() -> None:
+def test_legacy_wireguard_is_optional_migration_compatibility() -> None:
     assert "--legacy-tunnel" in SERVER
     assert "LegacyTunnel" in AGENT
-    assert "self-contained tunnel backend is not enabled yet" in AGENT
+    assert "captureLegacyWireGuardProfile" in AGENT
+    assert "runEmbeddedWireGuard" in AGENT
     assert "WireGuardTunnel$" in AGENT
     assert "ProgramData" in AGENT
 
