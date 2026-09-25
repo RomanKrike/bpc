@@ -33,6 +33,8 @@ mkdir -p "${staging}/bin"
     -o "${staging}/bin/bpc-wgshim-linux-arm64" ./cmd/bpc-wgshim
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-wgshim-windows-amd64.exe" ./cmd/bpc-wgshim
+  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+    -o "${staging}/bin/bpc-agent-windows-amd64.exe" ./cmd/bpc-agent
 )
 chmod 0755 "${staging}/bin/bpc-wgshim-linux-amd64" "${staging}/bin/bpc-wgshim-linux-arm64"
 cp "${staging}/bin/"* "${OUT_DIR}/"
