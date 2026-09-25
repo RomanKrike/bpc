@@ -10,6 +10,7 @@ HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
 INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
 MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
 SERVER = pathlib.Path("deploy/bpc-agent.sh").read_text(encoding="utf-8")
+SERVICE = pathlib.Path("cmd/bpc-agent/service_windows.go").read_text(encoding="utf-8")
 STATUS = pathlib.Path("deploy/bpc-status.sh").read_text(encoding="utf-8")
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
@@ -86,11 +87,19 @@ def test_agent_signed_auto_update_is_fail_closed() -> None:
     assert "control URL must be HTTPS" in AGENTCTL
 
 
+def test_agent_runs_as_native_windows_service() -> None:
+    assert "svc.Run" in SERVICE
+    assert "mgr.CreateService" in SERVICE
+    assert "mgr.StartAutomatic" in SERVICE
+    assert "configureServiceRecovery" in SERVICE
+    assert "run-service" in SERVICE
+    assert "installWindowsService" in AGENT
+    assert "startWindowsService" in AGENT
+
+
 def test_legacy_wireguard_is_optional_not_required_by_bootstrap() -> None:
     assert "--legacy-tunnel" in SERVER
     assert "LegacyTunnel" in AGENT
     assert "self-contained tunnel backend is not enabled yet" in AGENT
     assert "WireGuardTunnel$" in AGENT
-    assert '"/SC", "ONSTART"' in AGENT
-    assert '"SYSTEM"' in AGENT
     assert "ProgramData" in AGENT
