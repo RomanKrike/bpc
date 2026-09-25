@@ -213,4 +213,7 @@ fi
 if [[ -f "${ru_dir}/control/enabled" ]] && \
   systemctl --quiet is-enabled bpc-control.service 2>/dev/null; then
   systemctl restart bpc-control.service
+  if [[ -x "${BPC_ROOT}/current/deploy/bpc-agent.sh" ]]; then
+    "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update
+  fi
 fi
