@@ -47,6 +47,10 @@ for value in "${WG_PORT}" "${WGSHIM_PORT}" "${WGSHIM_LOCAL_PORT}" "${WG_KEEPALIV
 done
 if [[ -n "${WGSHIM_PORTS_RAW}" ]]; then
   IFS=',' read -r -a requested_wgshim_ports <<< "${WGSHIM_PORTS_RAW}"
+  if (( ${#requested_wgshim_ports[@]} > 16 )); then
+    echo "BPC Agent WGShim pool supports at most 16 UDP ports" >&2
+    exit 2
+  fi
   for value in "${requested_wgshim_ports[@]}"; do
     if ! [[ "${value}" =~ ^[0-9]+$ ]] || (( value < 1024 || value > 65535 )); then
       echo "BPC Agent WGShim pool ports must be between 1024 and 65535" >&2
