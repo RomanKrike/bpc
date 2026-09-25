@@ -32,6 +32,7 @@ reconcile_command_links() {
     "bpc-enable-wg:bpc-enable-wg.sh" \
     "bpc-enable-wgshim:bpc-enable-wgshim.sh" \
     "bpc-agent:bpc-agent.sh" \
+    "bpc-node:bpc-node.sh" \
     "bpc-enable-control:bpc-enable-control.sh" \
     "bpc-enable-agent-dataplane:bpc-enable-agent-dataplane.sh" \
     "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
