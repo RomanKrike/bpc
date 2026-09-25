@@ -90,7 +90,7 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update
 apt-get install -y --no-install-recommends openssl python3 ca-certificates
 
-install -d -m 0700   "${CONTROL_DIR}"   "${CONTROL_DIR}/enroll"   "${CONTROL_DIR}/devices"   "${CONTROL_DIR}/tokens"   "${CONTROL_DIR}/update"
+install -d -m 0700   "${CONTROL_DIR}"   "${CONTROL_DIR}/enroll"   "${CONTROL_DIR}/devices"   "${CONTROL_DIR}/tokens"   "${CONTROL_DIR}/downloads"   "${CONTROL_DIR}/update"
 
 control_server="${CONTROL_DIR}/bpc-control-server.py"
 install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py" "${control_server}"
