@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.2
+
+### Changed
+- Redesign the Windows end-user Connect interface around a simplified connection-focused layout.
+- Brand the client as the BP logo plus `Connect`, keeping Admin functionality out of the user client.
+- Surface connection status, relay, handshake age, latency, traffic, device name and tunnel IP while retaining tray controls and a compact details dialog.
+
 ## 0.8.0
 
 ### Added
