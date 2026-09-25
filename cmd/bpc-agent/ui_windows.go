@@ -159,12 +159,12 @@ function Refresh-Bpc {
 }
 
 $doConnect = {
-    Start-Service -Name BPCAgent -ErrorAction SilentlyContinue
+    & $exe connect | Out-Null
     Start-Sleep -Milliseconds 400
     Refresh-Bpc
 }
 $doDisconnect = {
-    Stop-Service -Name BPCAgent -Force -ErrorAction SilentlyContinue
+    & $exe disconnect | Out-Null
     Start-Sleep -Milliseconds 400
     Refresh-Bpc
 }
