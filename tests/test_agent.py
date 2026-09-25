@@ -181,3 +181,12 @@ def test_update_migration_repairs_partial_agent_and_control_runtime() -> None:
     assert 'control_should_reconcile="false"' in MIGRATE
     assert 'systemctl --quiet is-enabled bpc-control.service' in MIGRATE
     assert '"${BPC_ROOT}/current/deploy/bpc-enable-control.sh"' in MIGRATE
+
+
+def test_agent_services_reset_systemd_start_limits_and_health_checks_owner() -> None:
+    assert "systemctl reset-failed bpc-agent-relay.service" in DATAPLANE
+    assert "systemctl reset-failed bpc-control.service" in ENABLE_CONTROL
+    assert "service_owns_udp_port" in HEALTH
+    assert 'systemctl show -p MainPID --value' in HEALTH
+    assert 'pid=${pid},' in HEALTH
+    assert "runtime expects" in STATUS
