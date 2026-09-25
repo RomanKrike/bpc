@@ -7,8 +7,8 @@ OVPN_DIR="${RU_DIR}/openvpn"
 OVPN_PORT="${BPC_OPENVPN_PORT:-1194}"
 OVPN_PROTO="${BPC_OPENVPN_PROTO:-udp}"
 OVPN_INTERFACE="${BPC_OPENVPN_INTERFACE:-bpcovpn}"
-OVPN_SUBNET="${BPC_OPENVPN_SUBNET:-10.253.0.0/24}"
-OVPN_SERVER_NETWORK="${BPC_OPENVPN_SERVER_NETWORK:-10.253.0.0}"
+OVPN_SUBNET="${BPC_OPENVPN_SUBNET:-10.250.0.0/24}"
+OVPN_SERVER_NETWORK="${BPC_OPENVPN_SERVER_NETWORK:-10.250.0.0}"
 OVPN_SERVER_NETMASK="${BPC_OPENVPN_SERVER_NETMASK:-255.255.255.0}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -138,6 +138,17 @@ fi
 # Reuse the persisted transport settings on repeat runs.
 # shellcheck disable=SC1090,SC1091
 source "${OVPN_DIR}/runtime.env"
+
+agent_runtime="${RU_DIR}/agent/runtime.env"
+if [[ -s "${agent_runtime}" ]]; then
+  agent_subnet="$(sed -n 's/^AGENT_WG_SUBNET=//p' "${agent_runtime}" | head -n1)"
+  if [[ -n "${agent_subnet}" && "${OPENVPN_SUBNET}" == "${agent_subnet}" ]]; then
+    echo "OpenVPN subnet ${OPENVPN_SUBNET} conflicts with the BPC Agent overlay." >&2
+    echo "Choose a dedicated BPC_OPENVPN_SUBNET/BPC_OPENVPN_SERVER_NETWORK." >&2
+    exit 4
+  fi
+fi
+
 if [[ "${OVPN_PROTO}" == "tcp" ]]; then
   server_proto="tcp-server"
   client_proto="tcp-client"

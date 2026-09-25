@@ -277,6 +277,16 @@ check_agent_dataplane() {
 
   # shellcheck disable=SC1090,SC1091
   source "${runtime_env}"
+
+  openvpn_runtime="${BPC_STATE_DIR}/ru-node/openvpn/runtime.env"
+  if [[ -s "${openvpn_runtime}" ]]; then
+    openvpn_subnet="$(sed -n 's/^OPENVPN_SUBNET=//p' "${openvpn_runtime}" | head -n1)"
+    if [[ -n "${openvpn_subnet}" && "${openvpn_subnet}" == "${AGENT_WG_SUBNET}" ]]; then
+      fail_health "OpenVPN subnet ${openvpn_subnet} overlaps the BPC Agent overlay"
+      return 1
+    fi
+  fi
+
   if ! wg show "${AGENT_WG_INTERFACE}" >/dev/null 2>&1; then
     fail_health "BPC Agent WireGuard interface ${AGENT_WG_INTERFACE} is unavailable"
     return 1
