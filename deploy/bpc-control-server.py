@@ -4,16 +4,16 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+from pathlib import Path
 import secrets
 import ssl
 import time
-import uuid
-from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
 from typing import Any
+import uuid
 
 
 MAX_JSON_BODY = 64 * 1024
