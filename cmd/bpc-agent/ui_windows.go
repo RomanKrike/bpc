@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 )
 
 const uiTaskName = "BPC Agent UI"
@@ -16,11 +15,12 @@ const windowsUIScript = `Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 $created = $false
-$mutex = [System.Threading.Mutex]::new($true, 'Global\BPCAgentUI', [ref]$created)
+$mutex = [System.Threading.Mutex]::new($true, 'Local\BPCAgentUI', [ref]$created)
 if (-not $created) { exit 0 }
 
 [System.Windows.Forms.Application]::EnableVisualStyles()
 $exe = Join-Path $env:ProgramData 'BPC\bpc-agent.exe'
+$statusPath = Join-Path $env:ProgramData 'BPC\ui-status.json'
 
 $form = New-Object System.Windows.Forms.Form
 $form.Text = 'BPC Agent'
@@ -115,9 +115,17 @@ $tray.ContextMenuStrip = $menu
 
 function Get-BpcStatus {
     try {
-        $raw = (& $exe status-json 2>$null | Out-String).Trim()
-        if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-        return $raw | ConvertFrom-Json
+        if (-not (Test-Path -LiteralPath $statusPath)) { return $null }
+        $s = Get-Content -LiteralPath $statusPath -Raw | ConvertFrom-Json
+        $svc = Get-Service -Name BPCAgent -ErrorAction SilentlyContinue
+        if ($null -eq $svc) {
+            $s | Add-Member -NotePropertyName service -NotePropertyValue 'missing' -Force
+        } elseif ($svc.Status -eq 'Running') {
+            $s | Add-Member -NotePropertyName service -NotePropertyValue 'running' -Force
+        } else {
+            $s | Add-Member -NotePropertyName service -NotePropertyValue 'stopped' -Force
+        }
+        return $s
     } catch {
         return $null
     }
@@ -134,6 +142,7 @@ function Refresh-Bpc {
         $disconnect.Enabled = $false
         $connectItem.Enabled = $true
         $disconnectItem.Enabled = $false
+        $tray.Text = 'BPC Agent - Unavailable'
         return
     }
 
@@ -219,68 +228,62 @@ func installWindowsUI(exePath, dir string) error {
 		return err
 	}
 
-	userOut, err := runCommand(
-		"powershell.exe",
-		"-NoProfile",
-		"-NonInteractive",
-		"-Command",
-		"[Security.Principal.WindowsIdentity]::GetCurrent().Name",
+	// Remove the 0.10.6 task-based launcher. UI now starts in the current
+	// interactive session and uses HKCU Run for logon autostart.
+	_, _ = runCommand("schtasks.exe", "/End", "/TN", uiTaskName)
+	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", uiTaskName, "/F")
+
+	runValue := fmt.Sprintf("%q ui", exePath)
+	out, err := runCommand(
+		"reg.exe",
+		"ADD",
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
+		"/v",
+		uiTaskName,
+		"/t",
+		"REG_SZ",
+		"/d",
+		runValue,
+		"/f",
 	)
 	if err != nil {
-		return fmt.Errorf("resolve UI task user: %w: %s", err, userOut)
+		return fmt.Errorf("register UI logon launcher: %w: %s", err, out)
 	}
-	user := strings.TrimSpace(userOut)
-	if user == "" {
-		return fmt.Errorf("resolve UI task user: empty identity")
-	}
-
-	ps := fmt.Sprintf(
-		"$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument %s; "+
-			"$t=New-ScheduledTaskTrigger -AtLogOn -User %s; "+
-			"$p=New-ScheduledTaskPrincipal -UserId %s -LogonType Interactive -RunLevel Highest; "+
-			"Register-ScheduledTask -TaskName %s -Action $a -Trigger $t -Principal $p -Force | Out-Null",
-		psSingleQuote("-NoProfile -STA -WindowStyle Hidden -ExecutionPolicy Bypass -File "+uiPath),
-		psSingleQuote(user),
-		psSingleQuote(user),
-		psSingleQuote(uiTaskName),
-	)
-	if out, err := runCommand("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps); err != nil {
-		return fmt.Errorf("register UI task: %w: %s", err, out)
-	}
-	_ = exePath
 	return nil
 }
 
 func startWindowsUI() error {
-	out, err := runCommand("schtasks.exe", "/Run", "/TN", uiTaskName)
-	if err != nil {
-		return fmt.Errorf("start UI task: %w: %s", err, out)
-	}
-	return nil
+	return launchWindowsUI()
 }
 
 func removeWindowsUI() error {
 	_, _ = runCommand("schtasks.exe", "/End", "/TN", uiTaskName)
 	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", uiTaskName, "/F")
+	_, _ = runCommand(
+		"reg.exe",
+		"DELETE",
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
+		"/v",
+		uiTaskName,
+		"/f",
+	)
 	dir, _, _, err := installPaths()
 	if err == nil {
 		_ = os.Remove(filepath.Join(dir, "bpc-ui.ps1"))
+		_ = os.Remove(filepath.Join(dir, "ui-status.json"))
 	}
 	return nil
 }
 
 func launchWindowsUI() error {
-	if !isAdministrator() {
-		return elevate("ui")
-	}
-	if err := startWindowsUI(); err == nil {
-		return nil
-	}
 	dir, _, _, err := installPaths()
 	if err != nil {
 		return err
 	}
 	script := filepath.Join(dir, "bpc-ui.ps1")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("BPC Agent UI is not installed: %w", err)
+	}
 	cmd := exec.Command(
 		"powershell.exe",
 		"-NoProfile",
@@ -292,9 +295,8 @@ func launchWindowsUI() error {
 		"-File",
 		script,
 	)
-	return cmd.Start()
-}
-
-func psSingleQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("launch BPC Agent UI: %w", err)
+	}
+	return nil
 }
