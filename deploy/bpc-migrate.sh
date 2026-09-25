@@ -23,6 +23,7 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
     "bpc-enable-awg:bpc-enable-awg.sh" \
     "bpc-enable-wg:bpc-enable-wg.sh" \
     "bpc-enable-wgshim:bpc-enable-wgshim.sh" \
+    "bpc-agent:bpc-agent.sh" \
     "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
     "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
     "bpc-enable-ikev2:bpc-enable-ikev2.sh" \
