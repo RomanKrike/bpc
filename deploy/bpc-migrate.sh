@@ -207,3 +207,10 @@ if [[ -f "${ru_dir}/subscription/enabled" ]] && \
   systemctl --quiet is-enabled bpc-subscription.service 2>/dev/null; then
   systemctl restart bpc-subscription.service
 fi
+
+# The control plane also executes code through /opt/bpc/current. Restart it
+# after a release switch while preserving enrollment/device/update state.
+if [[ -f "${ru_dir}/control/enabled" ]] && \
+  systemctl --quiet is-enabled bpc-control.service 2>/dev/null; then
+  systemctl restart bpc-control.service
+fi
