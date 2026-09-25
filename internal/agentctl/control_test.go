@@ -113,7 +113,6 @@ func TestStateRoundTrip(t *testing.T) {
 	}
 }
 
-
 func TestValidateRuntimeConfigAdaptiveEndpointPool(t *testing.T) {
 	base := RuntimeConfig{
 		ConfigVersion: 4,
