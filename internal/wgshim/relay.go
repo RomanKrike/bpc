@@ -349,9 +349,19 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		for ctx.Err() == nil {
 			measurements := make(map[string][]time.Duration, len(serverNames))
 			expected := 0
-			for i, endpoint := range serverAddrs {
-				for sample := 0; sample < 2; sample++ {
-					token := make([]byte, 12)
+			samplesPerEndpoint := 2 + randomIndex(2)
+			order := make([]int, len(serverAddrs))
+			for i := range order {
+				order[i] = i
+			}
+			for i := len(order) - 1; i > 0; i-- {
+				j := randomIndex(i + 1)
+				order[i], order[j] = order[j], order[i]
+			}
+			for _, i := range order {
+				endpoint := serverAddrs[i]
+				for sample := 0; sample < samplesPerEndpoint; sample++ {
+					token := make([]byte, 8+randomIndex(25))
 					if _, err := crand.Read(token); err != nil {
 						errCh <- fmt.Errorf("generate adaptive probe token: %w", err)
 						return
@@ -376,7 +386,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 						delete(pending, tokenKey)
 						pendingMu.Unlock()
 					}
-					time.Sleep(15 * time.Millisecond)
+					time.Sleep(randomDuration(5*time.Millisecond, 35*time.Millisecond))
 				}
 			}
 
@@ -412,8 +422,9 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 			pendingMu.Unlock()
 
 			type endpointScore struct {
-				index int
-				rtt   time.Duration
+				index   int
+				rtt     time.Duration
+				replies int
 			}
 			scores := make([]endpointScore, 0, len(serverNames))
 			for i, name := range serverNames {
@@ -426,16 +437,27 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 				if len(values) == 2 {
 					rtt = (values[0] + values[1]) / 2
 				}
-				scores = append(scores, endpointScore{index: i, rtt: rtt})
+				scores = append(scores, endpointScore{
+					index:   i,
+					rtt:     rtt,
+					replies: len(values),
+				})
 			}
-			sort.Slice(scores, func(i, j int) bool { return scores[i].rtt < scores[j].rtt })
+			sort.Slice(scores, func(i, j int) bool {
+				if scores[i].replies != scores[j].replies {
+					return scores[i].replies > scores[j].replies
+				}
+				return scores[i].rtt < scores[j].rtt
+			})
 
 			currentIndex, _ := getSelected()
 			currentRTT := time.Duration(0)
+			currentReplies := 0
 			currentReachable := false
 			for _, score := range scores {
 				if score.index == currentIndex {
 					currentRTT = score.rtt
+					currentReplies = score.replies
 					currentReachable = true
 					break
 				}
@@ -451,14 +473,17 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 					next = best.index
 					nextRTT = best.rtt
 					switched = next != currentIndex
-				} else if best.index != currentIndex && best.rtt+cfg.SwitchThreshold < currentRTT {
+				} else if best.index != currentIndex &&
+					(best.replies > currentReplies ||
+						(best.replies == currentReplies && best.rtt+cfg.SwitchThreshold < currentRTT)) {
 					next = best.index
 					nextRTT = best.rtt
 					switched = true
 				} else if time.Now().After(rotationDue) {
 					healthy := make([]endpointScore, 0, len(scores))
 					for _, score := range scores {
-						if score.rtt <= best.rtt+20*time.Millisecond {
+						if score.replies == samplesPerEndpoint &&
+							score.rtt <= best.rtt+20*time.Millisecond {
 							healthy = append(healthy, score)
 						}
 					}
