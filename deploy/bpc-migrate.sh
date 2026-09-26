@@ -43,6 +43,11 @@ fi
 
 node_model="${BPC_ROOT}/current/deploy/bpc-node-model.py"
 if [[ -f "${node_model}" ]]; then
+  if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y --no-install-recommends python3 python3-yaml
+  fi
   python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" migrate
 fi
 
