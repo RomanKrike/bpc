@@ -602,9 +602,9 @@ def _remove_device_dataplane(root: Path, device: dict[str, Any]) -> None:
     except (OSError, ValueError, json.JSONDecodeError):
         config = {}
 
-    key_dir = Path(str(config.get("wgshim_key_dir", "")).strip())
-    if device_id and str(key_dir):
-        (key_dir / f"{device_id}.key").unlink(missing_ok=True)
+    key_dir_raw = str(config.get("wgshim_key_dir", "")).strip()
+    if device_id and key_dir_raw:
+        (Path(key_dir_raw) / f"{device_id}.key").unlink(missing_ok=True)
 
     interface = str(config.get("wireguard_interface", "")).strip()
     if not public_key or not interface:
