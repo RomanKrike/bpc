@@ -23,8 +23,10 @@ import (
 )
 
 const (
-	BootstrapVersion = 2
-	StateVersion     = 1
+	BootstrapVersion       = 3
+	LegacyBootstrapVersion = 2
+	StateVersion           = 2
+	LegacyStateVersion     = 1
 )
 
 type Bootstrap struct {
@@ -51,16 +53,20 @@ type RuntimeConfig struct {
 }
 
 type State struct {
-	Version      int              `json:"version"`
-	DeviceID     string           `json:"device_id"`
-	DeviceName   string           `json:"device_name"`
-	DeviceToken  string           `json:"device_token"`
-	PublicKey    string           `json:"public_key"`
-	PrivateKey   string           `json:"private_key"`
-	ControlURL   string           `json:"control_url"`
-	UpdatePubKey string           `json:"update_public_key"`
-	Config       RuntimeConfig    `json:"config"`
-	WireGuard    WireGuardProfile `json:"wireguard"`
+	Version          int              `json:"version"`
+	DeviceID         string           `json:"device_id"`
+	DeviceName       string           `json:"device_name"`
+	AccessToken      string           `json:"access_token,omitempty"`
+	AccessExpiresAt  int64            `json:"access_expires_at,omitempty"`
+	RefreshToken     string           `json:"refresh_token,omitempty"`
+	RefreshExpiresAt int64            `json:"refresh_expires_at,omitempty"`
+	DeviceToken      string           `json:"device_token,omitempty"` // Stage 2 compatibility only.
+	PublicKey        string           `json:"public_key"`
+	PrivateKey       string           `json:"private_key"`
+	ControlURL       string           `json:"control_url"`
+	UpdatePubKey     string           `json:"update_public_key"`
+	Config           RuntimeConfig    `json:"config"`
+	WireGuard        WireGuardProfile `json:"wireguard"`
 }
 
 type EnrollmentRequest struct {
@@ -76,6 +82,68 @@ type EnrollmentResponse struct {
 	DeviceToken string           `json:"device_token"`
 	Config      RuntimeConfig    `json:"config"`
 	WireGuard   WireGuardProfile `json:"wireguard"`
+}
+
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	AccessToken     string `json:"access_token"`
+	AccessExpiresAt int64  `json:"access_expires_at"`
+	User            struct {
+		ID       string `json:"id"`
+		Username string `json:"username"`
+	} `json:"user"`
+}
+
+type DeviceRegistrationRequest struct {
+	Name               string `json:"name"`
+	PublicKey          string `json:"public_key"`
+	WireGuardPublicKey string `json:"wireguard_public_key"`
+	Version            string `json:"version"`
+	Proof              string `json:"proof"`
+}
+
+type DeviceRegistrationResponse struct {
+	DeviceID         string           `json:"device_id"`
+	AccessToken      string           `json:"access_token"`
+	AccessExpiresAt  int64            `json:"access_expires_at"`
+	RefreshToken     string           `json:"refresh_token"`
+	RefreshExpiresAt int64            `json:"refresh_expires_at"`
+	Config           RuntimeConfig    `json:"config"`
+	WireGuard        WireGuardProfile `json:"wireguard"`
+}
+
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+	Proof        string `json:"proof"`
+}
+
+type RefreshResponse struct {
+	DeviceID         string `json:"device_id"`
+	AccessToken      string `json:"access_token"`
+	AccessExpiresAt  int64  `json:"access_expires_at"`
+	RefreshToken     string `json:"refresh_token"`
+	RefreshExpiresAt int64  `json:"refresh_expires_at"`
+}
+
+type LogoutRequest struct {
+	RefreshToken string `json:"refresh_token,omitempty"`
+}
+
+type DeviceSummary struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	CreatedAt int64  `json:"created_at"`
+	LastSeen  int64  `json:"last_seen"`
+	Enabled   bool   `json:"enabled"`
+	RevokedAt *int64 `json:"revoked_at"`
+}
+
+type DeviceListResponse struct {
+	Devices []DeviceSummary `json:"devices"`
 }
 
 type HeartbeatRequest struct {
@@ -128,6 +196,91 @@ func (c *Client) Enroll(ctx context.Context, req EnrollmentRequest) (*Enrollment
 		return nil, errors.New("control plane returned incomplete WireGuard profile")
 	}
 	return &response, nil
+}
+
+func (c *Client) Login(ctx context.Context, username, password string) (*LoginResponse, error) {
+	var response LoginResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/auth/login", "", LoginRequest{
+		Username: username,
+		Password: password,
+	}, &response); err != nil {
+		return nil, err
+	}
+	if response.AccessToken == "" || response.AccessExpiresAt == 0 || response.User.ID == "" {
+		return nil, errors.New("control plane returned incomplete login response")
+	}
+	return &response, nil
+}
+
+func (c *Client) RegisterDevice(
+	ctx context.Context,
+	accessToken string,
+	req DeviceRegistrationRequest,
+) (*DeviceRegistrationResponse, error) {
+	var response DeviceRegistrationResponse
+	if err := c.doJSON(
+		ctx,
+		http.MethodPost,
+		"/v1/devices/register",
+		accessToken,
+		req,
+		&response,
+	); err != nil {
+		return nil, err
+	}
+	if response.DeviceID == "" || response.AccessToken == "" || response.RefreshToken == "" {
+		return nil, errors.New("control plane returned incomplete device registration response")
+	}
+	if strings.TrimSpace(response.WireGuard.Address) == "" ||
+		strings.TrimSpace(response.WireGuard.PeerPublicKey) == "" {
+		return nil, errors.New("control plane returned incomplete WireGuard profile")
+	}
+	return &response, nil
+}
+
+func (c *Client) Refresh(
+	ctx context.Context,
+	refreshToken string,
+	proof string,
+) (*RefreshResponse, error) {
+	var response RefreshResponse
+	if err := c.doJSON(ctx, http.MethodPost, "/v1/auth/refresh", "", RefreshRequest{
+		RefreshToken: refreshToken,
+		Proof:        proof,
+	}, &response); err != nil {
+		return nil, err
+	}
+	if response.AccessToken == "" || response.RefreshToken == "" ||
+		response.AccessExpiresAt == 0 || response.RefreshExpiresAt == 0 {
+		return nil, errors.New("control plane returned incomplete refresh response")
+	}
+	return &response, nil
+}
+
+func (c *Client) Logout(ctx context.Context, accessToken, refreshToken string) error {
+	return c.doJSON(
+		ctx,
+		http.MethodPost,
+		"/v1/auth/logout",
+		accessToken,
+		LogoutRequest{RefreshToken: refreshToken},
+		nil,
+	)
+}
+
+func (c *Client) ListDevices(ctx context.Context, accessToken string) ([]DeviceSummary, error) {
+	var response DeviceListResponse
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/devices", accessToken, nil, &response); err != nil {
+		return nil, err
+	}
+	return response.Devices, nil
+}
+
+func (c *Client) RevokeDevice(ctx context.Context, accessToken, deviceID string) error {
+	body := struct {
+		DeviceID string `json:"device_id"`
+	}{DeviceID: deviceID}
+	return c.doJSON(ctx, http.MethodPost, "/v1/devices/revoke", accessToken, body, nil)
 }
 
 func (c *Client) FetchConfig(ctx context.Context) (*RuntimeConfig, error) {
@@ -262,15 +415,61 @@ func GenerateIdentity() (publicB64, privateB64 string, err error) {
 		base64.StdEncoding.EncodeToString(privateKey), nil
 }
 
+func SignDeviceProof(privateB64 string, message []byte) (string, error) {
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(privateB64))
+	if err != nil {
+		return "", fmt.Errorf("decode device private key: %w", err)
+	}
+	if len(raw) != ed25519.PrivateKeySize {
+		return "", errors.New("device private key has invalid length")
+	}
+	signature := ed25519.Sign(ed25519.PrivateKey(raw), message)
+	return base64.StdEncoding.EncodeToString(signature), nil
+}
+
+func RegistrationSigningBytes(
+	accessToken string,
+	publicKey string,
+	wireGuardPublicKey string,
+) []byte {
+	return []byte(
+		"bpc-register-v1\n" +
+			strings.TrimSpace(accessToken) + "\n" +
+			strings.TrimSpace(publicKey) + "\n" +
+			strings.TrimSpace(wireGuardPublicKey) + "\n",
+	)
+}
+
+func RefreshSigningBytes(refreshToken string) []byte {
+	return []byte("bpc-refresh-v1\n" + strings.TrimSpace(refreshToken) + "\n")
+}
+
+func (s *State) ControlCredential() string {
+	if strings.TrimSpace(s.AccessToken) != "" {
+		return strings.TrimSpace(s.AccessToken)
+	}
+	return strings.TrimSpace(s.DeviceToken)
+}
+
+func (s *State) NeedsRefresh(now time.Time) bool {
+	if strings.TrimSpace(s.RefreshToken) == "" {
+		return false
+	}
+	if strings.TrimSpace(s.AccessToken) == "" {
+		return true
+	}
+	return s.AccessExpiresAt <= now.Add(60*time.Second).Unix()
+}
+
 func ValidateBootstrap(cfg Bootstrap) error {
-	if cfg.Version != BootstrapVersion {
+	if cfg.Version != BootstrapVersion && cfg.Version != LegacyBootstrapVersion {
 		return fmt.Errorf("unsupported bootstrap version %d", cfg.Version)
 	}
 	if strings.TrimSpace(cfg.Device) == "" {
 		return errors.New("bootstrap device is empty")
 	}
-	if strings.TrimSpace(cfg.EnrollToken) == "" {
-		return errors.New("bootstrap enrollment token is empty")
+	if cfg.Version == LegacyBootstrapVersion && strings.TrimSpace(cfg.EnrollToken) == "" {
+		return errors.New("legacy bootstrap enrollment token is empty")
 	}
 	if _, err := NewClient(cfg.ControlURL, ""); err != nil {
 		return err
@@ -359,7 +558,7 @@ func LoadState(path string) (*State, error) {
 	if err := json.Unmarshal(raw, &state); err != nil {
 		return nil, err
 	}
-	if state.Version != StateVersion {
+	if state.Version != StateVersion && state.Version != LegacyStateVersion {
 		return nil, fmt.Errorf("unsupported agent state version %d", state.Version)
 	}
 	return &state, nil

@@ -4,13 +4,17 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bpc-connect"
-version = "0.15.3"
+version = "0.16.0"
 description = "Fail-closed multi-transport bridge for BPC connectivity"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [{name = "RomanKrike"}]
-dependencies = ["PyYAML>=6.0.2,<7"]
+dependencies = [
+  "PyYAML>=6.0.2,<7",
+  "argon2-cffi>=21.1,<26",
+  "cryptography>=38,<47",
+]
 
 [project.optional-dependencies]
 dev = [

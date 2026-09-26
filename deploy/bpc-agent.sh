@@ -27,7 +27,7 @@ Create options:
   --legacy-tunnel TUNNEL
                     Optional compatibility tunnel for the 0.9.x external
                     WireGuard backend. Omit for the self-contained agent path.
-  --ttl SECONDS     Enrollment token lifetime (default: 900)
+  --ttl SECONDS     HTTPS bootstrap download lifetime (default: 900)
   --output FILE     Optional additional copy of the prepared executable
 
 Publish options:
@@ -130,49 +130,28 @@ create_agent() {
     exit 3
   fi
 
-  local enroll_token
-  enroll_token="$(openssl rand -hex 32)"
   local download_token
   download_token="$(openssl rand -hex 32)"
   local expires
   expires="$(( $(date +%s) + ttl ))"
 
-  install -d -m 0700 "${CONTROL_DIR}/enroll" "${CONTROL_DIR}/downloads" "${AGENTS_DIR}"
-  python3 - "${CONTROL_DIR}/enroll/${enroll_token}.json" "${name}" "${legacy_tunnel}" "${expires}" "${download_token}" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-value = {
-    "device": sys.argv[2],
-    "legacy_tunnel": sys.argv[3],
-    "expires": int(sys.argv[4]),
-    "download_token": sys.argv[5],
-}
-tmp = path.with_suffix(".tmp")
-tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
-PY
+  install -d -m 0700 "${CONTROL_DIR}/downloads" "${AGENTS_DIR}"
 
   local update_public
   update_public="$(base64 -w0 < "${CONTROL_DIR}/update-signing-public.pem")"
   local control_url="https://${CONTROL_HOST}:${CONTROL_PORT}"
 
   local json
-  json="$(python3 - "${name}" "${control_url}" "${enroll_token}" "${update_public}" "${legacy_tunnel}" <<'PY'
+  json="$(python3 - "${name}" "${control_url}" "${update_public}" "${legacy_tunnel}" <<'PY'
 import json
 import sys
 
 print(json.dumps({
-    "version": 2,
+    "version": 3,
     "device": sys.argv[1],
     "control_url": sys.argv[2],
-    "enroll_token": sys.argv[3],
-    "update_public_key": sys.argv[4],
-    "legacy_tunnel": sys.argv[5],
+    "update_public_key": sys.argv[3],
+    "legacy_tunnel": sys.argv[4],
 }, sort_keys=True, separators=(",", ":")))
 PY
 )"
@@ -187,7 +166,7 @@ PY
   tmp="$(mktemp "${device_dir}/.agent.XXXXXX")"
   cp "${generic}" "${tmp}"
   {
-    printf '\nBPC_AGENT_BOOTSTRAP_V2\n%s\nBPC_AGENT_BOOTSTRAP_END\n' "${encoded}"
+    printf '\nBPC_AGENT_BOOTSTRAP_V3\n%s\nBPC_AGENT_BOOTSTRAP_END\n' "${encoded}"
     printf '\nBPC_AGENT_WINTUN_V1\n'
     base64 -w0 < "${wintun}"
     printf '\nBPC_AGENT_WINTUN_END\n'
@@ -225,7 +204,7 @@ PY
   cat > "${device_dir}/info.txt" <<INFO
 Device: ${name}
 Control: ${control_url}
-Enrollment expires: ${expires}
+Bootstrap download expires: ${expires}
 Legacy tunnel: ${legacy_tunnel:-none}
 Prepared executable: ${prepared}
 Download URL: ${download_url}
@@ -237,19 +216,19 @@ Prepared BPC Windows agent created.
 
 Device: ${name}
 Control: ${control_url}
-Enrollment token lifetime: ${ttl}s
+Bootstrap download lifetime: ${ttl}s
 Legacy tunnel: ${legacy_tunnel:-none}
 File: ${prepared}
 Download URL:
   ${download_url}
 
-The HTTPS download link remains valid until the enrollment TTL expires and may
-be fetched more than once before registration. After successful enrollment the
-server removes the staged download automatically.
+The HTTPS download link remains valid until the bootstrap TTL expires. It carries
+no user password, access token, refresh credential, device private key, WGShim
+key or WireGuard private key.
 
-The enrollment token is one-time and is removed after successful registration.
-The prepared EXE does not contain the WGShim PSK; runtime secrets are delivered
-only after enrollment over the trusted HTTPS control plane.
+On first install BP Connect asks for the BPC username and password, generates
+the Device Ed25519 and WireGuard private keys locally, and sends only public
+keys plus proof-of-possession to the trusted HTTPS Controller.
 DONE
 }
 

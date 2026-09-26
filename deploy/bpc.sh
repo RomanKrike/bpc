@@ -4,6 +4,8 @@ set -euo pipefail
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 ENROLL="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
+IDENTITY="${BPC_ROOT}/current/deploy/bpc_identity.py"
+CONTROL_DIR="${BPC_STATE_DIR}/ru-node/control"
 
 usage() {
   cat <<'USAGE'
@@ -15,6 +17,10 @@ Usage:
   bpc node status
   bpc node token create --roles ROLE[,ROLE...] [--name NAME] [--expires 15m]
   bpc node list
+  bpc user add USER [--password-stdin]
+  bpc user disable USER
+  bpc device list
+  bpc device revoke DEVICE
 
 Compatibility:
   Existing standalone commands such as bpc-status, bpc-update and bpc-node
@@ -25,6 +31,13 @@ USAGE
 require_enrollment_helper() {
   if [[ ! -f "${ENROLL}" ]]; then
     echo "BPC Node enrollment helper is missing: ${ENROLL}" >&2
+    exit 3
+  fi
+}
+
+require_identity_helper() {
+  if [[ ! -f "${IDENTITY}" ]]; then
+    echo "BPC identity helper is missing: ${IDENTITY}" >&2
     exit 3
   fi
 }
@@ -78,6 +91,42 @@ case "${scope}" in
         ;;
       *)
         exec "${BPC_ROOT}/current/deploy/bpc-node.sh" "$@"
+        ;;
+    esac
+    ;;
+  user)
+    shift
+    require_identity_helper
+    case "${1:-}" in
+      add)
+        shift
+        exec python3 "${IDENTITY}" --state-dir "${CONTROL_DIR}" user-add "$@"
+        ;;
+      disable)
+        shift
+        exec python3 "${IDENTITY}" --state-dir "${CONTROL_DIR}" user-disable "$@"
+        ;;
+      *)
+        usage >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  device)
+    shift
+    require_identity_helper
+    case "${1:-}" in
+      list)
+        shift
+        exec python3 "${IDENTITY}" --state-dir "${CONTROL_DIR}" device-list "$@"
+        ;;
+      revoke)
+        shift
+        exec python3 "${IDENTITY}" --state-dir "${CONTROL_DIR}" device-revoke "$@"
+        ;;
+      *)
+        usage >&2
+        exit 2
         ;;
     esac
     ;;

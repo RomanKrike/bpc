@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestGenerateIdentity(t *testing.T) {
@@ -146,5 +147,69 @@ func TestValidateRuntimeConfigAdaptiveEndpointPool(t *testing.T) {
 	base.WGShimServer = base.WGShimServers[0]
 	if err := ValidateRuntimeConfig(base); err == nil {
 		t.Fatal("oversized endpoint pool was accepted")
+	}
+}
+
+func TestDeviceProofSigningBytes(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	privateB64 := base64.StdEncoding.EncodeToString(privateKey)
+	signing := RegistrationSigningBytes("access-token", "public-key", "wg-public-key")
+	signatureB64, err := SignDeviceProof(privateB64, signing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature, err := base64.StdEncoding.DecodeString(signatureB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.Verify(publicKey, signing, signature) {
+		t.Fatal("registration proof did not verify")
+	}
+
+	refresh := RefreshSigningBytes("refresh-token")
+	refreshSignatureB64, err := SignDeviceProof(privateB64, refresh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshSignature, err := base64.StdEncoding.DecodeString(refreshSignatureB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ed25519.Verify(publicKey, refresh, refreshSignature) {
+		t.Fatal("refresh proof did not verify")
+	}
+}
+
+func TestStateCredentialSelectionAndRefreshWindow(t *testing.T) {
+	now := time.Unix(1_000, 0)
+	state := State{
+		Version:         StateVersion,
+		AccessToken:     "access",
+		AccessExpiresAt: 1_200,
+		RefreshToken:    "refresh",
+	}
+	if got := state.ControlCredential(); got != "access" {
+		t.Fatalf("ControlCredential()=%q want access", got)
+	}
+	if state.NeedsRefresh(now) {
+		t.Fatal("fresh access token requested an early refresh")
+	}
+	state.AccessExpiresAt = 1_050
+	if !state.NeedsRefresh(now) {
+		t.Fatal("access token inside refresh window was not refreshed")
+	}
+
+	legacy := State{
+		Version:     LegacyStateVersion,
+		DeviceToken: "legacy-static-token",
+	}
+	if got := legacy.ControlCredential(); got != "legacy-static-token" {
+		t.Fatalf("legacy ControlCredential()=%q", got)
+	}
+	if legacy.NeedsRefresh(now) {
+		t.Fatal("legacy state without refresh token must not refresh")
 	}
 }

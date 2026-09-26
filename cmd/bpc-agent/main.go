@@ -22,11 +22,12 @@ import (
 )
 
 const (
-	version         = "0.14.2"
-	legacyTaskName  = "BPC Agent"
-	bootstrapStart  = "\nBPC_AGENT_BOOTSTRAP_V2\n"
-	bootstrapEnd    = "\nBPC_AGENT_BOOTSTRAP_END\n"
-	defaultLogEvery = 30 * time.Second
+	version              = "0.16.0"
+	legacyTaskName       = "BPC Agent"
+	bootstrapStart       = "\nBPC_AGENT_BOOTSTRAP_V3\n"
+	legacyBootstrapStart = "\nBPC_AGENT_BOOTSTRAP_V2\n"
+	bootstrapEnd         = "\nBPC_AGENT_BOOTSTRAP_END\n"
+	defaultLogEvery      = 30 * time.Second
 )
 
 type tunnelTelemetry struct {
@@ -203,7 +204,11 @@ func installAgent() error {
 	return nil
 }
 
-func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, statePath string) (*agentctl.State, error) {
+func enrollOrLoadState(
+	ctx context.Context,
+	bootstrap agentctl.Bootstrap,
+	statePath string,
+) (*agentctl.State, error) {
 	if state, err := agentctl.LoadState(statePath); err == nil {
 		return state, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -231,15 +236,84 @@ func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, stateP
 	if err != nil {
 		return nil, err
 	}
-	response, err := client.Enroll(ctx, agentctl.EnrollmentRequest{
-		Token:              bootstrap.EnrollToken,
-		Device:             bootstrap.Device,
-		PublicKey:          publicKey,
-		WireGuardPublicKey: wireGuardPublic,
-		Version:            version,
-	})
+
+	if bootstrap.Version == agentctl.LegacyBootstrapVersion {
+		response, err := client.Enroll(ctx, agentctl.EnrollmentRequest{
+			Token:              bootstrap.EnrollToken,
+			Device:             bootstrap.Device,
+			PublicKey:          publicKey,
+			WireGuardPublicKey: wireGuardPublic,
+			Version:            version,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := agentctl.ValidateRuntimeConfig(response.Config); err != nil {
+			return nil, err
+		}
+
+		wireGuardProfile := response.WireGuard
+		wireGuardProfile.PrivateKey = wireGuardPrivate
+		if err := agentctl.ValidateWireGuardProfile(wireGuardProfile); err != nil {
+			if legacyProfile.Complete() {
+				wireGuardProfile = legacyProfile
+			} else {
+				return nil, fmt.Errorf("provisioned WireGuard profile: %w", err)
+			}
+		}
+
+		state := &agentctl.State{
+			Version:      agentctl.StateVersion,
+			DeviceID:     response.DeviceID,
+			DeviceName:   bootstrap.Device,
+			DeviceToken:  response.DeviceToken,
+			PublicKey:    publicKey,
+			PrivateKey:   privateKey,
+			ControlURL:   bootstrap.ControlURL,
+			UpdatePubKey: bootstrap.UpdatePublicKey,
+			Config:       response.Config,
+			WireGuard:    wireGuardProfile,
+		}
+		if err := agentctl.SaveState(statePath, *state); err != nil {
+			return nil, err
+		}
+		return state, nil
+	}
+
+	username, password, err := readLoginCredentials()
 	if err != nil {
 		return nil, err
+	}
+	login, err := client.Login(ctx, username, password)
+	password = ""
+	if err != nil {
+		return nil, fmt.Errorf("user login: %w", err)
+	}
+
+	proof, err := agentctl.SignDeviceProof(
+		privateKey,
+		agentctl.RegistrationSigningBytes(
+			login.AccessToken,
+			publicKey,
+			wireGuardPublic,
+		),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("sign device registration: %w", err)
+	}
+	response, err := client.RegisterDevice(
+		ctx,
+		login.AccessToken,
+		agentctl.DeviceRegistrationRequest{
+			Name:               bootstrap.Device,
+			PublicKey:          publicKey,
+			WireGuardPublicKey: wireGuardPublic,
+			Version:            version,
+			Proof:              proof,
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("register device: %w", err)
 	}
 	if err := agentctl.ValidateRuntimeConfig(response.Config); err != nil {
 		return nil, err
@@ -256,16 +330,19 @@ func enrollOrLoadState(ctx context.Context, bootstrap agentctl.Bootstrap, stateP
 	}
 
 	state := &agentctl.State{
-		Version:      agentctl.StateVersion,
-		DeviceID:     response.DeviceID,
-		DeviceName:   bootstrap.Device,
-		DeviceToken:  response.DeviceToken,
-		PublicKey:    publicKey,
-		PrivateKey:   privateKey,
-		ControlURL:   bootstrap.ControlURL,
-		UpdatePubKey: bootstrap.UpdatePublicKey,
-		Config:       response.Config,
-		WireGuard:    wireGuardProfile,
+		Version:          agentctl.StateVersion,
+		DeviceID:         response.DeviceID,
+		DeviceName:       bootstrap.Device,
+		AccessToken:      response.AccessToken,
+		AccessExpiresAt:  response.AccessExpiresAt,
+		RefreshToken:     response.RefreshToken,
+		RefreshExpiresAt: response.RefreshExpiresAt,
+		PublicKey:        publicKey,
+		PrivateKey:       privateKey,
+		ControlURL:       bootstrap.ControlURL,
+		UpdatePubKey:     bootstrap.UpdatePublicKey,
+		Config:           response.Config,
+		WireGuard:        wireGuardProfile,
 	}
 	if err := agentctl.SaveState(statePath, *state); err != nil {
 		return nil, err
@@ -311,9 +388,12 @@ func runAgentContext(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	control, err := agentctl.NewClient(state.ControlURL, state.DeviceToken)
+	control, err := agentctl.NewClient(state.ControlURL, state.ControlCredential())
 	if err != nil {
 		return err
+	}
+	if err := ensureControlCredential(ctx, control, state, statePath); err != nil {
+		return fmt.Errorf("refresh access credential: %w", err)
 	}
 	if err := syncRuntimeState(ctx, control, state, statePath); err != nil {
 		logger.Printf("initial config sync failed: %v", err)
@@ -349,7 +429,9 @@ func runAgentContext(parent context.Context) error {
 			} else if state.Config.LegacyTunnel != "" {
 				status = "connected-legacy-wireguard"
 			}
-			if err := control.Heartbeat(ctx, agentctl.HeartbeatRequest{
+			if err := ensureControlCredential(ctx, control, state, statePath); err != nil {
+				logger.Printf("credential refresh failed: %v", err)
+			} else if err := control.Heartbeat(ctx, agentctl.HeartbeatRequest{
 				Version:   version,
 				Transport: transport,
 				Status:    status,
@@ -357,6 +439,10 @@ func runAgentContext(parent context.Context) error {
 				logger.Printf("heartbeat failed: %v", err)
 			}
 		case <-updateDelay.C:
+			if err := ensureControlCredential(ctx, control, state, statePath); err != nil {
+				logger.Printf("credential refresh failed: %v", err)
+				continue
+			}
 			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
@@ -366,6 +452,10 @@ func runAgentContext(parent context.Context) error {
 				return nil
 			}
 		case <-updateTicker.C:
+			if err := ensureControlCredential(ctx, control, state, statePath); err != nil {
+				logger.Printf("credential refresh failed: %v", err)
+				continue
+			}
 			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
@@ -381,12 +471,54 @@ func runAgentContext(parent context.Context) error {
 	}
 }
 
+func ensureControlCredential(
+	ctx context.Context,
+	control *agentctl.Client,
+	state *agentctl.State,
+	statePath string,
+) error {
+	if strings.TrimSpace(state.RefreshToken) == "" {
+		control.Token = state.ControlCredential()
+		return nil
+	}
+	if !state.NeedsRefresh(time.Now()) {
+		control.Token = state.AccessToken
+		return nil
+	}
+
+	proof, err := agentctl.SignDeviceProof(
+		state.PrivateKey,
+		agentctl.RefreshSigningBytes(state.RefreshToken),
+	)
+	if err != nil {
+		return err
+	}
+	response, err := control.Refresh(ctx, state.RefreshToken, proof)
+	if err != nil {
+		return err
+	}
+	if response.DeviceID != "" && response.DeviceID != state.DeviceID {
+		return errors.New("controller returned refresh credentials for another device")
+	}
+	state.Version = agentctl.StateVersion
+	state.AccessToken = response.AccessToken
+	state.AccessExpiresAt = response.AccessExpiresAt
+	state.RefreshToken = response.RefreshToken
+	state.RefreshExpiresAt = response.RefreshExpiresAt
+	state.DeviceToken = ""
+	control.Token = response.AccessToken
+	return agentctl.SaveState(statePath, *state)
+}
+
 func syncRuntimeState(
 	ctx context.Context,
 	control *agentctl.Client,
 	state *agentctl.State,
 	statePath string,
 ) error {
+	if err := ensureControlCredential(ctx, control, state, statePath); err != nil {
+		return err
+	}
 	cfg, err := control.FetchConfig(ctx)
 	if err != nil {
 		return err
@@ -694,9 +826,12 @@ func updateNow() error {
 	if err != nil {
 		return err
 	}
-	control, err := agentctl.NewClient(state.ControlURL, state.DeviceToken)
+	control, err := agentctl.NewClient(state.ControlURL, state.ControlCredential())
 	if err != nil {
 		return err
+	}
+	if err := ensureControlCredential(context.Background(), control, state, statePath); err != nil {
+		return fmt.Errorf("refresh access credential: %w", err)
 	}
 	logger := log.New(os.Stderr, "bpc-agent ", log.LstdFlags)
 	updated, err := checkAndStageUpdate(context.Background(), control, state, logger, true)
@@ -992,11 +1127,17 @@ func loadBootstrap() (*agentctl.Bootstrap, error) {
 }
 
 func parseBootstrapBytes(data []byte) (*agentctl.Bootstrap, error) {
-	start := bytes.LastIndex(data, []byte(bootstrapStart))
+	marker := bootstrapStart
+	start := bytes.LastIndex(data, []byte(marker))
+	legacyStart := bytes.LastIndex(data, []byte(legacyBootstrapStart))
+	if legacyStart > start {
+		start = legacyStart
+		marker = legacyBootstrapStart
+	}
 	if start < 0 {
 		return nil, errors.New("this is a generic BPC Agent binary; create a prepared client with bpc-agent create on the VPS")
 	}
-	start += len(bootstrapStart)
+	start += len(marker)
 	endRel := bytes.Index(data[start:], []byte(bootstrapEnd))
 	if endRel < 0 {
 		return nil, errors.New("embedded bootstrap footer is missing")

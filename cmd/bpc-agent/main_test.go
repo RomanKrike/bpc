@@ -88,3 +88,51 @@ func TestGenericBinaryRejected(t *testing.T) {
 		t.Fatalf("expected generic binary error, got %v", err)
 	}
 }
+
+func TestPreparedBootstrapV3NeedsNoEnrollmentSecret(t *testing.T) {
+	cfg := testBootstrap(t, "pc004")
+	cfg.EnrollToken = ""
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	data := []byte("MZfake-pe-data" + bootstrapStart + encoded + bootstrapEnd)
+
+	got, err := parseBootstrapBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != agentctl.BootstrapVersion {
+		t.Fatalf("unexpected bootstrap version %d", got.Version)
+	}
+	if got.EnrollToken != "" {
+		t.Fatal("Stage 3 prepared bootstrap unexpectedly contains enrollment secret")
+	}
+	if err := agentctl.ValidateBootstrap(*got); err != nil {
+		t.Fatalf("valid Stage 3 bootstrap rejected: %v", err)
+	}
+}
+
+func TestLegacyBootstrapV2StillParses(t *testing.T) {
+	cfg := testBootstrap(t, "legacy-pc")
+	cfg.Version = agentctl.LegacyBootstrapVersion
+	cfg.EnrollToken = strings.Repeat("b", 64)
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := base64.StdEncoding.EncodeToString(raw)
+	data := []byte("MZfake-pe-data" + legacyBootstrapStart + encoded + bootstrapEnd)
+
+	got, err := parseBootstrapBytes(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Version != agentctl.LegacyBootstrapVersion || got.EnrollToken != cfg.EnrollToken {
+		t.Fatalf("unexpected legacy bootstrap: %#v", got)
+	}
+	if err := agentctl.ValidateBootstrap(*got); err != nil {
+		t.Fatalf("legacy bootstrap rejected: %v", err)
+	}
+}

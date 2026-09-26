@@ -85,6 +85,33 @@ Join tokens are single-use, expiring and capability-scoped. See
 [docs/node-join.md](docs/node-join.md) for the enrollment protocol, filesystem
 permissions, replay/duplicate-identity protection and Stage 2 boundaries.
 
+## User and Device identity
+
+Stage 3 adds controller-owned User authentication and per-device identity for
+BP Connect. User passwords are Argon2id hashes and are never transport keys.
+New clients generate their Ed25519 Device private key locally and register only
+the public key after password login.
+
+Controller administration:
+
+~~~bash
+bpc user add roman
+bpc user disable roman
+bpc device list
+bpc device revoke <DEVICE_ID_OR_UNIQUE_NAME>
+~~~
+
+New prepared Windows clients contain no password or enrollment secret. On first
+install they prompt for the BPC username/password, register the local Device,
+then use 10-minute access credentials plus rotating, device-key-bound refresh
+credentials so the password is not required on every connection.
+
+Device revoke also removes the WireGuard peer and WGShim key, so a revoked
+Device loses both control-plane authorization and the data-plane path.
+
+See [docs/identity.md](docs/identity.md) for the API, credential lifecycle,
+compatibility behavior and future TOTP/Passkey/OIDC extension points.
+
 ## RU node network layout
 
 ```text

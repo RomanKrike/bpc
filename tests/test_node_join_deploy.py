@@ -62,6 +62,7 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
     (runtime / "src").mkdir(parents=True)
     shutil.copy(ROOT / "deploy" / "bpc-control-server.py", runtime / "bpc-control-server.py")
     shutil.copy(ROOT / "deploy" / "bpc_node_enrollment.py", runtime / "bpc_node_enrollment.py")
+    shutil.copy(ROOT / "deploy" / "bpc_identity.py", runtime / "bpc_identity.py")
     shutil.copytree(ROOT / "src" / "bpc_connect", runtime / "src" / "bpc_connect")
 
     completed = subprocess.run(
