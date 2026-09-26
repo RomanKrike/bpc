@@ -223,6 +223,5 @@ Usage:
 
 Clients listen on 127.0.0.1:24081 by default. Point the normal WireGuard peer
 Endpoint at that address. client-auto measures authenticated UDP and TCP probes
-and selects the lower-latency reachable outer transport while keeping WireGuard
-itself unchanged.`)
+and selects the lower-latency reachable outer transport. No WireGuard cryptography is modified.`)
 }
