@@ -12,6 +12,7 @@ Usage:
   bpc-node gateway create NAME --route CIDR [--route CIDR ...] [--grant DEVICE ...] [--output FILE]
   bpc-node gateway grant NAME DEVICE [DEVICE ...]
   bpc-node gateway ungrant NAME DEVICE [DEVICE ...]
+  bpc-node gateway link NAME [--ttl SECONDS]
   bpc-node gateway list
   bpc-node gateway remove NAME
 
@@ -407,6 +408,136 @@ print(f"Updated {updated} device(s). Routes apply within the next Agent config s
 PY
 }
 
+gateway_link() {
+  local name="${1:-}"
+  shift || true
+  if ! validate_name "${name}"; then
+    echo "Usage: bpc-node gateway link NAME [--ttl SECONDS]" >&2
+    exit 2
+  fi
+
+  local ttl="900"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ttl)
+        [[ $# -ge 2 ]] || { echo "--ttl requires SECONDS" >&2; exit 2; }
+        ttl="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown gateway link option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+  if ! [[ "${ttl}" =~ ^[0-9]+$ ]] || (( ttl < 60 || ttl > 86400 )); then
+    echo "--ttl must be between 60 and 86400 seconds" >&2
+    exit 2
+  fi
+
+  require_control
+  if [[ ! -s "${CONTROL_DIR}/runtime.env" ]]; then
+    echo "BPC control runtime is missing: ${CONTROL_DIR}/runtime.env" >&2
+    exit 3
+  fi
+  # shellcheck disable=SC1090,SC1091
+  source "${CONTROL_DIR}/runtime.env"
+
+  local staged
+  staged="$(python3 - "${CONTROL_DIR}" "${name}" "${ttl}" <<'PY'
+import json
+import os
+import secrets
+import sys
+import time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+name = sys.argv[2]
+ttl = int(sys.argv[3])
+
+def load(path: Path) -> dict:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise SystemExit(f"{path} does not contain a JSON object")
+    return value
+
+active = []
+for path in sorted((root / "devices").glob("*.json")):
+    try:
+        value = load(path)
+    except Exception:
+        continue
+    if (
+        value.get("device") == name
+        and value.get("role") == "gateway"
+        and not bool(value.get("revoked", False))
+    ):
+        active.append(value)
+if len(active) != 1:
+    raise SystemExit(f"Expected one active BP Gateway named {name!r}")
+
+installer = root / "nodes" / name / "install.sh"
+if not installer.is_file() or installer.stat().st_size <= 0:
+    raise SystemExit(f"BP Gateway installer is missing: {installer}")
+
+downloads = root / "downloads"
+downloads.mkdir(parents=True, exist_ok=True, mode=0o700)
+token = secrets.token_hex(32)
+expires = int(time.time()) + ttl
+filename = f"bp-gateway-{name}.sh"
+
+staged_path = downloads / f"{token}.sh"
+tmp = downloads / f".{token}.{secrets.token_hex(4)}.tmp"
+tmp.write_bytes(installer.read_bytes())
+os.chmod(tmp, 0o600)
+os.replace(tmp, staged_path)
+
+metadata = {
+    "gateway": name,
+    "filename": filename,
+    "expires": expires,
+    "one_time": True,
+    "content_type": "text/x-shellscript; charset=utf-8",
+}
+meta = downloads / f"{token}.json"
+meta_tmp = downloads / f".{token}.{secrets.token_hex(4)}.json.tmp"
+meta_tmp.write_text(
+    json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+    encoding="utf-8",
+)
+os.chmod(meta_tmp, 0o600)
+os.replace(meta_tmp, meta)
+
+print(token)
+print(expires)
+print(filename)
+PY
+)"
+
+  local -a staged_fields
+  mapfile -t staged_fields <<< "${staged}"
+  local token="${staged_fields[0]:-}"
+  local expires="${staged_fields[1]:-}"
+  local filename="${staged_fields[2]:-}"
+  if [[ -z "${token}" || -z "${expires}" || -z "${filename}" ]]; then
+    echo "Failed to stage BP Gateway installer" >&2
+    exit 5
+  fi
+  local control_url="https://${CONTROL_HOST}:${CONTROL_PORT}"
+
+  cat <<DONE
+BP Gateway installer link created.
+
+Gateway: ${name}
+Expires: ${expires}
+One-time download URL:
+  ${control_url}/v1/bootstrap/${token}/${filename}
+
+The URL is removed after the first successful download or when it expires.
+Create a new link with the same command if the download is interrupted.
+DONE
+}
 gateway_list() {
   require_control
   python3 - "${CONTROL_DIR}" <<'PY'
@@ -533,6 +664,10 @@ case "${command}" in
   grant|ungrant)
     shift 2
     gateway_access "${command}" "$@"
+    ;;
+  link)
+    shift 2
+    gateway_link "$@"
     ;;
   list)
     shift 2

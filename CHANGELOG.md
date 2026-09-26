@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.13.1
+
+### Added
+- `bpc-node gateway link NAME` creates a short-lived, one-time HTTPS download URL for an existing BP Gateway installer.
+- Gateway installers can now be downloaded through the existing TLS control endpoint instead of being copied with SCP.
+
+### Security
+- Gateway download URLs use a 256-bit random token, are served with `Cache-Control: no-store`, expire by default after 15 minutes, and are deleted after the first successful download.
+
 ## 0.13.0
 
 ### Added
