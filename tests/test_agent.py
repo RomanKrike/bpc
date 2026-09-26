@@ -399,3 +399,9 @@ def test_windows_client_uses_bp_connect_branding() -> None:
     assert "$form.Text = 'BP Connect'" in UI
     assert "$tray.Text = 'BP Connect'" in UI
     assert "Open BP Connect" in UI
+
+
+def test_bp_gateway_firewall_uses_valid_lan_interface() -> None:
+    assert "BP_GATEWAY_LAN_INTEFACE" not in GATEWAY_TEMPLATE
+    assert 'iptables -C FORWARD -i "${BP_GATEWAY_LAN_INTERFACE}"' in GATEWAY_TEMPLATE
+    assert 'iptables -I FORWARD 1 -i "${BP_GATEWAY_LAN_INTERFACE}"' in GATEWAY_TEMPLATE
