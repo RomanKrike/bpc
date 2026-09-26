@@ -20,6 +20,12 @@
 - Refresh rotation detects reuse of an already consumed credential and revokes the refresh family.
 - Gateway transport services do not receive or consume the User password database.
 
+## 0.15.1
+
+### Fixed
+- Run `bpc-control-server.py` from the active release tree instead of copying it into control state, so the Stage 2 `bpc_node_enrollment` module, Stage 3 `bpc_identity` module, and `bpc_connect` package resolve correctly during upgrade.
+- Preserve atomic updater rollback behavior: the control-plane executable follows `/opt/bpc/current`, so switching the release symlink also switches the matching Python module set.
+
 ## 0.15.0
 
 ### Added
