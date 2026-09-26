@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.16.2
+
+### Added
+- Adaptive WGShim source-flow pools for BP Gateway: multiple independent UDP sockets and TCP connections are probed concurrently and the healthiest concrete flow carries WireGuard.
+- Per-flow telemetry logs the selected transport, relay endpoint, local source socket, median authenticated-probe RTT, reply count and reachable-flow count.
+
+### Changed
+- New and upgraded BP Gateways use six UDP source flows and two TCP source flows by default while preserving the existing relay endpoints, WireGuard keys and split-tunnel routing.
+- Flow selection prefers complete probe reply sets, uses median RTT and 5 ms switching hysteresis, and keeps the current flow when competing paths are effectively equivalent.
+
+### Fixed
+- Avoid persistent 35-40 ms ECMP detours observed when a single gateway UDP/TCP socket happened to receive an unfavorable source-port path; BP Gateway can now select another already-open source flow without restarting WireGuard.
+
 ## 0.16.1
 
 ### Changed
