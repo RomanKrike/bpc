@@ -30,6 +30,18 @@ require_enrollment_helper() {
 }
 
 scope="${1:-}"
+
+# All Node management commands touch root-owned state or systemd. Preserve the
+# target UX ("bpc join ...") by elevating once here rather than requiring the
+# user to remember which subcommands need sudo.
+if [[ ${EUID} -ne 0 && -n "${scope}" && "${scope}" != "-h" && "${scope}" != "--help" && "${scope}" != "help" ]]; then
+  if command -v sudo >/dev/null 2>&1; then
+    exec sudo "$0" "$@"
+  fi
+  echo "BPC Node management requires root privileges and sudo is unavailable." >&2
+  exit 1
+fi
+
 case "${scope}" in
   join)
     require_enrollment_helper
