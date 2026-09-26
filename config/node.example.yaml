@@ -1,0 +1,14 @@
+version: 1
+
+node:
+  id: 7e41a8b74a2a4e82a3f7f48353de9a01
+  name: ru-01
+  public_key: ""
+  created_at: 0
+  last_seen: 0
+
+roles:
+  controller: true
+  gateway: true
+  relay: true
+  site_router: false
