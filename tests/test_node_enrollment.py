@@ -253,3 +253,27 @@ def test_repeated_join_is_safe_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
     assert (tmp_path / "enrollment.json").read_bytes() == before
     assert reconciled == [{"gateway": True, "relay": True}]
+
+
+def test_staged_node_runtime_is_self_contained(tmp_path: Path) -> None:
+    runtime = enrollment.stage_node_runtime(tmp_path)
+
+    assert runtime.is_symlink()
+    assert (runtime / "VERSION").is_file()
+    assert (runtime / "deploy" / "bpc_node_enrollment.py").is_file()
+    assert (runtime / "src" / "bpc_connect" / "node.py").is_file()
+
+    import subprocess
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(runtime / "deploy" / "bpc_node_enrollment.py"),
+            "--help",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "BPC Node enrollment" in completed.stdout
