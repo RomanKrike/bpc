@@ -8,7 +8,8 @@ import sys
 import threading
 from pathlib import Path
 
-from cryptography.hazmat.primitives import serialization\nfrom cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = Path(__file__).parents[1]
 DEPLOY = ROOT / "deploy"
