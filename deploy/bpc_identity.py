@@ -596,17 +596,18 @@ def resolve_device(root: Path, identifier: str) -> dict[str, Any]:
 
 def _remove_device_dataplane(root: Path, device: dict[str, Any]) -> None:
     device_id = str(device.get("id", device.get("device_id", "")))
-    if device_id:
-        (root.parent / "agent" / "wgshim-keys" / f"{device_id}.key").unlink(missing_ok=True)
     public_key = str(device.get("wireguard_public_key", "")).strip()
-    if not public_key:
-        return
     try:
         config = read_json(root / "config.json")
-        interface = str(config.get("wireguard_interface", "")).strip()
     except (OSError, ValueError, json.JSONDecodeError):
-        return
-    if not interface:
+        config = {}
+
+    key_dir = Path(str(config.get("wgshim_key_dir", "")).strip())
+    if device_id and str(key_dir):
+        (key_dir / f"{device_id}.key").unlink(missing_ok=True)
+
+    interface = str(config.get("wireguard_interface", "")).strip()
+    if not public_key or not interface:
         return
     subprocess.run(
         ["wg", "set", interface, "peer", public_key, "remove"],
