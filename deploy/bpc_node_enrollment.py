@@ -19,8 +19,14 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "src"))
+MODULE_DIR = Path(__file__).resolve().parent
+SOURCE_ROOTS = (MODULE_DIR / "src", MODULE_DIR.parent / "src")
+for source_root in SOURCE_ROOTS:
+    if (source_root / "bpc_connect").is_dir():
+        sys.path.insert(0, str(source_root))
+        break
+else:
+    sys.path.insert(0, str(MODULE_DIR.parent / "src"))
 
 from bpc_connect.node import (  # noqa: E402
     Capabilities,
