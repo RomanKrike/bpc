@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from argon2 import PasswordHasher, Type
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from argon2.exceptions import VerificationError
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
@@ -182,7 +182,7 @@ def authenticate_local_user(root: Path, username: str, password: str) -> dict[st
     ok = False
     try:
         ok = PASSWORD_HASHER.verify(encoded, password)
-    except (VerifyMismatchError, InvalidHashError, ValueError):
+    except (VerificationError, ValueError):
         ok = False
     if not user or not bool(user.get("enabled", False)) or not ok:
         raise IdentityError("invalid username or password", 401)
