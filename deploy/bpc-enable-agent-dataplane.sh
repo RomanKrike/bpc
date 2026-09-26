@@ -24,9 +24,11 @@ fi
 
 existing_wgshim_port=""
 existing_wgshim_ports=""
+existing_wgshim_tcp_port=""
 if [[ -s "${AGENT_DIR}/runtime.env" ]]; then
   existing_wgshim_port="$(sed -n 's/^AGENT_WGSHIM_PORT=//p' "${AGENT_DIR}/runtime.env" | head -n1)"
   existing_wgshim_ports="$(sed -n 's/^AGENT_WGSHIM_PORTS=//p' "${AGENT_DIR}/runtime.env" | head -n1)"
+  existing_wgshim_tcp_port="$(sed -n 's/^AGENT_WGSHIM_TCP_PORT=//p' "${AGENT_DIR}/runtime.env" | head -n1)"
 fi
 
 WGSHIM_PORT="${BPC_AGENT_WGSHIM_PORT:-${existing_wgshim_port:-24444}}"
@@ -181,6 +183,42 @@ fi
 
 WGSHIM_PORT="${wgshim_ports[0]}"
 WGSHIM_PORTS="$(IFS=,; echo "${wgshim_ports[*]}")"
+
+tcp_port_available_for_agent() {
+  local port="$1"
+  local listener
+  listener="$(ss -H -ltnp "sport = :${port}" 2>/dev/null || true)"
+  [[ -z "${listener}" ]] || grep -Fq 'bpc-agent-relay' <<< "${listener}"
+}
+
+WGSHIM_TCP_PORT_EXPLICIT="false"
+if [[ -n "${BPC_AGENT_WGSHIM_TCP_PORT:-}" ]]; then
+  WGSHIM_TCP_PORT_EXPLICIT="true"
+fi
+WGSHIM_TCP_PORT="${BPC_AGENT_WGSHIM_TCP_PORT:-${existing_wgshim_tcp_port:-${WGSHIM_PORT}}}"
+if ! [[ "${WGSHIM_TCP_PORT}" =~ ^[0-9]+$ ]] || (( WGSHIM_TCP_PORT < 1024 || WGSHIM_TCP_PORT > 65535 )); then
+  echo "BPC Agent WGShim TCP port must be between 1024 and 65535" >&2
+  exit 2
+fi
+if ! tcp_port_available_for_agent "${WGSHIM_TCP_PORT}"; then
+  if [[ "${WGSHIM_TCP_PORT_EXPLICIT}" == "true" || -n "${existing_wgshim_tcp_port}" ]]; then
+    echo "BPC Agent relay TCP port ${WGSHIM_TCP_PORT} is already in use" >&2
+    exit 4
+  fi
+  selected_tcp_port=""
+  for candidate in "${wgshim_ports[@]}" $(seq 24444 24544); do
+    if tcp_port_available_for_agent "${candidate}"; then
+      selected_tcp_port="${candidate}"
+      break
+    fi
+  done
+  if [[ -z "${selected_tcp_port}" ]]; then
+    echo "Unable to find a free TCP port for the BPC Agent relay" >&2
+    exit 4
+  fi
+  WGSHIM_TCP_PORT="${selected_tcp_port}"
+fi
+
 relay_listeners=""
 for port in "${wgshim_ports[@]}"; do
   if [[ -n "${relay_listeners}" ]]; then
@@ -221,6 +259,7 @@ AGENT_WG_KEEPALIVE=${WG_KEEPALIVE}
 AGENT_WG_ALLOWED_IPS=${WG_ALLOWED_IPS}
 AGENT_WGSHIM_PORT=${WGSHIM_PORT}
 AGENT_WGSHIM_PORTS=${WGSHIM_PORTS}
+AGENT_WGSHIM_TCP_PORT=${WGSHIM_TCP_PORT}
 AGENT_WGSHIM_LOCAL_PORT=${WGSHIM_LOCAL_PORT}
 AGENT_WGSHIM_PADDING_MIN=${WGSHIM_PADDING_MIN}
 AGENT_WGSHIM_PADDING_MAX=${WGSHIM_PADDING_MAX}
@@ -314,7 +353,7 @@ Requires=wg-quick@${WG_INTERFACE}.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bpc-agent-relay --listen ${relay_listeners} --target 127.0.0.1:${WG_PORT} --key-dir ${KEY_DIR} --padding-min ${WGSHIM_PADDING_MIN} --padding-max ${WGSHIM_PADDING_MAX}
+ExecStart=/usr/local/bin/bpc-agent-relay --listen ${relay_listeners} --listen-tcp 0.0.0.0:${WGSHIM_TCP_PORT} --target 127.0.0.1:${WG_PORT} --key-dir ${KEY_DIR} --padding-min ${WGSHIM_PADDING_MIN} --padding-max ${WGSHIM_PADDING_MAX}
 Restart=always
 RestartSec=1
 NoNewPrivileges=true
@@ -362,6 +401,9 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
         break
       fi
     done
+    if [[ "${all_ports_ready}" == "true" ]] &&       ! ss -H -ltnp "sport = :${WGSHIM_TCP_PORT}" 2>/dev/null | grep -Fq "pid=${relay_pid},"; then
+      all_ports_ready="false"
+    fi
   fi
   if [[ "${all_ports_ready}" == "true" ]]; then
     relay_ready="true"
@@ -373,7 +415,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.25
 done
 if [[ "${relay_ready}" != "true" ]]; then
-  echo "BPC agent relay did not become ready on UDP pool ${WGSHIM_PORTS}" >&2
+  echo "BPC agent relay did not become ready on UDP pool ${WGSHIM_PORTS} and TCP/${WGSHIM_TCP_PORT}" >&2
   systemctl status bpc-agent-relay.service --no-pager >&2 || true
   journalctl -u bpc-agent-relay.service -n 30 --no-pager >&2 || true
   exit 5
@@ -384,11 +426,11 @@ chmod 0600 "${AGENT_DIR}/enabled"
 cat <<DONE
 BPC Agent data plane is active.
 
-Public relay pool: ${BPC_RU_HOST} UDP ports ${WGSHIM_PORTS}
+Public relay pool: ${BPC_RU_HOST} UDP ports ${WGSHIM_PORTS}; TCP port ${WGSHIM_TCP_PORT}
 Internal WireGuard: ${WG_INTERFACE} ${WG_SERVER_ADDRESS} on loopback UDP/${WG_PORT}
 Device subnet: ${WG_SUBNET}
 Device key directory: ${KEY_DIR}
 
-Allow inbound UDP ports ${WGSHIM_PORTS} in the VPS provider firewall.
+Allow inbound UDP ports ${WGSHIM_PORTS} and TCP/${WGSHIM_TCP_PORT} in the VPS provider firewall.
 Do not expose UDP/${WG_PORT}; BPC blocks it outside loopback.
 DONE
