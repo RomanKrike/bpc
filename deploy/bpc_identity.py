@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
 import getpass
 import hashlib
 import json
@@ -119,12 +120,11 @@ def _refresh(root: Path) -> Path:
 
 
 def ensure_identity_dirs(root: Path) -> None:
-    for path in (_users(root), _usernames(root), _access(root), _refresh(root), root / "devices"):
+    paths = (_users(root), _usernames(root), _access(root), _refresh(root), root / "devices")
+    for path in paths:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
-        try:
+        with contextlib.suppress(OSError):
             os.chmod(path, 0o700)
-        except OSError:
-            pass
 
 
 def create_user(root: Path, username: str, password: str, now: int | None = None) -> dict[str, Any]:
