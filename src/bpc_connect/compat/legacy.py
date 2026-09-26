@@ -65,12 +65,12 @@ def controller_state_dir(state_dir: str | Path) -> Path:
     return legacy_control_dir(state_dir)
 
 
-def is_legacy_site_router(device: dict[str, Any]) -> bool:
+def is_compat_site_router(device: dict[str, Any]) -> bool:
     return str(device.get("role", "")) == LEGACY_DEVICE_SITE_ROUTER_ROLE
 
 
-def legacy_site_router_routes(device: dict[str, Any]) -> list[str]:
-    if not is_legacy_site_router(device):
+def compat_site_routes(device: dict[str, Any]) -> list[str]:
+    if not is_compat_site_router(device):
         return []
     raw = device.get("advertised_routes", [])
     if not isinstance(raw, list):
@@ -86,14 +86,14 @@ def legacy_site_router_routes(device: dict[str, Any]) -> list[str]:
     return routes
 
 
-def legacy_managed_routes(device: dict[str, Any]) -> list[str]:
+def compat_route_grants(device: dict[str, Any]) -> list[str]:
     raw = device.get("managed_routes", [])
     if not isinstance(raw, list):
         return []
     return [str(value) for value in raw]
 
 
-def apply_legacy_tunnel(device: dict[str, Any], config: dict[str, Any]) -> None:
+def apply_compat_transport_hint(device: dict[str, Any], config: dict[str, Any]) -> None:
     value = str(device.get("legacy_tunnel", "")).strip()
     if value:
         config["legacy_tunnel"] = value
