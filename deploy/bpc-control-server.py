@@ -33,7 +33,9 @@ from bpc_identity import (
     revoke_device_credentials,
     verify_device_proof,
 )
-
+from bpc_identity import credential_index as identity_credential_index
+from bpc_identity import list_devices as identity_list_devices
+from bpc_identity import load_device as identity_load_device
 from bpc_node_enrollment import (
     EnrollmentError,
     enroll_node,
