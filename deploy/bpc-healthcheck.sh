@@ -27,6 +27,18 @@ service_owns_udp_port() {
   ss -H -lunp "sport = :${port}" 2>/dev/null | grep -Fq "pid=${pid},"
 }
 
+service_owns_tcp_port() {
+  local service="$1"
+  local port="$2"
+  local pid
+
+  pid="$(systemctl show -p MainPID --value "${service}" 2>/dev/null || true)"
+  if ! [[ "${pid}" =~ ^[1-9][0-9]*$ ]]; then
+    return 1
+  fi
+  ss -H -ltnp "sport = :${port}" 2>/dev/null | grep -Fq "pid=${pid},"
+}
+
 check_awg() {
   local awg_dir="${BPC_STATE_DIR}/ru-node/awg"
   local runtime_env="${awg_dir}/runtime.env"
@@ -312,6 +324,15 @@ check_agent_dataplane() {
       return 1
     fi
   done
+  tcp_port="${AGENT_WGSHIM_TCP_PORT:-${AGENT_WGSHIM_PORT}}"
+  if ! [[ "${tcp_port}" =~ ^[0-9]+$ ]]; then
+    fail_health "BPC Agent relay contains invalid TCP port metadata: ${tcp_port}"
+    return 1
+  fi
+  if ! service_owns_tcp_port bpc-agent-relay.service "${tcp_port}"; then
+    fail_health "BPC Agent relay service does not own advertised TCP/${tcp_port}"
+    return 1
+  fi
 }
 
 check_subscription() {
