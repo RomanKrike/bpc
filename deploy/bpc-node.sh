@@ -12,6 +12,7 @@ Usage:
   bpc-node gateway create NAME --route CIDR [--route CIDR ...] [--grant DEVICE ...] [--output FILE]
   bpc-node gateway grant NAME DEVICE [DEVICE ...]
   bpc-node gateway ungrant NAME DEVICE [DEVICE ...]
+  bpc-node gateway link NAME [--ttl SECONDS]
   bpc-node gateway list
   bpc-node gateway remove NAME
 
@@ -405,6 +406,276 @@ for device_name in names:
 
 print(f"Updated {updated} device(s). Routes apply within the next Agent config sync.")
 PY
+}
+
+gateway_link() {
+  local name="${1:-}"
+  shift || true
+  if ! validate_name "${name}"; then
+    echo "Usage: bpc-node gateway link NAME [--ttl SECONDS]" >&2
+    exit 2
+  fi
+
+  local ttl="900"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ttl)
+        [[ $# -ge 2 ]] || { echo "--ttl requires SECONDS" >&2; exit 2; }
+        ttl="$2"
+        shift 2
+        ;;
+      *)
+        echo "Unknown gateway link option: $1" >&2
+        exit 2
+        ;;
+    esac
+  done
+  if ! [[ "${ttl}" =~ ^[0-9]+$ ]] || (( ttl < 60 || ttl > 86400 )); then
+    echo "--ttl must be between 60 and 86400 seconds" >&2
+    exit 2
+  fi
+
+  require_control
+  if [[ ! -s "${CONTROL_DIR}/runtime.env" ]]; then
+    echo "BPC control runtime is missing: ${CONTROL_DIR}/runtime.env" >&2
+    exit 3
+  fi
+  # shellcheck disable=SC1090,SC1091
+  source "${CONTROL_DIR}/runtime.env"
+
+  local staged
+  staged="$(python3 - "${CONTROL_DIR}" "${name}" "${ttl}" <<'PY'
+import json
+import os
+import secrets
+import sys
+import time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+name = sys.argv[2]
+ttl = int(sys.argv[3])
+
+def load(path: Path) -> dict:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise SystemExit(f"{path} does not contain a JSON object")
+    return value
+
+active = []
+for path in sorted((root / "devices").glob("*.json")):
+    try:
+        value = load(path)
+    except Exception:
+        continue
+    if (
+        value.get("device") == name
+        and value.get("role") == "gateway"
+        and not bool(value.get("revoked", False))
+    ):
+        active.append(value)
+if len(active) != 1:
+    raise SystemExit(f"Expected one active BP Gateway named {name!r}")
+
+installer = root / "nodes" / name / "install.sh"
+if not installer.is_file() or installer.stat().st_size <= 0:
+    raise SystemExit(f"BP Gateway installer is missing: {installer}")
+
+downloads = root / "downloads"
+downloads.mkdir(parents=True, exist_ok=True, mode=0o700)
+token = secrets.token_hex(32)
+expires = int(time.time()) + ttl
+filename = f"bp-gateway-{name}.sh"
+
+staged = downloads / f"{token}.sh"
+tmp = downloads / f".{token}.{secrets.token_hex(4)}.tmp"
+tmp.write_bytes(installer.read_bytes())
+os.chmod(tmp, 0o600)
+os.replace(tmp, staged)
+
+metadata = {
+    "gateway": name,
+    "filename": filename,
+    "expires": expires,
+    "one_time": True,
+    "content_type": "text/x-shellscript; charset=utf-8",
+}
+meta = downloads / f"{token}.json"
+meta_tmp = downloads / f".{token}.{secrets.token_hex(4)}.json.tmp"
+meta_tmp.write_text(
+    json.dumps(metadata, sort_keys=True, separators=(",", ":")),
+    encoding="utf-8",
+)
+os.chmod(meta_tmp, 0o600)
+os.replace(meta_tmp, meta)
+
+print(f"{token}\t{expires}\t{filename}")
+PY
+)"
+
+  local token expires filename control_url
+  IFS=  require_control
+  python3 - "${CONTROL_DIR}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+found = False
+for path in sorted((root / "devices").glob("*.json")):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        continue
+    if value.get("role") != "gateway":
+        continue
+    found = True
+    print(
+        f"{value.get('device', '?')}: "
+        f"address={value.get('wireguard_address', '?')} "
+        f"revoked={bool(value.get('revoked', False))} "
+        f"routes={','.join(map(str, value.get('advertised_routes', []))) or '-'}"
+    )
+if not found:
+    print("No BP Gateway nodes.")
+PY
+}
+
+gateway_remove() {
+  local name="${1:-}"
+  if ! validate_name "${name}" || [[ $# -ne 1 ]]; then
+    echo "Usage: bpc-node gateway remove NAME" >&2
+    exit 2
+  fi
+  require_control
+
+  python3 - "${CONTROL_DIR}" "${name}" <<'PY'
+import ipaddress
+import json
+import os
+import secrets
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+name = sys.argv[2]
+
+def load(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+def save(path: Path, value: dict) -> None:
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
+    tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+records = []
+for path in sorted((root / "devices").glob("*.json")):
+    try:
+        records.append((path, load(path)))
+    except Exception:
+        continue
+
+matches = [
+    (path, value) for path, value in records
+    if value.get("device") == name
+    and value.get("role") == "gateway"
+    and not bool(value.get("revoked", False))
+]
+if len(matches) != 1:
+    raise SystemExit(f"Expected one active BP Gateway named {name!r}")
+
+gateway_path, gateway = matches[0]
+routes = {
+    str(ipaddress.ip_network(str(route), strict=False))
+    for route in gateway.get("advertised_routes", [])
+}
+gateway["revoked"] = True
+save(gateway_path, gateway)
+
+config = load(root / "config.json")
+device_id = str(gateway.get("device_id", ""))
+if device_id:
+    (Path(str(config["wgshim_key_dir"])) / f"{device_id}.key").unlink(missing_ok=True)
+
+for path, value in records:
+    if value.get("role") == "gateway" or bool(value.get("revoked", False)):
+        continue
+    current = value.get("managed_routes", [])
+    if not isinstance(current, list):
+        continue
+    filtered = []
+    for raw in current:
+        try:
+            route = str(ipaddress.ip_network(str(raw), strict=False))
+        except ValueError:
+            continue
+        if route not in routes:
+            filtered.append(route)
+    if filtered != current:
+        value["managed_routes"] = filtered
+        save(path, value)
+
+print(f"Revoked BP Gateway {name}.")
+PY
+
+  restart_control
+}
+
+require_root
+scope="${1:-}"
+command="${2:-}"
+if [[ "${scope}" != "gateway" ]]; then
+  usage
+  [[ -z "${scope}" || "${scope}" == "-h" || "${scope}" == "--help" || "${scope}" == "help" ]] && exit 0
+  exit 2
+fi
+
+case "${command}" in
+  create)
+    shift 2
+    gateway_create "$@"
+    ;;
+  grant|ungrant)
+    shift 2
+    gateway_access "${command}" "$@"
+    ;;
+  link)
+    shift 2
+    gateway_link "$@"
+    ;;
+  list)
+    shift 2
+     [[ $# -eq 0 ]] || { usage >&2; exit 2; }
+    gateway_list
+    ;;
+  remove)
+    shift 2
+    gateway_remove "$@"
+    ;;
+  -h|--help|help|"")
+    usage
+    ;;
+  *)
+    echo "Unknown gateway command: ${command}" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+\t' read -r token expires filename <<< "${staged}"
+  control_url="https://${CONTROL_HOST}:${CONTROL_PORT}"
+
+  cat <<DONE
+BP Gateway installer link created.
+
+Gateway: ${name}
+Expires: ${expires}
+One-time download URL:
+  ${control_url}/v1/bootstrap/${token}/${filename}
+
+The URL is removed after the first successful download or when it expires.
+Create a new link with the same command if the download is interrupted.
+DONE
 }
 
 gateway_list() {
