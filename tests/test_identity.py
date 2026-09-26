@@ -145,7 +145,10 @@ def test_invalid_device_private_key_proof_cannot_refresh(tmp_path: Path) -> None
         identity.refresh_device_session(tmp_path, refresh, proof, now=130)
 
 
-def test_device_revoke_invalidates_access_and_refresh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_device_revoke_invalidates_access_and_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     user = identity.create_user(tmp_path, "roman", "correct horse battery staple", now=100)
     private_key = Ed25519PrivateKey.generate()
     device = _device(tmp_path, str(user["id"]), private_key)
