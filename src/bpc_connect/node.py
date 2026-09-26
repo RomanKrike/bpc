@@ -5,9 +5,9 @@ import re
 import socket
 import time
 import uuid
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Mapping
 from typing import Any
 
 import yaml
