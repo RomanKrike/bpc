@@ -92,11 +92,35 @@ apt-get install -y --no-install-recommends openssl python3 python3-yaml ca-certi
 
 install -d -m 0700   "${CONTROL_DIR}"   "${CONTROL_DIR}/enroll"   "${CONTROL_DIR}/devices"   "${CONTROL_DIR}/tokens"   "${CONTROL_DIR}/downloads"   "${CONTROL_DIR}/update"
 
-control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"
-if [[ ! -f "${control_server}" ]]; then
-  echo "BPC control server is missing from the current release: ${control_server}" >&2
-  exit 3
+release_control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"
+release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
+release_package="${BPC_ROOT}/current/src/bpc_connect"
+for required in "${release_control_server}" "${release_node_enrollment}" "${release_package}"; do
+  if [[ ! -e "${required}" ]]; then
+    echo "BPC control runtime dependency is missing from the current release: ${required}" >&2
+    exit 3
+  fi
+done
+
+release_version="$(tr -d '[:space:]' < "${BPC_ROOT}/current/VERSION")"
+runtime_version_dir="${CONTROL_DIR}/runtime-${release_version}"
+runtime_tmp="$(mktemp -d "${CONTROL_DIR}/.runtime.XXXXXX")"
+install -d -m 0700 "${runtime_tmp}/src"
+install -m 0700 "${release_control_server}" "${runtime_tmp}/bpc-control-server.py"
+install -m 0600 "${release_node_enrollment}" "${runtime_tmp}/bpc_node_enrollment.py"
+cp -R "${release_package}" "${runtime_tmp}/src/bpc_connect"
+chown -R root:root "${runtime_tmp}"
+find "${runtime_tmp}" -type d -exec chmod 0700 {} +
+find "${runtime_tmp}" -type f -exec chmod 0600 {} +
+chmod 0700 "${runtime_tmp}/bpc-control-server.py"
+
+rm -rf "${runtime_version_dir}"
+mv "${runtime_tmp}" "${runtime_version_dir}"
+if [[ -e "${CONTROL_DIR}/runtime" && ! -L "${CONTROL_DIR}/runtime" ]]; then
+  rm -rf "${CONTROL_DIR}/runtime"
 fi
+ln -sfn "runtime-${release_version}" "${CONTROL_DIR}/runtime"
+control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"
 
 signing_key="${CONTROL_DIR}/update-signing-key.pem"
 signing_public="${CONTROL_DIR}/update-signing-public.pem"
@@ -197,7 +221,8 @@ systemctl reset-failed bpc-control.service >/dev/null 2>&1 || true
 systemctl restart bpc-control.service
 sleep 1
 if ! systemctl --quiet is-active bpc-control.service; then
-  systemctl status bpc-control.service --no-pager >&2 || true
+  systemctl status bpc-control.service -l --no-pager >&2 || true
+  journalctl -u bpc-control.service -n 50 -o cat -l --no-pager >&2 || true
   exit 5
 fi
 
