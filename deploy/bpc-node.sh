@@ -677,7 +677,6 @@ The URL is removed after the first successful download or when it expires.
 Create a new link with the same command if the download is interrupted.
 DONE
 }
-
 gateway_list() {
   require_control
   python3 - "${CONTROL_DIR}" <<'PY'
