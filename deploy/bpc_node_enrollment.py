@@ -630,7 +630,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 {ROOT / 'deploy' / 'bpc_node_enrollment.py'} --state-dir {state_dir} daemon
+ExecStart=/usr/bin/python3 {ROOT / 'deploy' / 'bpc_node_enrollment.py'} \
+  --state-dir {state_dir} daemon
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
