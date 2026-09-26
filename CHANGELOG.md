@@ -20,11 +20,19 @@
 - Refresh rotation detects reuse of an already consumed credential and revokes the refresh family.
 - Gateway transport services do not receive or consume the User password database.
 
+## 0.15.2
+
+### Fixed
+- Stage the Controller Python runtime inside the root-only control state directory before starting `bpc-control.service`, avoiding systemd sandbox permission failures when the service reads the versioned release tree under `/opt/bpc`.
+- Stage `bpc-control-server.py`, `bpc_node_enrollment.py`, and the matching `bpc_connect` package together so Node Join imports always use one release version.
+- Make the enrollment module resolve both repository and staged-runtime package layouts.
+- Print the full control-plane status and recent journal when control startup fails during migration.
+
 ## 0.15.1
 
 ### Fixed
-- Run `bpc-control-server.py` from the active release tree instead of copying it into control state, so the Stage 2 `bpc_node_enrollment` module, Stage 3 `bpc_identity` module, and `bpc_connect` package resolve correctly during upgrade.
-- Preserve atomic updater rollback behavior: the control-plane executable follows `/opt/bpc/current`, so switching the release symlink also switches the matching Python module set.
+- Run `bpc-control-server.py` from the active release tree instead of copying it into control state, so the Stage 2 `bpc_node_enrollment` module and `bpc_connect` package resolve correctly during upgrade.
+- Preserve atomic updater rollback behavior: the control-plane executable now follows `/opt/bpc/current`, so switching the release symlink also switches the matching Python module set.
 
 ## 0.15.0
 
