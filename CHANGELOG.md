@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.1
+
+### Fixed
+- Allow `bp-gateway-upgrade.sh` to use a locally supplied WGShim binary through `BPC_WGSHIM_BINARY`, so gateways without working DNS/Internet access can still be upgraded from the relay.
+- Fix `bpc-status` UDP listener detection for the Agent relay.
+
 ## 0.14.0
 
 ### Added

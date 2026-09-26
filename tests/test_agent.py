@@ -439,3 +439,12 @@ def test_wgshim_tcp_transport_is_framed_persistent_and_adaptive() -> None:
     assert "TransportTCP" in WGSHIM_TRANSPORT
     assert "SwitchThreshold" in WGSHIM_TRANSPORT
     assert "SealProbe" in WGSHIM_TRANSPORT
+
+
+def test_gateway_upgrade_supports_local_wgshim_binary() -> None:
+    assert 'LOCAL_WGSHIM_BINARY="${BPC_WGSHIM_BINARY:-}"' in GATEWAY_UPGRADE
+    assert 'install -m 0755 "${LOCAL_WGSHIM_BINARY}" /usr/local/bin/bpc-wgshim' in GATEWAY_UPGRADE
+
+
+def test_status_parses_udp_local_address_column() -> None:
+    assert 'addr=$4' in STATUS

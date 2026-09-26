@@ -6,6 +6,7 @@ STATE_DIR="${BPC_STATE_DIR}/bp-gateway"
 SERVICE_FILE="/etc/systemd/system/bp-gateway-wgshim.service"
 RUNTIME="${STATE_DIR}/runtime.env"
 REPO="${BPC_REPO:-RomanKrike/bpc}"
+LOCAL_WGSHIM_BINARY="${BPC_WGSHIM_BINARY:-}"
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run bp-gateway-upgrade as root" >&2
@@ -52,19 +53,28 @@ esac
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 asset="bpc-wgshim-linux-${arch}"
-base="https://github.com/${REPO}/releases/latest/download"
-curl --fail --location --proto '=https' --tlsv1.2 "${base}/${asset}" -o "${tmp}/${asset}"
-curl --fail --location --proto '=https' --tlsv1.2 "${base}/SHA256SUMS" -o "${tmp}/SHA256SUMS"
-checksum_line="$(grep -E "([[:space:]]|\*)${asset}$" "${tmp}/SHA256SUMS" | head -n1 || true)"
-if [[ -z "${checksum_line}" ]]; then
-  echo "SHA256SUMS does not contain ${asset}" >&2
-  exit 3
+
+if [[ -n "${LOCAL_WGSHIM_BINARY}" ]]; then
+  if [[ ! -f "${LOCAL_WGSHIM_BINARY}" ]]; then
+    echo "BPC_WGSHIM_BINARY does not exist: ${LOCAL_WGSHIM_BINARY}" >&2
+    exit 3
+  fi
+  install -m 0755 "${LOCAL_WGSHIM_BINARY}" /usr/local/bin/bpc-wgshim
+else
+  base="https://github.com/${REPO}/releases/latest/download"
+  curl --fail --location --proto '=https' --tlsv1.2 "${base}/${asset}" -o "${tmp}/${asset}"
+  curl --fail --location --proto '=https' --tlsv1.2 "${base}/SHA256SUMS" -o "${tmp}/SHA256SUMS"
+  checksum_line="$(grep -E "([[:space:]]|\*)${asset}$" "${tmp}/SHA256SUMS" | head -n1 || true)"
+  if [[ -z "${checksum_line}" ]]; then
+    echo "SHA256SUMS does not contain ${asset}" >&2
+    exit 3
+  fi
+  (
+    cd "${tmp}"
+    printf '%s\n' "${checksum_line}" | sha256sum --check --strict -
+  )
+  install -m 0755 "${tmp}/${asset}" /usr/local/bin/bpc-wgshim
 fi
-(
-  cd "${tmp}"
-  printf '%s\n' "${checksum_line}" | sha256sum --check --strict -
-)
-install -m 0755 "${tmp}/${asset}" /usr/local/bin/bpc-wgshim
 
 cat > "${SERVICE_FILE}" <<EOF
 [Unit]
