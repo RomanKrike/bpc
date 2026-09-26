@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="${BPC_REPO:-RomanKrike/bpc}"
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
-ROLE="ru-node"
+ROLE=""
 REALITY_SERVER_NAME=""
 XRAY_PORT="443"
 BPC_PUBLIC_HOST=""
@@ -19,7 +19,7 @@ usage() {
 Usage: install.sh [options]
 
 Options:
-  --role ru-node                 Legacy install profile (currently only ru-node)
+  --role ru-node                 Optional legacy RU gateway bootstrap
   --reality-server-name HOST     Required REALITY target hostname
   --port PORT                    Xray TCP listen port (default: 443)
   --public-host HOST             Public VPS IPv4/FQDN (auto-detected by default)
@@ -160,13 +160,14 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-if [[ "${ROLE}" != "ru-node" ]]; then
-  echo "Unsupported role: ${ROLE}" >&2
+if [[ -n "${ROLE}" && "${ROLE}" != "ru-node" ]]; then
+  echo "Unsupported legacy install profile: ${ROLE}" >&2
   exit 2
 fi
 
-if [[ -z "${REALITY_SERVER_NAME}" && ! -f "${BPC_STATE_DIR}/ru-node/config.json" ]]; then
-  echo "--reality-server-name is required for a fresh RU-node installation" >&2
+if [[ "${ROLE}" == "ru-node" && -z "${REALITY_SERVER_NAME}" && \
+  ! -f "${BPC_STATE_DIR}/ru-node/config.json" ]]; then
+  echo "--reality-server-name is required with --role ru-node on a fresh gateway" >&2
   exit 2
 fi
 
@@ -183,7 +184,7 @@ ensure_bootstrap_dns
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl tar python3 python3-yaml
+apt-get install -y --no-install-recommends ca-certificates curl tar openssl python3 python3-yaml
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
@@ -257,8 +258,15 @@ for spec in \
   fi
 done
 
+install_role="${ROLE:-node}"
+if [[ -z "${ROLE}" && -f "${BPC_STATE_DIR}/install.env" ]]; then
+  previous_role="$(sed -n 's/^BPC_ROLE=//p' "${BPC_STATE_DIR}/install.env" | head -n1)"
+  if [[ -n "${previous_role}" ]]; then
+    install_role="${previous_role}"
+  fi
+fi
 cat > "${BPC_STATE_DIR}/install.env" <<STATE
-BPC_ROLE=${ROLE}
+BPC_ROLE=${install_role}
 BPC_ROOT=${BPC_ROOT}
 BPC_NODE_CONFIG=${BPC_STATE_DIR}/node.yaml
 STATE
@@ -280,13 +288,15 @@ if [[ -f "${BPC_STATE_DIR}/ru-node/config.json" ]]; then
     echo "Health check failed; restored previous BPC release." >&2
     exit 5
   fi
-else
+elif [[ "${ROLE}" == "ru-node" ]]; then
   export REALITY_SERVER_NAME XRAY_PORT BPC_PUBLIC_HOST
   if ! "${BPC_ROOT}/current/deploy/bootstrap-ru-node.sh"; then
     rollback_release
     echo "RU-node bootstrap failed; restored previous BPC release pointer." >&2
     exit 5
   fi
+else
+  echo "BPC core runtime installed. Join this host with: bpc join <TOKEN>"
 fi
 
 if [[ "${WITH_AWG}" == "true" ]]; then
@@ -302,7 +312,8 @@ if [[ "${WITH_WG}" == "true" ]]; then
   WG_PORT="${WG_PORT}" "${BPC_ROOT}/current/deploy/bpc-enable-wg.sh"
 fi
 
-if [[ -x "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
+if [[ -s "${BPC_STATE_DIR}/ru-node/gateway-transport.yaml" && \
+  -x "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
   "${BPC_ROOT}/current/deploy/bpc-render-clash.sh"
 fi
 
@@ -318,13 +329,16 @@ fi
 cat <<DONE
 BPC ${version} installed successfully.
 
-Install profile (legacy): ${ROLE}
+Install profile: ${install_role}
 Release: ${release_dir}
 Current: ${BPC_ROOT}/current
 
 Commands:
+  bpc join <TOKEN>
+  bpc status
   bpc node status
   bpc node info
+  bpc leave
   bpc-status
   bpc-update
   bpc-ensure-dns
@@ -342,11 +356,16 @@ Commands:
   bpc-enable-ikev2
   bpc-enable-ssh-rescue
 
+DONE
+
+if [[ -s "${BPC_STATE_DIR}/ru-node/gateway-transport.yaml" ]]; then
+  cat <<DONE
 VLESS transport configuration:
   ${BPC_STATE_DIR}/ru-node/gateway-transport.yaml
 Automatic Clash Verge Rev profile:
   ${BPC_STATE_DIR}/ru-node/clash-verge-auto.yaml
 DONE
+fi
 
 if [[ -f "${BPC_STATE_DIR}/ru-node/awg/enabled" ]]; then
   cat <<DONE
