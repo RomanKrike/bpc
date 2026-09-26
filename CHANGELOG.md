@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.15.2
+
+### Fixed
+- Stage the Controller Python runtime inside the root-only control state directory before starting `bpc-control.service`, avoiding systemd sandbox permission failures when the service reads the versioned release tree under `/opt/bpc`.
+- Stage `bpc-control-server.py`, `bpc_node_enrollment.py`, and the matching `bpc_connect` package together so Node Join imports always use one release version.
+- Make the enrollment module resolve both repository and staged-runtime package layouts.
+- Print the full control-plane status and recent journal when control startup fails during migration.
+
 ## 0.15.1
 
 ### Fixed
