@@ -6,6 +6,7 @@ BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RU_DIR="${BPC_STATE_DIR}/ru-node"
 CONTROL_DIR="${RU_DIR}/control"
 NODE_MODEL="${BPC_ROOT}/current/deploy/bpc-node-model.py"
+ACCESS_MODEL="${BPC_ROOT}/current/deploy/bpc_access.py"
 
 usage() {
   cat <<'USAGE'
@@ -426,6 +427,10 @@ for device_name in names:
 
 print(f"Updated {updated} device(s). Routes apply within the next Agent config sync.")
 PY
+
+  if [[ -f "${ACCESS_MODEL}" ]]; then
+    python3 "${ACCESS_MODEL}" --state-dir "${CONTROL_DIR}" sync-firewall
+  fi
 }
 
 gateway_list() {
