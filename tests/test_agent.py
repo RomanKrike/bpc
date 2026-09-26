@@ -22,6 +22,9 @@ AGENT_RELAY = pathlib.Path("cmd/bpc-agent-relay/main.go").read_text(encoding="ut
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 NODE = pathlib.Path("deploy/bpc-node.sh").read_text(encoding="utf-8")
 GATEWAY_TEMPLATE = pathlib.Path("deploy/bp-gateway-install.sh.tpl").read_text(encoding="utf-8")
+GATEWAY_UPGRADE = pathlib.Path("deploy/bp-gateway-upgrade.sh").read_text(encoding="utf-8")
+WGSHIM_TCP = pathlib.Path("internal/wgshim/tcp.go").read_text(encoding="utf-8")
+WGSHIM_TRANSPORT = pathlib.Path("internal/wgshim/transport.go").read_text(encoding="utf-8")
 
 
 def test_release_builds_windows_agent() -> None:
@@ -405,3 +408,34 @@ def test_bp_gateway_firewall_uses_valid_lan_interface() -> None:
     assert "BP_GATEWAY_LAN_INTEFACE" not in GATEWAY_TEMPLATE
     assert 'iptables -C FORWARD -i "${BP_GATEWAY_LAN_INTERFACE}"' in GATEWAY_TEMPLATE
     assert 'iptables -I FORWARD 1 -i "${BP_GATEWAY_LAN_INTERFACE}"' in GATEWAY_TEMPLATE
+
+
+def test_agent_relay_exposes_tcp_alongside_udp_pool() -> None:
+    assert "AGENT_WGSHIM_TCP_PORT" in DATAPLANE
+    assert "--listen-tcp 0.0.0.0:${WGSHIM_TCP_PORT}" in DATAPLANE
+    assert "service_owns_tcp_port" in HEALTH
+    assert "tcp=%s" in STATUS
+    assert '"wgshim_tcp_server"' in ENABLE_CONTROL
+    assert "RunTCPMultiServer" in AGENT_RELAY
+
+
+def test_bp_gateway_defaults_to_adaptive_udp_tcp_transport() -> None:
+    assert 'TRANSPORT="${BP_GATEWAY_TRANSPORT:-auto}"' in GATEWAY_TEMPLATE
+    assert "client-auto" in GATEWAY_TEMPLATE
+    assert "--udp-server ${RELAY}" in GATEWAY_TEMPLATE
+    assert "--tcp-server ${TCP_RELAY}" in GATEWAY_TEMPLATE
+    assert '"TCP_RELAY"' in NODE
+    assert "BP_GATEWAY_TRANSPORT=auto" in GATEWAY_UPGRADE
+    assert "journalctl -u bp-gateway-wgshim.service" in GATEWAY_UPGRADE
+
+
+def test_wgshim_tcp_transport_is_framed_persistent_and_adaptive() -> None:
+    assert "SetNoDelay(true)" in WGSHIM_TCP
+    assert "writeTCPFrame" in WGSHIM_TCP
+    assert "readTCPFrame" in WGSHIM_TCP
+    assert "RunTCPClient" in WGSHIM_TCP
+    assert "RunAdaptiveTransportClient" in WGSHIM_TRANSPORT
+    assert "TransportUDP" in WGSHIM_TRANSPORT
+    assert "TransportTCP" in WGSHIM_TRANSPORT
+    assert "SwitchThreshold" in WGSHIM_TRANSPORT
+    assert "SealProbe" in WGSHIM_TRANSPORT
