@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.1
+
+### Fixed
+- Fix BP Gateway firewall startup on first install by correcting the LAN interface variable and creating the reverse established-connection forwarding rule when absent.
+
 ## 0.13.0
 
 ### Added
