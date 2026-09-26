@@ -201,3 +201,42 @@ def test_apply_remote_node_config_uses_controller_id_and_roles(tmp_path: Path) -
     assert config.node.roles.has("relay")
     assert not config.node.roles.has("controller")
     assert oct((tmp_path / "node.yaml").stat().st_mode & 0o777) == "0o600"
+
+
+def test_node_identity_is_idempotent_and_private(tmp_path: Path) -> None:
+    first_public = enrollment.generate_node_identity(tmp_path)
+    private_path = tmp_path / "identity" / "node.key"
+    first_private = private_path.read_bytes()
+
+    second_public = enrollment.generate_node_identity(tmp_path)
+
+    assert second_public == first_public
+    assert private_path.read_bytes() == first_private
+    assert oct((tmp_path / "identity").stat().st_mode & 0o777) == "0o700"
+    assert oct(private_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_repeated_join_is_safe_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    existing = {
+        "version": 1,
+        "controller_url": "https://controller.example:8444",
+        "node_id": "existing-node-id",
+        "name": "ge-02",
+        "credential": "a" * 64,
+        "roles": {"gateway": True, "relay": True},
+        "config": {},
+    }
+    enrollment.write_local_enrollment(tmp_path, existing)
+    before = (tmp_path / "enrollment.json").read_bytes()
+    monkeypatch.setattr(enrollment.os, "geteuid", lambda: 0)
+
+    args = enrollment.argparse.Namespace(
+        state_dir=tmp_path,
+        token=enrollment.make_join_token(
+            "https://another-controller.example:8444",
+            "b" * 64,
+        ),
+    )
+    assert enrollment.cmd_join(args) == 0
+
+    assert (tmp_path / "enrollment.json").read_bytes() == before
