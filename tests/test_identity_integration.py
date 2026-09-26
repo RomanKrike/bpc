@@ -93,6 +93,7 @@ def test_user_device_http_flow_login_register_refresh_revoke(
 
     monkeypatch.setattr(control_server, "run_wg", lambda *args: None)
     monkeypatch.setattr(identity.subprocess, "run", lambda *args, **kwargs: None)
+    monkeypatch.setattr(control_server, "sync_access_firewall", lambda *args: None)
 
     server = control_server.ControlServer(
         ("127.0.0.1", 0),
