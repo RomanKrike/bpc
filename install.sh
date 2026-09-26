@@ -19,7 +19,7 @@ usage() {
 Usage: install.sh [options]
 
 Options:
-  --role ru-node                 Node role (currently only ru-node)
+  --role ru-node                 Legacy install profile (currently only ru-node)
   --reality-server-name HOST     Required REALITY target hostname
   --port PORT                    Xray TCP listen port (default: 443)
   --public-host HOST             Public VPS IPv4/FQDN (auto-detected by default)
@@ -318,7 +318,7 @@ fi
 cat <<DONE
 BPC ${version} installed successfully.
 
-Role: ${ROLE}
+Install profile (legacy): ${ROLE}
 Release: ${release_dir}
 Current: ${BPC_ROOT}/current
 
