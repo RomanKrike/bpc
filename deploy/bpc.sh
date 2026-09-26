@@ -5,6 +5,7 @@ BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 ENROLL="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
 IDENTITY="${BPC_ROOT}/current/deploy/bpc_identity.py"
+ACCESS="${BPC_ROOT}/current/deploy/bpc_access.py"
 CONTROL_DIR="${BPC_STATE_DIR}/ru-node/control"
 
 usage() {
@@ -21,6 +22,9 @@ Usage:
   bpc user disable USER
   bpc device list
   bpc device revoke DEVICE
+  bpc access list [--user USER | --device DEVICE]
+  bpc access grant (--user USER | --device DEVICE) CIDR [CIDR ...]
+  bpc access revoke (--user USER | --device DEVICE) CIDR [CIDR ...]
 
 Compatibility:
   Existing standalone commands such as bpc-status, bpc-update and bpc-node
@@ -38,6 +42,13 @@ require_enrollment_helper() {
 require_identity_helper() {
   if [[ ! -f "${IDENTITY}" ]]; then
     echo "BPC identity helper is missing: ${IDENTITY}" >&2
+    exit 3
+  fi
+}
+
+require_access_helper() {
+  if [[ ! -f "${ACCESS}" ]]; then
+    echo "BPC Access helper is missing: ${ACCESS}" >&2
     exit 3
   fi
 }
@@ -123,6 +134,28 @@ case "${scope}" in
       revoke)
         shift
         exec python3 "${IDENTITY}" --state-dir "${CONTROL_DIR}" device-revoke "$@"
+        ;;
+      *)
+        usage >&2
+        exit 2
+        ;;
+    esac
+    ;;
+  access)
+    shift
+    require_access_helper
+    case "${1:-}" in
+      list)
+        shift
+        exec python3 "${ACCESS}" --state-dir "${CONTROL_DIR}" list "$@"
+        ;;
+      grant)
+        shift
+        exec python3 "${ACCESS}" --state-dir "${CONTROL_DIR}" grant "$@"
+        ;;
+      revoke)
+        shift
+        exec python3 "${ACCESS}" --state-dir "${CONTROL_DIR}" revoke "$@"
         ;;
       *)
         usage >&2
