@@ -29,6 +29,11 @@ else:
     SOURCE_ROOT = ROOT / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
+from bpc_connect.compat.runtime import (  # noqa: E402
+    RuntimeCompatibilityError,
+    default_role_config as compatibility_role_config,
+    reconcile_transport_roles,
+)
 from bpc_connect.node import (  # noqa: E402
     Capabilities,
     Node,
@@ -36,9 +41,10 @@ from bpc_connect.node import (  # noqa: E402
     load_node_config,
     save_node_config,
 )
+from bpc_connect.state import StateLayout  # noqa: E402
 
 DEFAULT_STATE_DIR = Path("/etc/bpc-connect")
-DEFAULT_CONTROL_DIR = DEFAULT_STATE_DIR / "ru-node" / "control"
+DEFAULT_CONTROL_DIR = StateLayout.from_root(DEFAULT_STATE_DIR).control_dir
 TOKEN_PREFIX = "BPC-"
 HEARTBEAT_INTERVAL = 30
 MAX_CLOCK_SKEW = 300
@@ -184,18 +190,7 @@ def discover_controller_url(control_dir: Path) -> str:
 
 
 def default_role_config(state_dir: Path, roles: list[str]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    if "gateway" in roles:
-        reality_name = read_env_value(
-            state_dir / "ru-node" / "client.env", "BPC_REALITY_SERVER_NAME"
-        )
-        result["gateway"] = {
-            "reality_server_name": reality_name or "www.bing.com",
-            "xray_port": 443,
-        }
-    if "relay" in roles:
-        result["relay"] = {"mode": "agent"}
-    return result
+    return compatibility_role_config(state_dir, roles)
 
 
 def create_join_token(
@@ -555,76 +550,20 @@ def local_services(roles: dict[str, Any]) -> dict[str, str]:
     return services
 
 
-def _run_checked(args: list[str], *, env: dict[str, str] | None = None) -> None:
-    completed = subprocess.run(args, check=False, env=env)
-    if completed.returncode != 0:
-        raise EnrollmentError(f"command failed ({completed.returncode}): {' '.join(args)}")
-
-
 def reconcile_roles(
     state_dir: Path,
     roles: dict[str, Any],
     role_config: dict[str, Any],
 ) -> dict[str, str]:
-    results: dict[str, str] = {}
-    deploy = ROOT / "deploy"
-    ru_dir = state_dir / "ru-node"
-
-    if bool(roles.get("gateway")):
-        gateway = role_config.get("gateway", {})
-        if not isinstance(gateway, dict):
-            gateway = {}
-        if not (ru_dir / "config.json").is_file():
-            env = dict(os.environ)
-            env["BPC_DIR"] = str(ru_dir)
-            env["REALITY_SERVER_NAME"] = str(
-                gateway.get("reality_server_name", "www.bing.com")
-            )
-            env["XRAY_PORT"] = str(int(gateway.get("xray_port", 443)))
-            _run_checked([str(deploy / "bootstrap-ru-node.sh")], env=env)
-        else:
-            subprocess.run(
-                ["systemctl", "start", "xray.service"],
-                check=False,
-                capture_output=True,
-            )
-        results["gateway"] = service_state("xray.service")
-
-    if bool(roles.get("relay")):
-        relay = role_config.get("relay", {})
-        if not isinstance(relay, dict):
-            relay = {}
-        mode = str(relay.get("mode", "agent"))
-        if mode != "agent":
-            results["relay"] = f"unsupported-mode:{mode}"
-        elif (ru_dir / "agent" / "enabled").is_file():
-            subprocess.run(
-                ["systemctl", "start", "bpc-agent-relay.service"],
-                check=False,
-                capture_output=True,
-            )
-            results["relay"] = service_state("bpc-agent-relay.service")
-        elif (ru_dir / "client.env").is_file():
-            _run_checked([str(deploy / "bpc-enable-agent-dataplane.sh")])
-            results["relay"] = service_state("bpc-agent-relay.service")
-        else:
-            results["relay"] = "pending:gateway-or-public-host"
-
-    if bool(roles.get("controller")):
-        if (ru_dir / "control" / "enabled").is_file():
-            subprocess.run(
-                ["systemctl", "start", "bpc-control.service"],
-                check=False,
-                capture_output=True,
-            )
-            results["controller"] = service_state("bpc-control.service")
-        else:
-            results["controller"] = "pending:tls-subscription-bootstrap"
-
-    if bool(roles.get("site_router")):
-        results["site_router"] = "pending:not-implemented-stage2"
-
-    return results
+    try:
+        return reconcile_transport_roles(
+            state_dir,
+            roles,
+            role_config,
+            deploy_dir=ROOT / "deploy",
+        )
+    except RuntimeCompatibilityError as exc:
+        raise EnrollmentError(str(exc)) from exc
 
 
 def stage_node_runtime(state_dir: Path) -> Path:
@@ -960,6 +899,7 @@ def cmd_leave(args: argparse.Namespace) -> int:
                 last_seen=current.node.last_seen,
                 roles=Capabilities.from_mapping({}),
             ),
+            advertised_routes=current.advertised_routes,
         )
         save_node_config(node_path, cleared)
     print(f"Node left cluster: {enrollment.get('name')} ({enrollment.get('node_id')})")
