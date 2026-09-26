@@ -50,17 +50,17 @@ def authorize_legacy_static_device(
     return device_path, device
 
 
-def legacy_enrollment_fields(
+def compatibility_enrollment_fields(
     *,
-    device_token: str,
-    legacy_tunnel: str,
+    credential: str,
+    enrollment: dict[str, Any],
 ) -> dict[str, object]:
     return {
-        "device_token": device_token,
+        "device_token": credential,
         "managed_routes": [],
-        "legacy_tunnel": legacy_tunnel,
+        "legacy_tunnel": str(enrollment.get("legacy_tunnel", "")),
     }
 
 
-def legacy_enrollment_response(credential: str) -> dict[str, str]:
+def compatibility_enrollment_response(credential: str) -> dict[str, str]:
     return {"device_token": credential}
