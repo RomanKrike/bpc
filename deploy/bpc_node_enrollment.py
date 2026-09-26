@@ -826,7 +826,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
-    print(f"Enrollment: joined")
+    print("Enrollment: joined")
     print(f"Node: {enrollment.get('name')} ({enrollment.get('node_id')})")
     print(f"Controller: {enrollment.get('controller_url')}")
     print(
