@@ -29,6 +29,7 @@ from bpc_identity import (
     issue_access_credential,
     issue_device_session,
     list_devices as identity_list_devices,
+    load_device as identity_load_device,
     logout_session,
     refresh_device_session,
     registration_message,
@@ -776,7 +777,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 access_token,
                 require_device=True,
             )
-            target = read_json(self._root() / "devices" / f"{target_id}.json")
+            target = identity_load_device(self._root(), target_id)
             if str(target.get("user_id", "")) != str(user["id"]):
                 raise IdentityError("device not found", 404)
             deactivate_device(self._root(), target_id, revoked=True)
