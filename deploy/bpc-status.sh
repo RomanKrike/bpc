@@ -209,7 +209,7 @@ if [[ "${role}" == "ru-node" ]]; then
     if [[ "${agent_relay_pid}" =~ ^[1-9][0-9]*$ ]]; then
       detected_ports="$(ss -H -lunp 2>/dev/null | awk -v pid="pid=${agent_relay_pid}," '
         index($0, pid) {
-          addr=$5
+          addr=$4
           sub(/^.*:/, "", addr)
           if (addr ~ /^[0-9]+$/) print addr
         }' | sort -n -u | paste -sd, -)"
