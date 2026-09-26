@@ -150,7 +150,6 @@ func TestValidateRuntimeConfigAdaptiveEndpointPool(t *testing.T) {
 	}
 }
 
-
 func TestDeviceProofSigningBytes(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
