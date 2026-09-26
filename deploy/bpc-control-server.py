@@ -22,14 +22,14 @@ from bpc_access import AccessError, effective_routes, sync_access_firewall
 from bpc_connect.compat.device import (
     LegacyDeviceAuthError,
     authorize_legacy_static_device,
-    legacy_enrollment_fields,
-    legacy_enrollment_response,
+    compatibility_enrollment_fields,
+    compatibility_enrollment_response,
     legacy_token_index_path,
 )
 from bpc_connect.compat.legacy import (
-    apply_legacy_tunnel,
-    is_legacy_site_router,
-    legacy_site_router_routes,
+    apply_compat_transport_hint,
+    compat_site_routes,
+    is_compat_site_router,
 )
 from bpc_identity import (
     IdentityError,
@@ -133,10 +133,10 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
     owners: dict[str, str] = {}
     networks: list[tuple[ipaddress.IPv4Network, str]] = []
     for device in devices:
-        if not is_legacy_site_router(device):
+        if not is_compat_site_router(device):
             continue
         owner = str(device.get("device", device.get("device_id", "legacy-site-router")))
-        for raw in legacy_site_router_routes(device):
+        for raw in compat_site_routes(device):
             try:
                 network = ipaddress.ip_network(str(raw), strict=False)
             except ValueError as exc:
@@ -177,8 +177,8 @@ def sync_wireguard_peers(state_dir: Path) -> None:
         public_key = str(device["wireguard_public_key"]).strip()
         address = str(device["wireguard_address"]).strip()
         allowed = [address]
-        if is_legacy_site_router(device):
-            allowed.extend(legacy_site_router_routes(device))
+        if is_compat_site_router(device):
+            allowed.extend(compat_site_routes(device))
         run_wg(
             "set",
             interface,
@@ -423,7 +423,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             "update_channel": str(global_config.get("update_channel", "stable")),
             "wireguard": self._wireguard_profile_for_device(device),
         }
-        apply_legacy_tunnel(device, config)
+        apply_compat_transport_hint(device, config)
         return config
 
     def _wireguard_profile_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
@@ -846,9 +846,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                     "wireguard_public_key": wireguard_public_key,
                     "wireguard_address": wireguard_address,
                     "wgshim_psk": wgshim_psk,
-                    **legacy_enrollment_fields(
-                        device_token=legacy_credential,
-                        legacy_tunnel=str(enrollment.get("legacy_tunnel", "")),
+                    **compatibility_enrollment_fields(
+                        credential=legacy_credential,
+                        enrollment=enrollment,
                     ),
                     "created": now,
                     "created_at": now,
@@ -889,7 +889,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             {
                 "device_id": device_id,
-                **legacy_enrollment_response(legacy_credential),
+                **compatibility_enrollment_response(legacy_credential),
                 "config": config,
                 "wireguard": wireguard,
             },
