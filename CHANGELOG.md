@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.16.1
+
+### Changed
+- First-run BP Connect authentication on Windows now uses a native sign-in dialog for the BPC username and password instead of a transient console prompt.
+- Credentials remain ephemeral: the password is returned only to the enrollment process, cleared after login, and is not persisted in the prepared executable or local state.
+
 ## 0.16.0
 
 ### Added

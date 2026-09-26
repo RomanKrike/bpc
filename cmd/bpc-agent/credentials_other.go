@@ -4,15 +4,24 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"strings"
 )
 
-func readPasswordLine() (string, error) {
+func readLoginCredentialsPlatform() (string, string, error) {
 	reader := bufio.NewReader(os.Stdin)
-	value, err := reader.ReadString('\n')
+	fmt.Print("BPC username: ")
+	username, err := reader.ReadString('\n')
 	if err != nil {
-		return "", err
+		return "", "", fmt.Errorf("read username: %w", err)
 	}
-	return strings.TrimRight(value, "\r\n"), nil
+
+	fmt.Print("BPC password: ")
+	password, err := reader.ReadString('\n')
+	fmt.Println()
+	if err != nil {
+		return "", "", fmt.Errorf("read password: %w", err)
+	}
+	return strings.TrimSpace(username), strings.TrimRight(password, "\r\n"), nil
 }
