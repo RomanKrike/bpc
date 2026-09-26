@@ -13,6 +13,7 @@ gateway_transport="${ru_dir}/gateway-transport.yaml"
 # commands even when the updater that installed it did not know their names.
 if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
   for spec in \
+    "bpc:bpc.sh" \
     "bpc-update:bpc-update.sh" \
     "bpc-status:bpc-status.sh" \
     "bpc-ensure-dns:bpc-ensure-dns.sh" \
@@ -38,6 +39,11 @@ if [[ -d "${BPC_ROOT}/current/deploy" ]]; then
       ln -sfn "${BPC_ROOT}/current/deploy/${script}" "/usr/local/sbin/${name}"
     fi
   done
+fi
+
+node_model="${BPC_ROOT}/current/deploy/bpc-node-model.py"
+if [[ -f "${node_model}" ]]; then
+  python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" migrate
 fi
 
 # Nothing else to migrate on nodes that do not have an RU Xray configuration.
