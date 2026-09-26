@@ -92,8 +92,11 @@ apt-get install -y --no-install-recommends openssl python3 python3-yaml ca-certi
 
 install -d -m 0700   "${CONTROL_DIR}"   "${CONTROL_DIR}/enroll"   "${CONTROL_DIR}/devices"   "${CONTROL_DIR}/tokens"   "${CONTROL_DIR}/downloads"   "${CONTROL_DIR}/update"
 
-control_server="${CONTROL_DIR}/bpc-control-server.py"
-install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py" "${control_server}"
+control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"
+if [[ ! -f "${control_server}" ]]; then
+  echo "BPC control server is missing from the current release: ${control_server}" >&2
+  exit 3
+fi
 
 signing_key="${CONTROL_DIR}/update-signing-key.pem"
 signing_public="${CONTROL_DIR}/update-signing-public.pem"
