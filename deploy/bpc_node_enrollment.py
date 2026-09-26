@@ -579,7 +579,7 @@ def reconcile_roles(
             _run_checked([str(deploy / "bootstrap-ru-node.sh")], env=env)
         else:
             subprocess.run(
-                ["systemctl", "enable", "--now", "xray.service"],
+                ["systemctl", "start", "xray.service"],
                 check=False,
                 capture_output=True,
             )
@@ -592,6 +592,13 @@ def reconcile_roles(
         mode = str(relay.get("mode", "agent"))
         if mode != "agent":
             results["relay"] = f"unsupported-mode:{mode}"
+        elif (ru_dir / "agent" / "enabled").is_file():
+            subprocess.run(
+                ["systemctl", "start", "bpc-agent-relay.service"],
+                check=False,
+                capture_output=True,
+            )
+            results["relay"] = service_state("bpc-agent-relay.service")
         elif (ru_dir / "client.env").is_file():
             _run_checked([str(deploy / "bpc-enable-agent-dataplane.sh")])
             results["relay"] = service_state("bpc-agent-relay.service")
@@ -601,7 +608,7 @@ def reconcile_roles(
     if bool(roles.get("controller")):
         if (ru_dir / "control" / "enabled").is_file():
             subprocess.run(
-                ["systemctl", "enable", "--now", "bpc-control.service"],
+                ["systemctl", "start", "bpc-control.service"],
                 check=False,
                 capture_output=True,
             )
