@@ -229,6 +229,18 @@ def test_repeated_join_is_safe_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     enrollment.write_local_enrollment(tmp_path, existing)
     before = (tmp_path / "enrollment.json").read_bytes()
     monkeypatch.setattr(enrollment.os, "geteuid", lambda: 0)
+    reconciled: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        enrollment,
+        "reconcile_roles",
+        lambda _state, roles, _config: reconciled.append(dict(roles)) or {},
+    )
+    monkeypatch.setattr(enrollment, "install_runtime_service", lambda _state: None)
+    monkeypatch.setattr(
+        enrollment,
+        "send_heartbeat",
+        lambda _state, _existing: {"ok": True},
+    )
 
     args = enrollment.argparse.Namespace(
         state_dir=tmp_path,
@@ -240,3 +252,4 @@ def test_repeated_join_is_safe_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     assert enrollment.cmd_join(args) == 0
 
     assert (tmp_path / "enrollment.json").read_bytes() == before
+    assert reconciled == [{"gateway": True, "relay": True}]
