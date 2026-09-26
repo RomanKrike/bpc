@@ -164,13 +164,13 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
             try:
                 network = ipaddress.ip_network(str(raw), strict=False)
             except ValueError as exc:
-                raise RuntimeError(f"BP Gateway {owner} has invalid route {raw!r}") from exc
+                raise RuntimeError(f"compatibility site-router {owner} has invalid route {raw!r}") from exc
             if network.version != 4 or network.prefixlen == 0:
-                raise RuntimeError(f"BP Gateway {owner} has unsupported route {network}")
+                raise RuntimeError(f"compatibility site-router {owner} has unsupported route {network}")
             for existing, existing_owner in networks:
                 if network.overlaps(existing):
                     raise RuntimeError(
-                        f"BP Gateway route {network} owned by {owner} overlaps "
+                        f"compatibility site-router route {network} owned by {owner} overlaps "
                         f"{existing} owned by {existing_owner}"
                     )
             canonical = str(network)
@@ -248,7 +248,7 @@ def sync_gateway_routes(state_dir: Path) -> None:
         )
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip()
-            raise RuntimeError(message or f"failed to install BP Gateway route {route}")
+            raise RuntimeError(message or f"failed to install compatibility site-router route {route}")
 
     atomic_json(state_path, {"interface": interface, "routes": routes})
 
