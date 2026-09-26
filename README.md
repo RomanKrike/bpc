@@ -52,6 +52,39 @@ sudo bpc node info
 See [docs/architecture.md](docs/architecture.md) for capability semantics and
 legacy migration rules.
 
+## One-command Node Join
+
+Stage 2 separates software installation from Node enrollment. On the existing
+Controller, create a one-time token:
+
+```bash
+bpc node token create --roles gateway,relay --name ge-02 --expires 15m
+```
+
+Then, on a clean Debian/Ubuntu VPS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh | sudo sh
+bpc join BPC-<controller-envelope>.<one-time-secret>
+```
+
+The Node generates its own Ed25519 private identity locally, sends only the
+public key, receives a Controller-assigned Node ID/credential/capabilities,
+reconciles the existing role services and starts periodic heartbeats.
+
+Useful commands:
+
+```bash
+bpc status
+bpc node info
+bpc node list       # on the Controller
+bpc leave
+```
+
+Join tokens are single-use, expiring and capability-scoped. See
+[docs/node-join.md](docs/node-join.md) for the enrollment protocol, filesystem
+permissions, replay/duplicate-identity protection and Stage 2 boundaries.
+
 ## RU node network layout
 
 ```text
