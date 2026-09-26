@@ -112,6 +112,26 @@ Device loses both control-plane authorization and the data-plane path.
 See [docs/identity.md](docs/identity.md) for the API, credential lifecycle,
 compatibility behavior and future TOTP/Passkey/OIDC extension points.
 
+## Access and routes
+
+Stage 4 adds default-deny Access rules for Users and Devices. The same policy
+drives the routes published to BP Connect and the server-side `BPC-ACCESS`
+firewall chain on the BPC Node.
+
+~~~bash
+bpc access list
+bpc access grant --user roman 192.168.88.0/24
+bpc access revoke --user other 192.168.88.0/24
+~~~
+
+`deny` has deterministic priority over overlapping `allow` rules, and Device
+revoke has higher priority than either. Access changes reconcile the Node
+firewall without restarting BPC; clients receive the route change on their next
+normal config sync.
+
+See [docs/access.md](docs/access.md) for rule semantics, Device overrides,
+legacy `managed_routes` compatibility and enforcement details.
+
 ## RU node network layout
 
 ```text
