@@ -126,11 +126,75 @@ path.write_text("\n".join(out) + "\n", encoding="utf-8")
 PY
 chmod 0600 "${RUNTIME}"
 
+if [[ -z "${BP_GATEWAY_WG_INTERFACE:-}" || -z "${BP_GATEWAY_LAN_INTERFACE:-}" || \
+      -z "${BP_GATEWAY_OVERLAY:-}" || -z "${BP_GATEWAY_ROUTES:-}" ]]; then
+  echo "BP Gateway runtime is missing firewall routing metadata" >&2
+  exit 3
+fi
+
+cat > /usr/local/sbin/bp-gateway-firewall <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
+RUNTIME="${BPC_STATE_DIR}/bp-gateway/runtime.env"
+ACTION="${1:-up}"
+# shellcheck disable=SC1090,SC1091
+source "${RUNTIME}"
+IFS=',' read -r -a ROUTES <<< "${BP_GATEWAY_ROUTES}"
+case "${ACTION}" in
+  up)
+    iptables -C FORWARD -i "${BP_GATEWAY_WG_INTERFACE}" -o "${BP_GATEWAY_LAN_INTERFACE}" -j ACCEPT 2>/dev/null || \
+      iptables -I FORWARD 1 -i "${BP_GATEWAY_WG_INTERFACE}" -o "${BP_GATEWAY_LAN_INTERFACE}" -j ACCEPT
+    iptables -C FORWARD -i "${BP_GATEWAY_LAN_INTERFACE}" -o "${BP_GATEWAY_WG_INTERFACE}" \
+      -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -I FORWARD 1 -i "${BP_GATEWAY_LAN_INTERFACE}" -o "${BP_GATEWAY_WG_INTERFACE}" \
+        -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    for route in "${ROUTES[@]}"; do
+      iptables -t nat -C POSTROUTING -s "${BP_GATEWAY_OVERLAY}" -d "${route}" \
+        -o "${BP_GATEWAY_LAN_INTERFACE}" -j MASQUERADE 2>/dev/null || \
+        iptables -t nat -A POSTROUTING -s "${BP_GATEWAY_OVERLAY}" -d "${route}" \
+          -o "${BP_GATEWAY_LAN_INTERFACE}" -j MASQUERADE
+    done
+    ;;
+  down)
+    iptables -D FORWARD -i "${BP_GATEWAY_WG_INTERFACE}" -o "${BP_GATEWAY_LAN_INTERFACE}" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -i "${BP_GATEWAY_LAN_INTERFACE}" -o "${BP_GATEWAY_WG_INTERFACE}" \
+      -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+    for route in "${ROUTES[@]}"; do
+      iptables -t nat -D POSTROUTING -s "${BP_GATEWAY_OVERLAY}" -d "${route}" \
+        -o "${BP_GATEWAY_LAN_INTERFACE}" -j MASQUERADE >/dev/null 2>&1 || true
+    done
+    ;;
+  *) echo "Usage: bp-gateway-firewall [up|down]" >&2; exit 2 ;;
+esac
+EOF
+chmod 0755 /usr/local/sbin/bp-gateway-firewall
+
+cat > /etc/systemd/system/bp-gateway-firewall.service <<EOF
+[Unit]
+Description=BP Gateway forwarding and NAT
+After=wg-quick@${BP_GATEWAY_WG_INTERFACE}.service
+Requires=wg-quick@${BP_GATEWAY_WG_INTERFACE}.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/bp-gateway-firewall up
+ExecStop=/usr/local/sbin/bp-gateway-firewall down
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 systemctl daemon-reload
 systemctl restart bp-gateway-wgshim.service
+systemctl enable bp-gateway-firewall.service >/dev/null
+systemctl reset-failed bp-gateway-firewall.service >/dev/null 2>&1 || true
+systemctl restart bp-gateway-firewall.service
 sleep 1
-if ! systemctl --quiet is-active bp-gateway-wgshim.service; then
-  systemctl status bp-gateway-wgshim.service --no-pager >&2 || true
+if ! systemctl --quiet is-active bp-gateway-wgshim.service || \
+   ! systemctl --quiet is-active bp-gateway-firewall.service; then
+  systemctl status bp-gateway-wgshim.service bp-gateway-firewall.service --no-pager >&2 || true
   exit 5
 fi
 
