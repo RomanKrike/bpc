@@ -100,6 +100,30 @@ def valid_wireguard_key(value: str) -> bool:
     return len(raw) == 32 and any(raw)
 
 
+def require_owned_wireguard_interface(state_dir: Path) -> str:
+    config = read_json(state_dir / "config.json")
+    interface = str(config.get("wireguard_interface", "")).strip()
+    key_dir = str(config.get("wgshim_key_dir", "")).strip()
+    if not interface or not key_dir:
+        raise RuntimeError("BPC WireGuard ownership evidence is incomplete")
+    ownership_path = Path(key_dir).parent / "ownership.json"
+    try:
+        value = read_json(ownership_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"refusing WireGuard mutation: ownership is not proven for {interface}"
+        ) from exc
+    if (
+        value.get("owner") != "bpc"
+        or value.get("kind") != "wireguard-interface"
+        or str(value.get("name", "")) != interface
+    ):
+        raise RuntimeError(
+            f"refusing WireGuard mutation: ownership is not proven for {interface}"
+        )
+    return interface
+
+
 def run_wg(*args: str) -> None:
     completed = subprocess.run(
         ["wg", *args],
@@ -156,8 +180,7 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def sync_wireguard_peers(state_dir: Path) -> None:
-    config = read_json(state_dir / "config.json")
-    interface = str(config["wireguard_interface"])
+    interface = require_owned_wireguard_interface(state_dir)
     devices = active_wireguard_devices(state_dir)
     gateway_routes(devices)
 
@@ -190,8 +213,7 @@ def sync_wireguard_peers(state_dir: Path) -> None:
 
 
 def sync_gateway_routes(state_dir: Path) -> None:
-    config = read_json(state_dir / "config.json")
-    interface = str(config["wireguard_interface"])
+    interface = require_owned_wireguard_interface(state_dir)
     routes = sorted(gateway_routes(active_wireguard_devices(state_dir)))
     state_path = state_dir / "gateway-routes.json"
 
@@ -478,10 +500,10 @@ class ControlHandler(BaseHTTPRequestHandler):
         raise RuntimeError("BPC Agent WireGuard address pool is exhausted")
 
     def _install_wireguard_peer(self, public_key: str, address: str) -> None:
-        config = self._global_config()
+        interface = require_owned_wireguard_interface(self._root())
         run_wg(
             "set",
-            str(config["wireguard_interface"]),
+            interface,
             "peer",
             public_key,
             "allowed-ips",
@@ -492,8 +514,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         if not public_key:
             return
         try:
-            config = self._global_config()
-            run_wg("set", str(config["wireguard_interface"]), "peer", public_key, "remove")
+            interface = require_owned_wireguard_interface(self._root())
+            run_wg("set", interface, "peer", public_key, "remove")
         except (OSError, KeyError, ValueError, RuntimeError):
             pass
 
