@@ -64,3 +64,9 @@ def compatibility_enrollment_fields(
 
 def compatibility_enrollment_response(credential: str) -> dict[str, str]:
     return {"device_token": credential}
+
+
+def remove_compat_static_credential(root: Path, device: dict[str, Any]) -> None:
+    credential = str(device.get("device_token", "")).strip()
+    if credential:
+        legacy_token_index_path(root, credential).unlink(missing_ok=True)
