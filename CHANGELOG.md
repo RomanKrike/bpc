@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.0
+
+### Added
+- Authenticated WGShim TCP transport with persistent connections, TCP_NODELAY, framed packets, reconnects and the existing per-device AEAD keys.
+- Adaptive BP Gateway transport policy that probes UDP and TCP paths and selects the lower-latency reachable transport with hysteresis and fast fallback.
+- Agent relay TCP listener alongside the existing randomized UDP pool, including health/status checks and control-plane endpoint advertisement.
+
+### Changed
+- New BP Gateway installers default to `BP_GATEWAY_TRANSPORT=auto` while preserving explicit `udp` and `tcp` modes.
+- Relay and gateway keep WireGuard unchanged; only the outer WGShim carrier switches between UDP and TCP.
+
 ## 0.13.1
 
 ### Fixed

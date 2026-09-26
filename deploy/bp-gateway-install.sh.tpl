@@ -3,6 +3,7 @@ set -euo pipefail
 
 NAME="@@NAME@@"
 RELAY="@@RELAY@@"
+TCP_RELAY="@@TCP_RELAY@@"
 OVERLAY="@@OVERLAY@@"
 SERVER_OVERLAY_IP="@@SERVER_OVERLAY_IP@@"
 GATEWAY_ADDRESS="@@GATEWAY_ADDRESS@@"
@@ -19,6 +20,10 @@ REPO="${BPC_REPO:-RomanKrike/bpc}"
 STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}/bp-gateway"
 WG_IF="${BP_GATEWAY_WG_INTERFACE:-bpgw0}"
 WGSHIM_LISTEN="${BP_GATEWAY_WGSHIM_LISTEN:-127.0.0.1:24081}"
+TRANSPORT="${BP_GATEWAY_TRANSPORT:-auto}"
+PROBE_INTERVAL="${BP_GATEWAY_PROBE_INTERVAL:-15s}"
+PROBE_TIMEOUT="${BP_GATEWAY_PROBE_TIMEOUT:-750ms}"
+SWITCH_THRESHOLD="${BP_GATEWAY_SWITCH_THRESHOLD:-5ms}"
 LAN_IF="${BP_GATEWAY_LAN_INTERFACE:-}"
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -86,6 +91,22 @@ fi
 )
 install -m 0755 "${tmp}/${asset}" /usr/local/bin/bpc-wgshim
 
+case "${TRANSPORT}" in
+  auto)
+    WGSHIM_EXEC="client-auto --listen ${WGSHIM_LISTEN} --udp-server ${RELAY} --tcp-server ${TCP_RELAY} --probe-interval ${PROBE_INTERVAL} --probe-timeout ${PROBE_TIMEOUT} --switch-threshold ${SWITCH_THRESHOLD}"
+    ;;
+  udp)
+    WGSHIM_EXEC="client --listen ${WGSHIM_LISTEN} --server ${RELAY}"
+    ;;
+  tcp)
+    WGSHIM_EXEC="client-tcp --listen ${WGSHIM_LISTEN} --server ${TCP_RELAY}"
+    ;;
+  *)
+    echo "BP_GATEWAY_TRANSPORT must be auto, udp, or tcp" >&2
+    exit 2
+    ;;
+esac
+
 install -d -m 0700 "${STATE_DIR}" /etc/wireguard
 printf '%s\n' "${WGSHIM_PSK}" > "${STATE_DIR}/wgshim.key"
 chmod 0600 "${STATE_DIR}/wgshim.key"
@@ -110,6 +131,9 @@ BP_GATEWAY_WG_INTERFACE=${WG_IF}
 BP_GATEWAY_LAN_INTERFACE=${LAN_IF}
 BP_GATEWAY_OVERLAY=${OVERLAY}
 BP_GATEWAY_ROUTES=${ROUTES_CSV}
+BP_GATEWAY_TRANSPORT=${TRANSPORT}
+BP_GATEWAY_UDP_RELAY=${RELAY}
+BP_GATEWAY_TCP_RELAY=${TCP_RELAY}
 EOF
 chmod 0600 "${STATE_DIR}/runtime.env"
 
@@ -164,7 +188,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bpc-wgshim client --listen ${WGSHIM_LISTEN} --server ${RELAY} --key-file ${STATE_DIR}/wgshim.key --padding-min ${PADDING_MIN} --padding-max ${PADDING_MAX} --stats-interval 30s
+ExecStart=/usr/local/bin/bpc-wgshim ${WGSHIM_EXEC} --key-file ${STATE_DIR}/wgshim.key --padding-min ${PADDING_MIN} --padding-max ${PADDING_MAX} --stats-interval 30s
 Restart=always
 RestartSec=1
 NoNewPrivileges=true
@@ -222,4 +246,5 @@ fi
 echo "BP Gateway ${NAME} is connected to BP Network."
 echo "Home routes: ${ROUTES_CSV}"
 echo "LAN interface: ${LAN_IF}"
+echo "Transport policy: ${TRANSPORT} (UDP ${RELAY}; TCP ${TCP_RELAY})"
 echo "BP overlay address: ${GATEWAY_ADDRESS}"
