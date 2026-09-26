@@ -193,7 +193,8 @@ def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_runtime(
     assert "bpc-agent-relay" in DATAPLANE
     assert 'runtime_version_dir="${CONTROL_DIR}/runtime-${release_version}"' in ENABLE_CONTROL
     assert 'release_identity="${BPC_ROOT}/current/deploy/bpc_identity.py"' in ENABLE_CONTROL
-    assert 'install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"' in ENABLE_CONTROL
+    identity_copy = 'install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"'
+    assert identity_copy in ENABLE_CONTROL
     assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in ENABLE_CONTROL
     assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
 
