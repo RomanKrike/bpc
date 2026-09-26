@@ -641,7 +641,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             existing = find_device_by_public_key(self._root(), public_key)
             if existing is not None:
                 if str(existing.get("user_id", "")) != str(user["id"]):
-                    self._send_json(HTTPStatus.CONFLICT, {"error": "device identity is already owned"})
+                    self._send_json(
+                        HTTPStatus.CONFLICT,
+                        {"error": "device identity is already owned"},
+                    )
                     return
                 if not device_is_active(existing):
                     self._send_json(HTTPStatus.FORBIDDEN, {"error": "device identity was revoked"})
