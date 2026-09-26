@@ -131,17 +131,19 @@ case "${ACTION}" in
   up)
     iptables -C FORWARD -i "${BP_GATEWAY_WG_INTERFACE}" -o "${BP_GATEWAY_LAN_INTERFACE}" -j ACCEPT 2>/dev/null || \
       iptables -I FORWARD 1 -i "${BP_GATEWAY_WG_INTERFACE}" -o "${BP_GATEWAY_LAN_INTERFACE}" -j ACCEPT
-    iptables -C FORWARD -i "${BP_GATEWAY_LAN_INTEFACE}" -o "${BP_GATEWAY_WG_INTERFACE}" \
-      -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    iptables -C FORWARD -i "${BP_GATEWAY_LAN_INTERFACE}" -o "${BP_GATEWAY_WG_INTERFACE}" \
+      -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      iptables -I FORWARD 1 -i "${BP_GATEWAY_LAN_INTERFACE}" -o "${BP_GATEWAY_WG_INTERFACE}" \
+        -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
     for route in "${ROUTES[@]}"; do
       iptables -t nat -C POSTROUTING -s "${BP_GATEWAY_OVERLAY}" -d "${route}" \
         -o "${BP_GATEWAY_LAN_INTERFACE}" -j MASQUERADE 2>/dev/null || \
         iptables -t nat -A POSTROUTING -s "${BP_GATEWAY_OVERLAY}" -d "${route}" \
-          -o "${BP_GATEWAY_LAN_INTEFACE}" -j MASQUERADE
+          -o "${BP_GATEWAY_LAN_INTERFACE}" -j MASQUERADE
     done
     ;;
   down)
-    iptables -D FORWARD -i "${BP_GATEWAY_WG_INTERFACE}" -o "${BP_GATEWAY_LAN_INTEFACE}" -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -i "${BP_GATEWAY_WG_INTERFACE}" -o "${BP_GATEWAY_LAN_INTERFACE}" -j ACCEPT 2>/dev/null || true
     iptables -D FORWARD -i "${BP_GATEWAY_LAN_INTERFACE}" -o "${BP_GATEWAY_WG_INTERFACE}" \
       -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
     for route in "${ROUTES[@]}"; do
