@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.16.0
+
+### Added
+- Controller-owned User identity with Argon2id password hashing and the new bpc user add/disable administration commands.
+- Per-user Device identity with local Ed25519 private keys, Device registration proof-of-possession, list/revoke administration, and user-owned Device API.
+- Short-lived 10-minute access credentials plus rotating 30-day refresh credentials bound to the Device private key.
+- Login, refresh, logout, Device registration, Device listing and Device revocation control-plane endpoints.
+- Security and HTTP integration tests covering password storage, expiry, rotation, replay detection, disable/revoke and revoked-device re-registration.
+
+### Changed
+- Prepared BP Connect bootstrap schema v3 no longer embeds a one-time identity enrollment secret; first install authenticates the User and registers the locally generated Device identity.
+- Windows Agent state schema v2 stores access/refresh credentials separately from the Device key while remaining compatible with Stage 2 bootstrap v2 and state v1.
+- Device revoke now invalidates control credentials and removes both the WireGuard peer and WGShim relay key.
+
+### Security
+- User passwords are never transport keys and are never persisted in plaintext.
+- Access and refresh credentials are indexed by SHA-256 on the Controller rather than stored in plaintext.
+- Refresh rotation detects reuse of an already consumed credential and revokes the refresh family.
+- Gateway transport services do not receive or consume the User password database.
+
 ## 0.15.0
 
 ### Added
