@@ -237,6 +237,7 @@ class ControlHandler(BaseHTTPRequestHandler):
         downloads = self._root() / "downloads"
         (downloads / f"{token}.json").unlink(missing_ok=True)
         (downloads / f"{token}.exe").unlink(missing_ok=True)
+        (downloads / f"{token}.sh").unlink(missing_ok=True)
 
     def _read_body_json(self) -> dict[str, Any] | None:
         try:
@@ -602,7 +603,12 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, manifest)
 
-    def _send_binary(self, binary_path: Path, filename: str) -> None:
+    def _send_binary(
+        self,
+        binary_path: Path,
+        filename: str,
+        content_type: str = "application/octet-stream",
+    ) -> None:
         if not binary_path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -611,7 +617,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/vnd.microsoft.portable-executable")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(size))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
@@ -629,7 +635,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         token = parts[3]
         requested_name = parts[4]
-        if len(token) != 64 or not requested_name.lower().endswith(".exe"):
+        if len(token) != 64:
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         try:
@@ -638,9 +644,14 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
 
+        suffix = Path(requested_name).suffix.lower()
+        if suffix not in {".exe", ".sh"}:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+
         downloads = self._root() / "downloads"
         metadata_path = downloads / f"{token}.json"
-        binary_path = downloads / f"{token}.exe"
+        binary_path = downloads / f"{token}{suffix}"
         if not metadata_path.is_file() or not binary_path.is_file():
             self.send_error(HTTPStatus.NOT_FOUND)
             return
@@ -648,6 +659,15 @@ class ControlHandler(BaseHTTPRequestHandler):
             metadata = read_json(metadata_path)
             expires = int(metadata.get("expires", 0))
             filename = str(metadata.get("filename", ""))
+            one_time = bool(metadata.get("one_time", False))
+            content_type = str(
+                metadata.get(
+                    "content_type",
+                    "application/vnd.microsoft.portable-executable"
+                    if suffix == ".exe"
+                    else "text/x-shellscript; charset=utf-8",
+                )
+            )
         except (OSError, ValueError, json.JSONDecodeError):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
             return
@@ -658,7 +678,9 @@ class ControlHandler(BaseHTTPRequestHandler):
         if not filename or not secrets.compare_digest(filename, requested_name):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
-        self._send_binary(binary_path, filename)
+        self._send_binary(binary_path, filename, content_type)
+        if one_time:
+            self._delete_bootstrap_download(token)
 
     def _serve_update_binary(self) -> None:
         authenticated = self._authorized_device()
@@ -669,7 +691,11 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.FORBIDDEN)
             return
         binary_path = self._root() / "update" / "bpc-agent.exe"
-        self._send_binary(binary_path, "bpc-agent.exe")
+        self._send_binary(
+            binary_path,
+            "bpc-agent.exe",
+            "application/vnd.microsoft.portable-executable",
+        )
 
     def log_message(self, format: str, *args: object) -> None:
         # Paths and authorization failures can contain security-relevant metadata.
