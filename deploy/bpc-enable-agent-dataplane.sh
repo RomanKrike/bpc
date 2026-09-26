@@ -279,7 +279,7 @@ set -euo pipefail
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RUNTIME_ENV="${BPC_STATE_DIR}/ru-node/agent/runtime.env"
-CONTROL_DIR="${BPC_STATE_DIR}/ru-node/control"
+CONTROL_DIR="${BPC_STATE_DIR}/control"
 ACCESS_MODEL="${BPC_ROOT}/current/deploy/bpc_access.py"
 ACTION="${1:-up}"
 if [[ ! -s "${RUNTIME_ENV}" ]]; then
