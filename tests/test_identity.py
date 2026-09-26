@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = Path(__file__).parents[1]
@@ -15,7 +16,10 @@ import bpc_identity as identity  # noqa: E402
 
 
 def _device(root: Path, user_id: str, private_key: Ed25519PrivateKey) -> dict[str, object]:
-    public_raw = private_key.public_key().public_bytes_raw()
+    public_raw = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
     public_key = base64.b64encode(public_raw).decode("ascii")
     device_id = "a" * 32
     device = {
