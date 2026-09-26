@@ -8,7 +8,7 @@ import sys
 import threading
 from pathlib import Path
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization\nfrom cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 ROOT = Path(__file__).parents[1]
 DEPLOY = ROOT / "deploy"
@@ -104,9 +104,11 @@ def test_user_device_http_flow_login_register_refresh_revoke(
     thread.start()
 
     device_private = Ed25519PrivateKey.generate()
-    public_key = base64.b64encode(
-        device_private.public_key().public_bytes_raw()
-    ).decode("ascii")
+    public_raw = device_private.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    public_key = base64.b64encode(public_raw).decode("ascii")
     wireguard_public_key = base64.b64encode(b"w" * 32).decode("ascii")
 
     try:
