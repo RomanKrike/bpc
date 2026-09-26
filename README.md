@@ -213,9 +213,12 @@ separate relay session, so multiple agents can be connected concurrently.
 
 ## BP Network home gateway
 
-BPC 0.13 adds the first BP Network subnet-routing milestone. A Linux **BP Gateway**
-inside the home LAN joins the same `10.253.0.0/24` Agent overlay as BP Connect.
-The relay then routes only the explicitly advertised home CIDRs to that gateway.
+BPC 0.13 added BP Network subnet routing. BPC 0.14 adds adaptive outer transport
+selection for Linux **BP Gateway** nodes. A gateway joins the same
+`10.253.0.0/24` Agent overlay as BP Connect, and the relay routes only explicitly
+advertised LAN CIDRs to it. The gateway continuously compares authenticated UDP
+and TCP WGShim probes and can use TCP when a provider's UDP path has materially
+higher RTT.
 
 The initial path is:
 
@@ -237,23 +240,28 @@ home LAN
 Create a gateway on the BP Relay and grant its routes to a Windows device:
 
 ```bash
-sudo bpc-node gateway create home-moscow \
+sudo bpc-node gateway create ru-gw-01 \
   --route 192.168.88.0/24 \
   --grant pc004
 ```
 
 The command creates a root-only installer under
-`/etc/bpc-connect/ru-node/control/nodes/home-moscow/install.sh`. Copy that file
+`/etc/bpc-connect/ru-node/control/nodes/ru-gw-01/install.sh`. Copy that file
 to an always-on Debian host or VM inside the home LAN and run it as root. The
 installer provisions WireGuard, WGShim, forwarding and scoped NAT automatically.
+
+New installers default to `BP_GATEWAY_TRANSPORT=auto`. Explicit `udp` and
+`tcp` modes remain available through the `BP_GATEWAY_TRANSPORT` environment
+variable. Existing 0.13 gateways can be upgraded in place with
+`deploy/bp-gateway-upgrade.sh` after the relay is updated to 0.14.
 
 Manage access later with:
 
 ```bash
 sudo bpc-node gateway list
-sudo bpc-node gateway grant home-moscow pc004
-sudo bpc-node gateway ungrant home-moscow pc004
-sudo bpc-node gateway remove home-moscow
+sudo bpc-node gateway grant ru-gw-01 pc004
+sudo bpc-node gateway ungrant ru-gw-01 pc004
+sudo bpc-node gateway remove ru-gw-01
 ```
 
 BP Connect receives granted CIDRs through its normal control-plane sync, so no
