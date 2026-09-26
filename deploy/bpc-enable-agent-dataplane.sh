@@ -227,7 +227,69 @@ for port in "${wgshim_ports[@]}"; do
   relay_listeners+="0.0.0.0:${port}"
 done
 
+wg_config="/etc/wireguard/${WG_INTERFACE}.conf"
+ownership_file="${AGENT_DIR}/ownership.json"
+interface_owned="false"
+
+if [[ -s "${ownership_file}" ]]; then
+  if python3 - "${ownership_file}" "${WG_INTERFACE}" "${wg_config}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+ok = (
+    isinstance(value, dict)
+    and value.get("owner") == "bpc"
+    and value.get("kind") == "wireguard-interface"
+    and value.get("name") == sys.argv[2]
+    and value.get("config") == sys.argv[3]
+)
+raise SystemExit(0 if ok else 1)
+PY
+  then
+    interface_owned="true"
+  else
+    echo "Invalid BPC WireGuard ownership metadata: ${ownership_file}" >&2
+    exit 4
+  fi
+elif [[ -s "${AGENT_DIR}/runtime.env" && -f "${AGENT_DIR}/enabled" ]]; then
+  legacy_interface="$(sed -n 's/^AGENT_WG_INTERFACE=//p' "${AGENT_DIR}/runtime.env" | head -n1)"
+  if [[ "${legacy_interface}" == "${WG_INTERFACE}" ]]; then
+    # A matching enabled Agent runtime is explicit evidence that this is a
+    # pre-Stage-4.5 BPC-owned interface. Adopt it without touching any other WG.
+    interface_owned="true"
+  fi
+fi
+
+if [[ -e "${wg_config}" || -d "/sys/class/net/${WG_INTERFACE}" ]]; then
+  if [[ "${interface_owned}" != "true" ]]; then
+    echo "Refusing to modify WireGuard interface ${WG_INTERFACE}: ownership is unknown." >&2
+    echo "Existing ${wg_config} or kernel interface is not proven BPC-owned." >&2
+    exit 4
+  fi
+fi
+
 install -d -m 0700 "${AGENT_DIR}" "${KEY_DIR}" /etc/wireguard
+python3 - "${ownership_file}" "${WG_INTERFACE}" "${wg_config}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+value = {
+    "version": 1,
+    "owner": "bpc",
+    "kind": "wireguard-interface",
+    "name": sys.argv[2],
+    "config": sys.argv[3],
+}
+tmp = path.with_suffix(".tmp")
+tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+os.chmod(tmp, 0o600)
+os.replace(tmp, path)
+PY
 install -m 0755 "${relay_binary}" /usr/local/bin/bpc-agent-relay
 
 if [[ ! -s "${AGENT_DIR}/server.key" ]]; then
@@ -239,14 +301,14 @@ chmod 0600 "${AGENT_DIR}/server.key" "${AGENT_DIR}/server.pub"
 server_private="$(tr -d '\r\n' < "${AGENT_DIR}/server.key")"
 server_public="$(tr -d '\r\n' < "${AGENT_DIR}/server.pub")"
 
-cat > "/etc/wireguard/${WG_INTERFACE}.conf" <<CONF
+cat > "${wg_config}" <<CONF
 [Interface]
 Address = ${WG_SERVER_ADDRESS}
 ListenPort = ${WG_PORT}
 PrivateKey = ${server_private}
 MTU = ${WG_MTU}
 CONF
-chmod 0600 "/etc/wireguard/${WG_INTERFACE}.conf"
+chmod 0600 "${wg_config}"
 
 cat > "${AGENT_DIR}/runtime.env" <<RUNTIME
 AGENT_WG_INTERFACE=${WG_INTERFACE}
