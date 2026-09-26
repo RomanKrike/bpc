@@ -258,18 +258,14 @@ for spec in \
   fi
 done
 
-install_role="${ROLE:-node}"
-if [[ -z "${ROLE}" && -f "${BPC_STATE_DIR}/install.env" ]]; then
-  previous_role="$(sed -n 's/^BPC_ROLE=//p' "${BPC_STATE_DIR}/install.env" | head -n1)"
-  if [[ -n "${previous_role}" ]]; then
-    install_role="${previous_role}"
+install_role="${ROLE:-canonical}"
+{
+  if [[ "${ROLE}" == "ru-node" ]]; then
+    echo "BPC_ROLE=ru-node"
   fi
-fi
-cat > "${BPC_STATE_DIR}/install.env" <<STATE
-BPC_ROLE=${install_role}
-BPC_ROOT=${BPC_ROOT}
-BPC_NODE_CONFIG=${BPC_STATE_DIR}/node.yaml
-STATE
+  echo "BPC_ROOT=${BPC_ROOT}"
+  echo "BPC_NODE_CONFIG=${BPC_STATE_DIR}/node.yaml"
+} > "${BPC_STATE_DIR}/install.env"
 chmod 0600 "${BPC_STATE_DIR}/install.env"
 
 rollback_release() {
@@ -296,7 +292,9 @@ elif [[ "${ROLE}" == "ru-node" ]]; then
     exit 5
   fi
 else
-  echo "BPC core runtime installed. Join this host with: bpc join <TOKEN>"
+  echo "BPC core runtime installed."
+  echo "Initialize the first Controller with: bpc init --name <NAME> --roles controller,gateway,relay --hostname <DNS>"
+  echo "Or join an existing cluster with: bpc join <TOKEN>"
 fi
 
 if [[ "${WITH_AWG}" == "true" ]]; then
@@ -334,6 +332,7 @@ Release: ${release_dir}
 Current: ${BPC_ROOT}/current
 
 Commands:
+  bpc init --name <NAME> --roles controller,gateway,relay --hostname <DNS>
   bpc join <TOKEN>
   bpc status
   bpc node status
