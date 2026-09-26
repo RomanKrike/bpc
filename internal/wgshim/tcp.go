@@ -420,6 +420,16 @@ func RunTCPMultiServer(ctx context.Context, cfg TCPMultiServerConfig) error {
 			defer wg.Done()
 			defer conn.Close()
 
+			stopClose := make(chan struct{})
+			defer close(stopClose)
+			go func() {
+				select {
+				case <-ctx.Done():
+					_ = conn.Close()
+				case <-stopClose:
+				}
+			}()
+
 			var (
 				peerID          string
 				peerFingerprint string
