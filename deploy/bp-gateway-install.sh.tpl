@@ -24,6 +24,8 @@ TRANSPORT="${BP_GATEWAY_TRANSPORT:-auto}"
 PROBE_INTERVAL="${BP_GATEWAY_PROBE_INTERVAL:-15s}"
 PROBE_TIMEOUT="${BP_GATEWAY_PROBE_TIMEOUT:-750ms}"
 SWITCH_THRESHOLD="${BP_GATEWAY_SWITCH_THRESHOLD:-5ms}"
+UDP_FLOWS="${BP_GATEWAY_UDP_FLOWS:-6}"
+TCP_FLOWS="${BP_GATEWAY_TCP_FLOWS:-2}"
 LAN_IF="${BP_GATEWAY_LAN_INTERFACE:-}"
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -93,7 +95,7 @@ install -m 0755 "${tmp}/${asset}" /usr/local/bin/bpc-wgshim
 
 case "${TRANSPORT}" in
   auto)
-    WGSHIM_EXEC="client-auto --listen ${WGSHIM_LISTEN} --udp-server ${RELAY} --tcp-server ${TCP_RELAY} --probe-interval ${PROBE_INTERVAL} --probe-timeout ${PROBE_TIMEOUT} --switch-threshold ${SWITCH_THRESHOLD}"
+    WGSHIM_EXEC="client-flow-auto --listen ${WGSHIM_LISTEN} --udp-server ${RELAY} --udp-flows ${UDP_FLOWS} --tcp-server ${TCP_RELAY} --tcp-flows ${TCP_FLOWS} --probe-interval ${PROBE_INTERVAL} --probe-timeout ${PROBE_TIMEOUT} --switch-threshold ${SWITCH_THRESHOLD}"
     ;;
   udp)
     WGSHIM_EXEC="client --listen ${WGSHIM_LISTEN} --server ${RELAY}"
@@ -134,6 +136,8 @@ BP_GATEWAY_ROUTES=${ROUTES_CSV}
 BP_GATEWAY_TRANSPORT=${TRANSPORT}
 BP_GATEWAY_UDP_RELAY=${RELAY}
 BP_GATEWAY_TCP_RELAY=${TCP_RELAY}
+BP_GATEWAY_UDP_FLOWS=${UDP_FLOWS}
+BP_GATEWAY_TCP_FLOWS=${TCP_FLOWS}
 EOF
 chmod 0600 "${STATE_DIR}/runtime.env"
 
@@ -246,5 +250,5 @@ fi
 echo "BP Gateway ${NAME} is connected to BP Network."
 echo "Home routes: ${ROUTES_CSV}"
 echo "LAN interface: ${LAN_IF}"
-echo "Transport policy: ${TRANSPORT} (UDP ${RELAY}; TCP ${TCP_RELAY})"
+echo "Transport policy: ${TRANSPORT} (UDP ${RELAY} x${UDP_FLOWS}; TCP ${TCP_RELAY} x${TCP_FLOWS})"
 echo "BP overlay address: ${GATEWAY_ADDRESS}"
