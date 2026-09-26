@@ -64,7 +64,7 @@ bpc node token create --roles gateway,relay --name ge-02 --expires 15m
 Then, on a clean Debian/Ubuntu VPS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh | sudo bash
 bpc join BPC-<controller-envelope>.<one-time-secret>
 ```
 

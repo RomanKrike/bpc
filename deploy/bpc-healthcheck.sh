@@ -365,6 +365,23 @@ check_subscription() {
   fi
 }
 
+check_joined_node() {
+  local runtime_entry="${BPC_STATE_DIR}/runtime/deploy/bpc_node_enrollment.py"
+
+  if [[ ! -s "${BPC_STATE_DIR}/enrollment.json" ]]; then
+    fail_health "BPC Node enrollment state is missing"
+    return 1
+  fi
+  if [[ ! -s "${runtime_entry}" ]]; then
+    fail_health "BPC Node staged runtime is missing"
+    return 1
+  fi
+  if ! systemctl --quiet is-active bpc-node.service; then
+    fail_health "bpc-node.service is not active"
+    return 1
+  fi
+}
+
 check_control() {
   local control_dir="${BPC_STATE_DIR}/ru-node/control"
   local runtime_env="${control_dir}/runtime.env"
@@ -428,7 +445,11 @@ case "${ROLE}" in
     check_control
     ;;
   *)
-    fail_health "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}"
-    exit 1
+    if [[ -s "${BPC_STATE_DIR}/enrollment.json" ]]; then
+      check_joined_node
+    else
+      fail_health "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}"
+      exit 1
+    fi
     ;;
 esac

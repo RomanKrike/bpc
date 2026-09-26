@@ -51,6 +51,11 @@ if [[ -f "${node_model}" ]]; then
   python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" migrate
 fi
 
+node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
+if [[ -s "${BPC_STATE_DIR}/enrollment.json" && -f "${node_enrollment}" ]]; then
+  python3 "${node_enrollment}" --state-dir "${BPC_STATE_DIR}" runtime-install
+fi
+
 # Nothing else to migrate on nodes that do not have an RU Xray configuration.
 if [[ ! -f "${config}" ]]; then
   exit 0

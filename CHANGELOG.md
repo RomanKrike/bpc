@@ -20,6 +20,14 @@
 - Refresh rotation detects reuse of an already consumed credential and revokes the refresh family.
 - Gateway transport services do not receive or consume the User password database.
 
+## 0.15.3
+
+### Fixed
+- Stage the joined Node daemon runtime inside the BPC state directory so `bpc-node.service` does not execute Python from the versioned `/opt/bpc` release tree under its hardened systemd sandbox.
+- Repair the staged Node runtime automatically during upgrades for already-enrolled Nodes.
+- Health-check enrolled core-only Nodes through `bpc-node.service` instead of rejecting them for having no legacy `BPC_ROLE`.
+- Update the one-line installer example to invoke the Bash installer with `sudo bash` rather than POSIX `sh`.
+
 ## 0.15.2
 
 ### Fixed
