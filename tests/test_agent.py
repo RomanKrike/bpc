@@ -448,3 +448,11 @@ def test_gateway_upgrade_supports_local_wgshim_binary() -> None:
 
 def test_status_parses_udp_local_address_column() -> None:
     assert 'addr=$4' in STATUS
+
+
+def test_gateway_upgrade_reconciles_forwarding_and_nat() -> None:
+    assert 'cat > /usr/local/sbin/bp-gateway-firewall' in GATEWAY_UPGRADE
+    assert 'iptables -I FORWARD 1 -i "${BP_GATEWAY_LAN_INTERFACE}"' in GATEWAY_UPGRADE
+    assert '-o "${BP_GATEWAY_LAN_INTERFACE}" -j MASQUERADE' in GATEWAY_UPGRADE
+    assert "systemctl restart bp-gateway-firewall.service" in GATEWAY_UPGRADE
+    assert "systemctl --quiet is-active bp-gateway-firewall.service" in GATEWAY_UPGRADE

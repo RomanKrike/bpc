@@ -12,7 +12,7 @@ import (
 	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
-const version = "0.14.1"
+const version = "0.14.2"
 
 func main() {
 	if len(os.Args) < 2 {
