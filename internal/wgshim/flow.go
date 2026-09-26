@@ -31,19 +31,19 @@ type FlowReport struct {
 }
 
 type AdaptiveFlowTransportClientConfig struct {
-	LocalListen       string
-	UDPServer         string
-	UDPFlows          int
-	TCPServer         string
-	TCPFlows          int
-	TX                *Codec
-	RX                *Codec
-	Logger            *log.Logger
-	StatsInterval     time.Duration
-	ProbeInterval     time.Duration
-	ProbeTimeout      time.Duration
-	SwitchThreshold   time.Duration
-	OnFlowReport      func(FlowReport)
+	LocalListen     string
+	UDPServer       string
+	UDPFlows        int
+	TCPServer       string
+	TCPFlows        int
+	TX              *Codec
+	RX              *Codec
+	Logger          *log.Logger
+	StatsInterval   time.Duration
+	ProbeInterval   time.Duration
+	ProbeTimeout    time.Duration
+	SwitchThreshold time.Duration
+	OnFlowReport    func(FlowReport)
 }
 
 type transportFlow struct {
