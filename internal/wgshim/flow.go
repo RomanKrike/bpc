@@ -350,10 +350,7 @@ func RunAdaptiveFlowTransportClient(ctx context.Context, cfg AdaptiveFlowTranspo
 		for {
 			n, addr, readErr := localConn.ReadFromUDP(buf)
 			if readErr != nil {
-				select {
-				case errCh <- normalizeNetErr(runCtx, readErr):
-				case <-runCtx.Done():
-				}
+				errCh <- normalizeNetErr(runCtx, readErr)
 				return
 			}
 			wgPeerMu.Lock()
@@ -363,10 +360,7 @@ func RunAdaptiveFlowTransportClient(ctx context.Context, cfg AdaptiveFlowTranspo
 			stats.InnerTX.Add(uint64(n))
 			outer, sealErr := sealData(buf[:n])
 			if sealErr != nil {
-				select {
-				case errCh <- fmt.Errorf("seal WireGuard packet: %w", sealErr):
-				case <-runCtx.Done():
-				}
+				errCh <- fmt.Errorf("seal WireGuard packet: %w", sealErr)
 				return
 			}
 
