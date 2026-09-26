@@ -7,7 +7,8 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 import yaml
 
@@ -23,7 +24,7 @@ class Capabilities:
     values: dict[str, bool]
 
     @classmethod
-    def from_mapping(cls, raw: Mapping[str, Any] | None) -> "Capabilities":
+    def from_mapping(cls, raw: Mapping[str, Any] | None) -> Capabilities:
         values: dict[str, bool] = {name: False for name in CORE_CAPABILITIES}
         if raw is None:
             return cls(values)
@@ -44,7 +45,7 @@ class Capabilities:
     def enabled(self) -> tuple[str, ...]:
         return tuple(sorted(name for name, enabled in self.values.items() if enabled))
 
-    def with_updates(self, **updates: bool) -> "Capabilities":
+    def with_updates(self, **updates: bool) -> Capabilities:
         values = dict(self.values)
         for name, enabled in updates.items():
             if not _CAPABILITY_RE.fullmatch(name):
