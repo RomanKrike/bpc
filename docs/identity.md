@@ -172,9 +172,10 @@ and optional legacy tunnel name.
 It contains no password, user access credential, refresh credential, Device
 private key, WireGuard private key, WGShim PSK, or one-time enrollment secret.
 
-On first install the user enters username/password. BP Connect then registers
-the new local Device and normally does not ask for the password again while the
-refresh credential remains valid.
+On first install Windows opens a BP Connect sign-in dialog for the username and
+password. The password is used only for that login request and is not persisted.
+BP Connect then registers the new local Device and normally does not ask for the
+password again while the refresh credential remains valid.
 
 Bootstrap v2 and State v1 remain readable for Stage 2 migration compatibility.
 
