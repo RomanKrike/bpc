@@ -89,7 +89,6 @@ func TestGenericBinaryRejected(t *testing.T) {
 	}
 }
 
-
 func TestPreparedBootstrapV3NeedsNoEnrollmentSecret(t *testing.T) {
 	cfg := testBootstrap(t, "pc004")
 	cfg.EnrollToken = ""
