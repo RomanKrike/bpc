@@ -407,7 +407,7 @@ def _change(args: argparse.Namespace, effect: str) -> int:
         username=args.user,
         device_identifier=args.device,
     )
-    record = set_access(root, subject_type, subject_id, effect, list(args.cidrs))
+    set_access(root, subject_type, subject_id, effect, list(args.cidrs))
     sync_access_firewall(root)
     print(
         f"Access {effect}: {subject_type}:{label} "
