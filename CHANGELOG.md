@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.14.2
+
+### Fixed
+- Reconcile the BP Gateway forwarding/NAT script during in-place upgrades so gateways created by 0.13.0 recover the reverse FORWARD rule and scoped MASQUERADE rule automatically.
+- Restart and validate `bp-gateway-firewall.service` as part of the gateway upgrade instead of upgrading only the WGShim transport.
+
 ## 0.14.1
 
 ### Fixed
