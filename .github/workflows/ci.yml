@@ -37,6 +37,7 @@ jobs:
           cache: false
       - name: Check Go formatting
         run: |
+          gofmt -d cmd internal
           files="$(gofmt -l cmd internal)"
           if [[ -n "$files" ]]; then
             printf 'Files requiring gofmt:\n%s\n' "$files"
