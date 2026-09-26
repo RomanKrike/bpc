@@ -35,9 +35,19 @@ fi
 tcp_relay="${BP_GATEWAY_TCP_RELAY:-${udp_relay}}"
 padding_min="$(sed -nE 's/.*--padding-min[[:space:]]+([^[:space:]]+).*/\1/p' <<< "${exec_line}" | head -n1)"
 padding_max="$(sed -nE 's/.*--padding-max[[:space:]]+([^[:space:]]+).*/\1/p' <<< "${exec_line}" | head -n1)"
+udp_flows="${BP_GATEWAY_UDP_FLOWS:-}"
+if [[ -z "${udp_flows}" ]]; then
+  udp_flows="$(sed -nE 's/.*--udp-flows[[:space:]]+([^[:space:]]+).*/\1/p' <<< "${exec_line}" | head -n1)"
+fi
+tcp_flows="${BP_GATEWAY_TCP_FLOWS:-}"
+if [[ -z "${tcp_flows}" ]]; then
+  tcp_flows="$(sed -nE 's/.*--tcp-flows[[:space:]]+([^[:space:]]+).*/\1/p' <<< "${exec_line}" | head -n1)"
+fi
 listen="${listen:-127.0.0.1:24081}"
 padding_min="${padding_min:-0}"
 padding_max="${padding_max:-31}"
+udp_flows="${udp_flows:-6}"
+tcp_flows="${tcp_flows:-2}"
 
 if [[ -z "${udp_relay}" || -z "${tcp_relay}" ]]; then
   echo "Unable to determine BP Relay endpoint from the existing gateway service" >&2
@@ -84,7 +94,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/bpc-wgshim client-auto --listen ${listen} --udp-server ${udp_relay} --tcp-server ${tcp_relay} --probe-interval 15s --probe-timeout 750ms --switch-threshold 5ms --key-file ${STATE_DIR}/wgshim.key --padding-min ${padding_min} --padding-max ${padding_max} --stats-interval 30s
+ExecStart=/usr/local/bin/bpc-wgshim client-flow-auto --listen ${listen} --udp-server ${udp_relay} --udp-flows ${udp_flows} --tcp-server ${tcp_relay} --tcp-flows ${tcp_flows} --probe-interval 15s --probe-timeout 750ms --switch-threshold 5ms --key-file ${STATE_DIR}/wgshim.key --padding-min ${padding_min} --padding-max ${padding_max} --stats-interval 30s
 Restart=always
 RestartSec=1
 NoNewPrivileges=true
@@ -97,7 +107,7 @@ ReadOnlyPaths=${STATE_DIR}
 WantedBy=multi-user.target
 EOF
 
-python3 - "${RUNTIME}" "${listen}" "${udp_relay}" "${tcp_relay}" <<'PY'
+python3 - "${RUNTIME}" "${listen}" "${udp_relay}" "${tcp_relay}" "${udp_flows}" "${tcp_flows}" <<'PY'
 import sys
 from pathlib import Path
 
@@ -107,6 +117,8 @@ updates = {
     "BP_GATEWAY_TRANSPORT": "auto",
     "BP_GATEWAY_UDP_RELAY": sys.argv[3],
     "BP_GATEWAY_TCP_RELAY": sys.argv[4],
+    "BP_GATEWAY_UDP_FLOWS": sys.argv[5],
+    "BP_GATEWAY_TCP_FLOWS": sys.argv[6],
 }
 lines = path.read_text(encoding="utf-8").splitlines()
 seen = set()
@@ -198,7 +210,8 @@ if ! systemctl --quiet is-active bp-gateway-wgshim.service || \
   exit 5
 fi
 
-echo "BP Gateway transport upgraded to adaptive UDP/TCP."
+echo "BP Gateway transport upgraded to adaptive multi-flow UDP/TCP."
 echo "UDP relay: ${udp_relay}"
 echo "TCP relay: ${tcp_relay}"
+echo "Flow pool: UDP x${udp_flows}; TCP x${tcp_flows}"
 echo "Inspect selection: journalctl -u bp-gateway-wgshim.service -n 20 --no-pager"
