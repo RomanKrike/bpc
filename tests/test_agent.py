@@ -181,7 +181,8 @@ def test_agent_runtime_avoids_legacy_relay_collision_and_uses_release_control_se
     assert "port_available_for_agent" in DATAPLANE
     assert "bpc-agent-relay" in DATAPLANE
     assert 'control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"' in ENABLE_CONTROL
-    assert 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"' not in ENABLE_CONTROL
+    copied_server = 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"'
+    assert copied_server not in ENABLE_CONTROL
     assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
 
 
