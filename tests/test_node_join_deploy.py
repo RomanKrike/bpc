@@ -1,3 +1,6 @@
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
@@ -35,10 +38,32 @@ def test_controller_exposes_separate_node_enrollment_endpoints() -> None:
     assert 'self.path == "/v1/heartbeat"' in CONTROL
 
 
-def test_control_service_runs_server_from_release_tree() -> None:
+def test_control_service_stages_self_contained_runtime_inside_state_dir() -> None:
     enable_control = (ROOT / "deploy" / "bpc-enable-control.sh").read_text(
         encoding="utf-8"
     )
-    assert 'control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"' in enable_control
-    copied_server = 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"'
-    assert copied_server not in enable_control
+    assert 'release_control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"' in enable_control
+    assert 'release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"' in enable_control
+    assert 'release_package="${BPC_ROOT}/current/src/bpc_connect"' in enable_control
+    assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in enable_control
+    assert 'chown -R root:root "${runtime_tmp}"' in enable_control
+    assert "journalctl -u bpc-control.service -n 50 -o cat -l --no-pager" in enable_control
+
+
+def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> None:
+    runtime = tmp_path / "runtime"
+    (runtime / "src").mkdir(parents=True)
+    shutil.copy(ROOT / "deploy" / "bpc-control-server.py", runtime / "bpc-control-server.py")
+    shutil.copy(ROOT / "deploy" / "bpc_node_enrollment.py", runtime / "bpc_node_enrollment.py")
+    shutil.copytree(ROOT / "src" / "bpc_connect", runtime / "src" / "bpc_connect")
+
+    completed = subprocess.run(
+        [sys.executable, str(runtime / "bpc-control-server.py"), "--help"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "BPC Agent control plane" in completed.stdout
