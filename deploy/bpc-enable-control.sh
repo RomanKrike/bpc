@@ -102,10 +102,15 @@ install -d -m 0700 \
   "${CONTROL_DIR}/identity/access" \
   "${CONTROL_DIR}/identity/refresh"
 
-control_server="${CONTROL_DIR}/bpc-control-server.py"
-install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py" "${control_server}"
-install -m 0700 "${BPC_ROOT}/current/deploy/bpc_identity.py" "${CONTROL_DIR}/bpc_identity.py"
-install -m 0700 "${BPC_ROOT}/current/deploy/bpc_node_enrollment.py" "${CONTROL_DIR}/bpc_node_enrollment.py"
+control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"
+identity_helper="${BPC_ROOT}/current/deploy/bpc_identity.py"
+node_enrollment_helper="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
+for required in "${control_server}" "${identity_helper}" "${node_enrollment_helper}"; do
+  if [[ ! -f "${required}" ]]; then
+    echo "BPC control-plane runtime file is missing from the current release: ${required}" >&2
+    exit 3
+  fi
+done
 
 signing_key="${CONTROL_DIR}/update-signing-key.pem"
 signing_public="${CONTROL_DIR}/update-signing-public.pem"
