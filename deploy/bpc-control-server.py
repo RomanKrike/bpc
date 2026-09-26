@@ -661,10 +661,6 @@ class ControlHandler(BaseHTTPRequestHandler):
         except (OSError, ValueError, json.JSONDecodeError):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
             return
-        requested = str(body.get("node_id", "")).strip()
-        if requested and not secrets.compare_digest(requested, str(response["node_id"])):
-            self._send_json(HTTPStatus.CONFLICT, {"error": "node identity mismatch"})
-            return
         self._send_json(HTTPStatus.OK, response)
 
     def _serve_update_manifest(self) -> None:
