@@ -72,7 +72,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     config, _ = migrate_legacy_node(
         args.state_dir,
         name=args.name,
-        touch_last_seen=True,
+        touch_last_seen=False,
     )
     enabled = config.node.roles.enabled()
     print(f"Node: {config.node.name}")
