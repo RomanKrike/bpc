@@ -11,6 +11,7 @@ BPC nodes are installed from versioned GitHub Release bundles rather than direct
   current -> /opt/bpc/releases/<active-version>
 
 /etc/bpc-connect/
+  node.yaml
   install.env
   ru-node/
     config.json
@@ -27,7 +28,7 @@ BPC nodes are installed from versioned GitHub Release bundles rather than direct
   state-<timestamp>-<version>.tar.gz
 ```
 
-Application releases are immutable directories under `/opt/bpc/releases`. Runtime credentials and generated configuration live outside the release tree under `/etc/bpc-connect`, so an application update does not regenerate transport credentials.
+Application releases are immutable directories under `/opt/bpc/releases`. Runtime credentials and generated configuration live outside the release tree under `/etc/bpc-connect`, so an application update does not regenerate transport credentials. `node.yaml` is the versioned unified Node metadata; `ru-node/` remains the compatibility/runtime location for existing transports.
 
 ## Fresh RU-node installation
 
@@ -44,6 +45,7 @@ You may provision AWG and native WireGuard in the same install:
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
   | sudo bash -s -- \
       --role ru-node \
+      --node-name ru-01 \
       --reality-server-name www.bing.com \
       --public-host 203.0.113.10 \
       --port 443 \
@@ -62,13 +64,15 @@ The installer performs these steps:
 3. downloads `SHA256SUMS` and verifies the deployment bundle;
 4. extracts the version into `/opt/bpc/releases/<version>`;
 5. atomically points `/opt/bpc/current` at that release;
-6. provisions the requested role on first install, including REALITY target preflight;
-7. reconciles the available BPC commands under `/usr/local/sbin`;
-8. optionally provisions the selected secondary transports.
+6. provisions the legacy RU gateway install profile on first install, including REALITY target preflight;
+7. creates/reconciles `/etc/bpc-connect/node.yaml` and its capabilities;
+8. reconciles the available BPC commands under `/usr/local/sbin`;
+9. optionally provisions the selected secondary transports.
 
 Installed commands include:
 
 ```text
+bpc
 bpc-status
 bpc-update
 bpc-enable-awg
@@ -78,8 +82,12 @@ bpc-enable-wg
 ## Status
 
 ```bash
+sudo bpc node status
+sudo bpc node info
 sudo bpc-status
 ```
+
+`bpc node status` reports the unified Node identity, enabled capabilities and matching runtime-service state. `bpc node info` prints the versioned Node metadata without exposing transport credentials. The legacy detailed `bpc-status` command remains supported.
 
 The status command intentionally does not print UUIDs, private keys, PSKs, or other client credentials. Optional transports report `disabled`, `active` or a failed health state without exposing secrets.
 
@@ -99,6 +107,8 @@ The updater:
 6. switches `/opt/bpc/current` to the new version and reconciles command links;
 7. validates all currently enabled managed transports;
 8. restarts Xray and runs the health check again.
+
+During migration, BPC creates `node.yaml` if it is missing and derives capabilities from the existing RU-node markers. Reconciliation is additive: an explicitly configured or future capability is not removed. Existing client/transport credentials are not regenerated.
 
 Optional transports are not enabled implicitly by an update. Existing AWG/WireGuard state remains under `/etc/bpc-connect` and is health-checked only when its `enabled` marker exists.
 
