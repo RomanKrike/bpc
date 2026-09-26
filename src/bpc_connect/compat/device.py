@@ -60,3 +60,7 @@ def legacy_enrollment_fields(
         "managed_routes": [],
         "legacy_tunnel": legacy_tunnel,
     }
+
+
+def legacy_enrollment_response(credential: str) -> dict[str, str]:
+    return {"device_token": credential}
