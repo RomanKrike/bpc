@@ -22,7 +22,7 @@ from argon2.exceptions import VerificationError
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/ru-node/control")
+DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 ACCESS_TTL = 10 * 60
 REFRESH_TTL = 30 * 24 * 60 * 60
 USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
