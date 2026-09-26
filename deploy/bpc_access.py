@@ -12,7 +12,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/ru-node/control")
+MODULE_DIR = Path(__file__).resolve().parent
+if (MODULE_DIR / "src" / "bpc_connect").is_dir():
+    SOURCE_ROOT = MODULE_DIR / "src"
+else:
+    SOURCE_ROOT = MODULE_DIR.parent / "src"
+sys.path.insert(0, str(SOURCE_ROOT))
+
+from bpc_connect.compat.legacy import is_legacy_site_router, legacy_managed_routes  # noqa: E402
+
+DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 CHAIN_NAME = "BPC-ACCESS"
 
 
@@ -197,12 +206,9 @@ def effective_networks(root: Path, device: dict[str, Any]) -> list[ipaddress.IPv
         allows.extend(_canonical_networks(list(record["allow"])))
         denies.extend(_canonical_networks(list(record["deny"])))
 
-    # Stage 2/early Stage 3 compatibility: existing gateway grant/ungrant writes
-    # managed_routes on the Device. They remain an explicit allow source, but
-    # Access deny rules still override them server-side.
-    managed = device.get("managed_routes", [])
-    if isinstance(managed, list):
-        allows.extend(_canonical_networks(managed))
+    # Historical Device route grants are read only through the compatibility
+    # adapter. Access deny rules still override them.
+    allows.extend(_canonical_networks(legacy_managed_routes(device)))
 
     return _subtract_denies(
         list(ipaddress.collapse_addresses(allows)),
@@ -239,7 +245,7 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
             device = read_json(path)
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        if str(device.get("role", "")) == "gateway":
+        if is_legacy_site_router(device):
             continue
         if not bool(device.get("enabled", True)):
             continue
