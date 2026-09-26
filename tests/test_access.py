@@ -68,6 +68,16 @@ def test_unknown_route_is_denied_by_default(tmp_path: Path) -> None:
     assert not access.destination_allowed(tmp_path, value, "10.253.0.99")
 
 
+def test_user_access_is_isolated(tmp_path: Path) -> None:
+    roman = device("roman-id")
+    other = device("other-id")
+    access.set_access(tmp_path, "user", "roman-id", "allow", ["192.168.88.0/24"], now=100)
+    access.set_access(tmp_path, "user", "other-id", "deny", ["192.168.88.0/24"], now=101)
+
+    assert access.destination_allowed(tmp_path, roman, "192.168.88.10")
+    assert not access.destination_allowed(tmp_path, other, "192.168.88.10")
+
+
 def test_legacy_managed_route_is_allowed_but_access_deny_still_wins(tmp_path: Path) -> None:
     value = device()
     value["managed_routes"] = ["192.168.88.0/24"]
