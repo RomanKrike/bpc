@@ -186,15 +186,15 @@ def test_embedded_tunnel_pins_relay_outside_full_tunnel_route() -> None:
     assert "DestinationPrefix '%s/32'" in TUNNEL
 
 
-def test_agent_runtime_avoids_legacy_relay_collision_and_uses_release_control_server() -> None:
+def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_runtime() -> None:
     assert "WGSHIM_PORT_EXPLICIT" in DATAPLANE
     assert "24444 24544" in DATAPLANE
     assert "port_available_for_agent" in DATAPLANE
     assert "bpc-agent-relay" in DATAPLANE
-    assert 'control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"' in ENABLE_CONTROL
-    copied_server = 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"'
-    assert copied_server not in ENABLE_CONTROL
-    assert 'identity_helper="${BPC_ROOT}/current/deploy/bpc_identity.py"' in ENABLE_CONTROL
+    assert 'runtime_version_dir="${CONTROL_DIR}/runtime-${release_version}"' in ENABLE_CONTROL
+    assert 'release_identity="${BPC_ROOT}/current/deploy/bpc_identity.py"' in ENABLE_CONTROL
+    assert 'install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"' in ENABLE_CONTROL
+    assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in ENABLE_CONTROL
     assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
 
 
