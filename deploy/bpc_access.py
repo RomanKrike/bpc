@@ -312,11 +312,15 @@ def sync_access_firewall(root: Path) -> None:
         ).returncode == 0:
             _run(["iptables", "-D", "FORWARD", "-i", previous_interface, "-j", CHAIN_NAME])
 
-    if _run(
+    # Keep Access ahead of the broad Agent FORWARD accept rule. Dataplane
+    # reconciliation can reinsert its own rule at position 1, so remove every
+    # existing jump and reinsert exactly one jump at the top.
+    while _run(
         ["iptables", "-C", "FORWARD", "-i", interface, "-j", CHAIN_NAME],
         check=False,
-    ).returncode != 0:
-        _run(["iptables", "-I", "FORWARD", "1", "-i", interface, "-j", CHAIN_NAME])
+    ).returncode == 0:
+        _run(["iptables", "-D", "FORWARD", "-i", interface, "-j", CHAIN_NAME])
+    _run(["iptables", "-I", "FORWARD", "1", "-i", interface, "-j", CHAIN_NAME])
 
     atomic_json(
         state_path,
