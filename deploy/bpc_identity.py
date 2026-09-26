@@ -35,8 +35,8 @@ PASSWORD_HASHER = PasswordHasher(
     type=Type.ID,
 )
 DUMMY_PASSWORD_HASH = (
-    "$argon2id$v=19$m=65536,t=3,p=4$GyLur+VBqAvDH6lCLZVVgA$"
-    "2Indc0PCzsu9P/YXh29mPqYGl3Rqa+JWs55fd+zrfOs"
+    "$argon2id$v=19$m=65536,t=3,p=2$SqqHn3CWlOztsv14UGaiTw$"
+    "YKur3kzmEgIzL3TtGFpHEN9Tn+V1Z2eVGH9PCMoTgms"
 )
 
 
