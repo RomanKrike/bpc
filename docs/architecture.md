@@ -183,3 +183,39 @@ Explicitly deferred:
 - site-router/MikroTik implementation;
 - removal/renaming of legacy `ru-node` directories and BP Gateway device
   record fields.
+
+
+## Stage 2: Node enrollment
+
+Stage 2 adds a transport-independent enrollment layer to the unified Node
+model. The existing Agent Device enrollment API remains separate.
+
+```text
+Controller
+  |
+  | one-time join token
+  v
+fresh BPC runtime
+  |
+  | local Ed25519 identity (private key stays local)
+  | HTTPS public-key enrollment
+  v
+Controller-assigned Node ID + credential + capabilities
+  |
+  v
+role reconciliation -> heartbeat -> cluster state
+```
+
+Controller Node records are stored under the existing control-plane state but
+use dedicated `node-*` directories. Join-token secrets and Node credentials
+are never stored as plaintext indexes. Active public-key fingerprints are
+unique.
+
+The Stage 2 daemon is orchestration only. Gateway and relay capabilities call
+the existing runtime/provisioning paths and do not alter Xray, WireGuard,
+WGShim or Agent packet formats.
+
+Fresh remote promotion to an additional `controller` capability is not a
+distributed-controller implementation: an already provisioned Controller
+service can be reconciled, while certificate distribution and replicated
+Controller state remain deferred. `site_router` also remains deferred.
