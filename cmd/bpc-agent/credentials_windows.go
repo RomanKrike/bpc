@@ -18,7 +18,7 @@ func readPasswordLine() (string, error) {
 		value, readErr := reader.ReadString('\n')
 		return strings.TrimRight(value, "\r\n"), readErr
 	}
-	if err := windows.SetConsoleMode(handle, mode &^ windows.ENABLE_ECHO_INPUT); err != nil {
+	if err := windows.SetConsoleMode(handle, mode&^windows.ENABLE_ECHO_INPUT); err != nil {
 		return "", err
 	}
 	defer windows.SetConsoleMode(handle, mode)
