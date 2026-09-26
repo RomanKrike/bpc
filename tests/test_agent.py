@@ -425,7 +425,7 @@ def test_bp_gateway_defaults_to_adaptive_udp_tcp_transport() -> None:
     assert "--udp-server ${RELAY}" in GATEWAY_TEMPLATE
     assert "--tcp-server ${TCP_RELAY}" in GATEWAY_TEMPLATE
     assert '"TCP_RELAY"' in NODE
-    assert "BP_GATEWAY_TRANSPORT=auto" in GATEWAY_UPGRADE
+    assert '"BP_GATEWAY_TRANSPORT": "auto"' in GATEWAY_UPGRADE
     assert "journalctl -u bp-gateway-wgshim.service" in GATEWAY_UPGRADE
 
 
