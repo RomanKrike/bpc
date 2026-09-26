@@ -33,3 +33,11 @@ def test_controller_exposes_separate_node_enrollment_endpoints() -> None:
     assert 'self.path == "/v1/nodes/leave"' in CONTROL
     assert 'self.path == "/v1/enroll"' in CONTROL
     assert 'self.path == "/v1/heartbeat"' in CONTROL
+
+
+def test_control_service_runs_server_from_release_tree() -> None:
+    enable_control = (ROOT / "deploy" / "bpc-enable-control.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"' in enable_control
+    assert 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"' not in enable_control
