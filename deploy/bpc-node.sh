@@ -266,6 +266,7 @@ template = template_path.read_text(encoding="utf-8")
 values = {
     "NAME": name,
     "RELAY": str(config["wgshim_server"]),
+    "TCP_RELAY": str(config.get("wgshim_tcp_server", config["wgshim_server"])),
     "OVERLAY": str(overlay),
     "SERVER_OVERLAY_IP": str(server_ip),
     "GATEWAY_ADDRESS": gateway_address,
