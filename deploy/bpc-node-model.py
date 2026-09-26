@@ -13,7 +13,6 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from bpc_connect.errors import BPCConfigError  # noqa: E402
 from bpc_connect.node import (  # noqa: E402
-    CORE_CAPABILITIES,
     load_node_config,
     migrate_legacy_node,
     set_capabilities,
