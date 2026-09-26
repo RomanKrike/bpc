@@ -18,6 +18,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from bpc_node_enrollment import (
+    EnrollmentError,
+    enroll_node,
+    leave_node,
+    node_heartbeat,
+)
+
 MAX_JSON_BODY = 64 * 1024
 MAX_UPDATE_SIZE = 128 * 1024 * 1024
 
@@ -221,6 +228,15 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/heartbeat":
             self._heartbeat()
+            return
+        if self.path == "/v1/nodes/join":
+            self._node_join()
+            return
+        if self.path == "/v1/nodes/heartbeat":
+            self._node_heartbeat()
+            return
+        if self.path == "/v1/nodes/leave":
+            self._node_leave()
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -583,6 +599,70 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, {"ok": True})
 
+    def _node_join(self) -> None:
+        body = self._read_body_json()
+        if body is None:
+            return
+        token = str(body.get("token", "")).strip()
+        public_key = str(body.get("public_key", "")).strip()
+        name = str(body.get("name", "")).strip()
+        node_join_lock: threading.Lock = self.server.node_join_lock  # type: ignore[attr-defined]
+        try:
+            with node_join_lock:
+                response = enroll_node(
+                    self._root(),
+                    token=token,
+                    public_key=public_key,
+                    presented_name=name,
+                )
+        except EnrollmentError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(HTTPStatus.OK, response)
+
+    def _node_heartbeat(self) -> None:
+        credential = self._bearer()
+        if credential is None:
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return
+        body = self._read_body_json()
+        if body is None:
+            return
+        try:
+            response = node_heartbeat(
+                self._root(),
+                credential=credential,
+                payload=body,
+            )
+        except EnrollmentError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(HTTPStatus.OK, response)
+
+    def _node_leave(self) -> None:
+        credential = self._bearer()
+        if credential is None:
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return
+        body = self._read_body_json()
+        if body is None:
+            return
+        try:
+            response = leave_node(self._root(), credential=credential)
+        except EnrollmentError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(HTTPStatus.OK, response)
+
     def _serve_update_manifest(self) -> None:
         authenticated = self._authorized_device()
         if authenticated is None:
@@ -706,6 +786,7 @@ def main() -> int:
     server = ControlServer((args.listen, args.port), ControlHandler)
     server.state_dir = str(state_dir)
     server.enroll_lock = threading.Lock()
+    server.node_join_lock = threading.Lock()
 
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2

@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.15.0
+
+### Added
+- One-command core installation followed by `bpc join <TOKEN>` for enrolling a fresh BPC Node without manual configuration editing.
+- One-time expiring Node join tokens with assigned capabilities and an optional Node name.
+- Transport-independent Ed25519 Node identity generated locally; only the public key is sent to the Controller.
+- Controller-assigned Node IDs, root-only Node credentials, cluster state records and periodic Node heartbeats.
+- `bpc status`, `bpc leave`, `bpc node token create` and `bpc node list`.
+- Enrollment integration tests covering the HTTP join/heartbeat/leave flow, replay, expiration and duplicate Node identity.
+
+### Changed
+- Running `install.sh` without arguments now installs the BPC core runtime only. The legacy `--role ru-node` bootstrap remains available and existing RU-node installations keep their transport state.
+- Joined gateway/relay capabilities reconcile through the existing Xray and Agent/WGShim provisioning paths instead of introducing a replacement transport.
+
+### Security
+- Node private keys never leave the Node and are stored with mode `0600`; identity and enrollment directories are root-only.
+- Join secrets and Node credentials are indexed by SHA-256 on the Controller rather than stored in plaintext.
+- Consumed and expired join tokens are tombstoned to reject replay, and active duplicate public-key identities are rejected.
+
 ## 0.14.2
 
 ### Fixed
