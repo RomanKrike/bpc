@@ -48,20 +48,28 @@ def test_agent_server_commands_are_reconciled() -> None:
         assert command in UPDATE
 
 
-def test_prepared_executable_uses_one_time_control_plane_bootstrap() -> None:
-    assert "BPC_AGENT_BOOTSTRAP_V2" in SERVER
+def test_prepared_executable_contains_no_identity_secret() -> None:
+    assert "BPC_AGENT_BOOTSTRAP_V3" in SERVER
     assert "BPC_AGENT_BOOTSTRAP_END" in SERVER
-    assert "openssl rand -hex 32" in SERVER
-    assert "Enrollment token lifetime" in SERVER
+    assert "openssl rand -hex 32" in SERVER  # HTTPS download capability only.
+    assert "Bootstrap download lifetime" in SERVER
     assert "update-signing-public.pem" in SERVER
     bootstrap_block = SERVER.split("local json", 1)[1].split("local encoded", 1)[0]
     assert "wgshim_psk" not in bootstrap_block
+    assert "enroll_token" not in bootstrap_block
+    assert '"version": 3' in bootstrap_block
     assert 'chmod 0600 "${tmp}"' in SERVER
 
 
 def test_control_plane_has_enrollment_config_heartbeat_and_update_api() -> None:
     for path in (
-        "/v1/enroll",
+        "/v1/auth/login",
+        "/v1/auth/refresh",
+        "/v1/auth/logout",
+        "/v1/devices/register",
+        "/v1/devices/revoke",
+        "/v1/devices",
+        "/v1/enroll",  # Stage 2 compatibility.
         "/v1/config",
         "/v1/heartbeat",
         "/v1/update/manifest",
@@ -92,11 +100,14 @@ def test_control_plane_is_tls_provisioned_and_health_checked() -> None:
     assert "bpc-enable-control.sh" in MIGRATE
 
 
-def test_agent_enrolls_syncs_and_reports_heartbeat() -> None:
+def test_agent_logs_in_registers_syncs_and_reports_heartbeat() -> None:
     assert "agentctl.GenerateIdentity" in AGENT
     assert "agentctl.GenerateWireGuardKeypair" in AGENT
     assert "WireGuardPublicKey" in AGENT
-    assert "client.Enroll" in AGENT
+    assert "client.Login" in AGENT
+    assert "client.RegisterDevice" in AGENT
+    assert "client.Enroll" in AGENT  # Stage 2 prepared-client compatibility.
+    assert "ensureControlCredential" in AGENT
     assert "control.FetchConfig" in AGENT
     assert "control.Heartbeat" in AGENT
     assert "agentctl.SaveState" in AGENT
@@ -219,7 +230,8 @@ def test_prepared_agent_has_expiring_https_download_link() -> None:
     assert '"${CONTROL_DIR}/downloads"' in SERVER
     assert 'Download URL:' in SERVER
     assert '${control_url}/v1/bootstrap/${download_token}/${download_name}' in SERVER
-    assert '"download_token": sys.argv[5]' in SERVER
+    assert '"version": 3' in SERVER
+    assert '"enroll_token"' not in SERVER.split("local json", 1)[1].split("local encoded", 1)[0]
     assert 'downloads / f"{token}.exe"' in CONTROL
     assert '"${CONTROL_DIR}/downloads"' in ENABLE_CONTROL
 
