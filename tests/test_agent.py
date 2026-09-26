@@ -485,6 +485,7 @@ def test_access_policy_controls_client_routes_and_node_firewall() -> None:
     assert "bpc access revoke" in bpc
     assert "effective_routes(self._root(), device)" in CONTROL
     assert "sync_access_firewall(state_dir)" in CONTROL
+    assert 'python3 "${ACCESS_MODEL}" --state-dir "${CONTROL_DIR}" sync-firewall' in DATAPLANE
     assert 'CHAIN_NAME = "BPC-ACCESS"' in access
     assert '"-j", "DROP"' in access
     assert "_subtract_denies" in access
