@@ -436,9 +436,11 @@ def test_agent_relay_exposes_tcp_alongside_udp_pool() -> None:
 
 def test_bp_gateway_defaults_to_adaptive_udp_tcp_transport() -> None:
     assert 'TRANSPORT="${BP_GATEWAY_TRANSPORT:-auto}"' in GATEWAY_TEMPLATE
-    assert "client-auto" in GATEWAY_TEMPLATE
+    assert "client-flow-auto" in GATEWAY_TEMPLATE
     assert "--udp-server ${RELAY}" in GATEWAY_TEMPLATE
+    assert "--udp-flows ${UDP_FLOWS}" in GATEWAY_TEMPLATE
     assert "--tcp-server ${TCP_RELAY}" in GATEWAY_TEMPLATE
+    assert "--tcp-flows ${TCP_FLOWS}" in GATEWAY_TEMPLATE
     assert '"TCP_RELAY"' in NODE
     assert '"BP_GATEWAY_TRANSPORT": "auto"' in GATEWAY_UPGRADE
     assert "journalctl -u bp-gateway-wgshim.service" in GATEWAY_UPGRADE
