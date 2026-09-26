@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from bpc_access import AccessError, effective_routes, sync_access_firewall
 from bpc_identity import (
     IdentityError,
     authenticate_local_user,
@@ -431,35 +432,19 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def _wireguard_profile_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
         config = self._global_config()
-        base_allowed = config["wireguard_allowed_ips"]
-        if not isinstance(base_allowed, list) or not base_allowed:
-            raise ValueError("wireguard_allowed_ips must be a non-empty list")
+        server_ip = ipaddress.ip_interface(str(config["wireguard_server_address"])).ip
+        allowed_ips: list[str] = [f"{server_ip}/32"]
+        seen: set[str] = set(allowed_ips)
 
-        managed = device.get("managed_routes", [])
-        if not isinstance(managed, list):
-            raise ValueError("device managed_routes must be a list")
+        try:
+            policy_routes = effective_routes(self._root(), device)
+        except AccessError as exc:
+            raise ValueError(str(exc)) from exc
 
-        overlay = ipaddress.ip_network(str(config["wireguard_subnet"]), strict=False)
-        allowed_ips: list[str] = []
-        seen: set[str] = set()
-
-        for raw in base_allowed:
+        for raw in policy_routes:
             network = ipaddress.ip_network(str(raw).strip(), strict=False)
             if network.version != 4 or network.prefixlen == 0:
-                raise ValueError("invalid base Agent allowed IP")
-            canonical = str(network)
-            if canonical not in seen:
-                seen.add(canonical)
-                allowed_ips.append(canonical)
-
-        for raw in managed:
-            network = ipaddress.ip_network(str(raw).strip(), strict=False)
-            if network.version != 4:
-                raise ValueError("Agent managed routes currently support IPv4 only")
-            if network.prefixlen == 0:
-                raise ValueError("Agent managed routes cannot install a default route")
-            if network.overlaps(overlay):
-                raise ValueError("Agent managed route overlaps the overlay subnet")
+                raise ValueError("invalid Access route")
             canonical = str(network)
             if canonical not in seen:
                 seen.add(canonical)
@@ -698,7 +683,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                     atomic_json(device_path, device)
                     atomic_text(key_path, wgshim_psk + "\n")
                     self._install_wireguard_peer(wireguard_public_key, wireguard_address)
-                except (OSError, ValueError, KeyError, RuntimeError):
+                    sync_access_firewall(self._root())
+                except (AccessError, OSError, ValueError, KeyError, RuntimeError):
                     self._remove_wireguard_peer(wireguard_public_key)
                     (self._root() / "devices" / f"{device_id}.json").unlink(missing_ok=True)
                     try:
@@ -790,8 +776,12 @@ class ControlHandler(BaseHTTPRequestHandler):
                 if str(target.get("user_id", "")) != str(user["id"]):
                     raise IdentityError("device not found", 404)
                 deactivate_device(self._root(), target_id, revoked=True)
+                sync_access_firewall(self._root())
         except IdentityError as exc:
             self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except AccessError:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         except (OSError, ValueError, json.JSONDecodeError):
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -877,12 +867,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                 atomic_json(token_path, {"device_id": device_id})
                 atomic_text(key_path, wgshim_psk + "\n")
                 self._install_wireguard_peer(wireguard_public_key, wireguard_address)
+                sync_access_firewall(self._root())
                 download_token = str(enrollment.get("download_token", "")).strip()
                 self._delete_bootstrap_download(download_token)
                 enroll_path.unlink()
                 config = self._config_for_device(device)
                 wireguard = self._wireguard_profile_for_device(device)
-            except (OSError, ValueError, KeyError, RuntimeError):
+            except (AccessError, OSError, ValueError, KeyError, RuntimeError):
                 self._remove_wireguard_peer(wireguard_public_key)
                 for rollback in (
                     self._root() / "devices" / f"{device_id}.json",
@@ -1129,6 +1120,7 @@ def main() -> int:
 
     sync_wireguard_peers(state_dir)
     sync_gateway_routes(state_dir)
+    sync_access_firewall(state_dir)
 
     server = ControlServer((args.listen, args.port), ControlHandler)
     server.state_dir = str(state_dir)

@@ -276,8 +276,11 @@ sysctl -q -p /etc/sysctl.d/92-bpc-agent.conf
 cat > /usr/local/sbin/bpc-agent-dataplane-firewall <<'SCRIPT'
 #!/usr/bin/env bash
 set -euo pipefail
+BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RUNTIME_ENV="${BPC_STATE_DIR}/ru-node/agent/runtime.env"
+CONTROL_DIR="${BPC_STATE_DIR}/ru-node/control"
+ACCESS_MODEL="${BPC_ROOT}/current/deploy/bpc_access.py"
 ACTION="${1:-up}"
 if [[ ! -s "${RUNTIME_ENV}" ]]; then
   echo "BPC agent data-plane runtime metadata is missing" >&2
@@ -311,6 +314,11 @@ case "${ACTION}" in
       -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || \
       iptables -I INPUT 1 -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
         -p icmp --icmp-type echo-request -j ACCEPT
+    # Access owns the first FORWARD decision for Agent-originated traffic.
+    # Reconcile after broad compatibility rules so they cannot move ahead of it.
+    if [[ -f "${ACCESS_MODEL}" && -s "${CONTROL_DIR}/config.json" ]]; then
+      python3 "${ACCESS_MODEL}" --state-dir "${CONTROL_DIR}" sync-firewall
+    fi
     ;;
   down)
     iptables -D FORWARD -i "${AGENT_WG_INTERFACE}" -j ACCEPT 2>/dev/null || true
