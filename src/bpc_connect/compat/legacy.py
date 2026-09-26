@@ -97,3 +97,44 @@ def apply_legacy_tunnel(device: dict[str, Any], config: dict[str, Any]) -> None:
     value = str(device.get("legacy_tunnel", "")).strip()
     if value:
         config["legacy_tunnel"] = value
+
+
+def migrate_legacy_node(
+    state_dir: str | Path,
+    *,
+    name: str | None = None,
+    touch_last_seen: bool = False,
+    now: int | None = None,
+):
+    """Import only capability evidence from historical BPC state.
+
+    The canonical Node writer lives in bpc_connect.node. Historical path/schema
+    interpretation stays here.
+    """
+
+    from bpc_connect.node import reconcile_node_config
+
+    inferred = {
+        capability: True
+        for capability, enabled in infer_legacy_capabilities(state_dir).items()
+        if enabled
+    }
+    return reconcile_node_config(
+        state_dir,
+        name=name,
+        capability_updates=inferred,
+        touch_last_seen=touch_last_seen,
+        now=now,
+    )
+
+
+def capability_runtime_markers(state_dir: str | Path, capability: str) -> tuple[Path, ...]:
+    legacy = legacy_node_dir(state_dir)
+    if capability == "controller":
+        canonical = StateLayout.from_root(state_dir).control_dir / "enabled"
+        return (canonical, legacy / "control" / "enabled")
+    if capability == "gateway":
+        return (legacy / "config.json",)
+    if capability == "relay":
+        return (legacy / "agent" / "enabled", legacy / "wgshim" / "enabled")
+    return ()
