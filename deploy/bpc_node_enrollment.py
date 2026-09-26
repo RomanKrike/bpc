@@ -757,10 +757,27 @@ def cmd_join(args: argparse.Namespace) -> int:
         raise EnrollmentError("run bpc join as root")
     existing = enrolled_state(args.state_dir)
     if existing is not None:
+        roles = existing.get("roles", {})
+        config = existing.get("config", {})
+        if not isinstance(roles, dict):
+            roles = {}
+        if not isinstance(config, dict):
+            config = {}
+        role_config = config.get("role_config", {})
+        if not isinstance(role_config, dict):
+            role_config = {}
+        results = reconcile_roles(args.state_dir, roles, role_config)
+        install_runtime_service(args.state_dir)
+        try:
+            send_heartbeat(args.state_dir, existing)
+        except EnrollmentError as exc:
+            print(f"WARNING: heartbeat retry failed: {exc}", file=sys.stderr)
         print(
             f"Node is already joined: {existing.get('name')} "
-            f"({existing.get('node_id')}). Run 'bpc leave' before joining another cluster."
+            f"({existing.get('node_id')}); enrollment preserved and runtime reconciled."
         )
+        for role, state in sorted(results.items()):
+            print(f"  {role}: {state}")
         return 0
 
     controller_url, _ = parse_join_token(args.token)
