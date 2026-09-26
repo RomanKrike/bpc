@@ -6,7 +6,7 @@ BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RU_DIR="${BPC_STATE_DIR}/ru-node"
 AGENT_DIR="${RU_DIR}/agent"
 SUB_DIR="${RU_DIR}/subscription"
-CONTROL_DIR="${RU_DIR}/control"
+CONTROL_DIR="${BPC_STATE_DIR}/control"
 PORT="${BPC_CONTROL_PORT:-8444}"
 
 usage() {
@@ -45,6 +45,11 @@ done
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run bpc-enable-control as root" >&2
   exit 1
+fi
+
+state_migrate="${BPC_ROOT}/current/deploy/bpc-state-migrate.py"
+if [[ -f "${state_migrate}" ]]; then
+  python3 "${state_migrate}" --state-dir "${BPC_STATE_DIR}" >/dev/null
 fi
 if ! [[ "${PORT}" =~ ^[0-9]+$ ]] || (( PORT < 1024 || PORT > 65535 )); then
   echo "--port must be between 1024 and 65535" >&2
