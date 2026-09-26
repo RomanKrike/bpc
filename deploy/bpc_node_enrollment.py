@@ -652,8 +652,7 @@ def stage_node_runtime(state_dir: Path) -> Path:
         shutil.copytree(release_deploy, runtime_tmp / "deploy")
         (runtime_tmp / "src").mkdir(mode=0o700)
         shutil.copytree(release_package, runtime_tmp / "src" / "bpc_connect")
-        if version_path.is_file():
-            shutil.copy2(version_path, runtime_tmp / "VERSION")
+        (runtime_tmp / "VERSION").write_text(version + "\n", encoding="utf-8")
 
         for directory in [runtime_tmp, *runtime_tmp.rglob("*")]:
             if directory.is_dir():
