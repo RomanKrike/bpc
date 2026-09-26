@@ -19,6 +19,18 @@ from pathlib import Path
 from typing import Any
 
 from bpc_access import AccessError, effective_routes, sync_access_firewall
+from bpc_connect.compat.device import (
+    LegacyDeviceAuthError,
+    authorize_legacy_static_device,
+    legacy_enrollment_fields,
+    legacy_enrollment_response,
+    legacy_token_index_path,
+)
+from bpc_connect.compat.legacy import (
+    apply_legacy_tunnel,
+    is_legacy_site_router,
+    legacy_site_router_routes,
+)
 from bpc_identity import (
     IdentityError,
     authenticate_local_user,
@@ -121,13 +133,10 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
     owners: dict[str, str] = {}
     networks: list[tuple[ipaddress.IPv4Network, str]] = []
     for device in devices:
-        if str(device.get("role", "")) != "gateway":
+        if not is_legacy_site_router(device):
             continue
-        owner = str(device.get("device", device.get("device_id", "gateway")))
-        advertised = device.get("advertised_routes", [])
-        if not isinstance(advertised, list):
-            raise RuntimeError(f"BP Gateway {owner} has invalid advertised_routes")
-        for raw in advertised:
+        owner = str(device.get("device", device.get("device_id", "legacy-site-router")))
+        for raw in legacy_site_router_routes(device):
             try:
                 network = ipaddress.ip_network(str(raw), strict=False)
             except ValueError as exc:
@@ -168,8 +177,8 @@ def sync_wireguard_peers(state_dir: Path) -> None:
         public_key = str(device["wireguard_public_key"]).strip()
         address = str(device["wireguard_address"]).strip()
         allowed = [address]
-        if str(device.get("role", "")) == "gateway":
-            allowed.extend(str(route) for route in device.get("advertised_routes", []))
+        if is_legacy_site_router(device):
+            allowed.extend(legacy_site_router_routes(device))
         run_wg(
             "set",
             interface,
@@ -354,33 +363,22 @@ class ControlHandler(BaseHTTPRequestHandler):
         except IdentityError as exc:
             identity_error = exc
 
-        # Compatibility path for devices enrolled before Stage 3. New devices
-        # never receive a static device_token.
-        index_path = self._root() / "tokens" / f"{token_index(token)}.json"
-        if not index_path.is_file():
-            if identity_error is not None:
-                self._send_json(
-                    HTTPStatus(identity_error.status),
-                    {"error": str(identity_error)},
-                )
-            else:
-                self.send_error(HTTPStatus.UNAUTHORIZED)
-            return None
+        # Pre-Stage-3 static credentials are contained in the compatibility adapter.
         try:
-            index = read_json(index_path)
-            device_id = str(index["device_id"])
-            device_path = self._root() / "devices" / f"{device_id}.json"
-            device = read_json(device_path)
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            legacy = authorize_legacy_static_device(self._root(), token)
+        except LegacyDeviceAuthError:
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return None
-        if not secrets.compare_digest(str(device.get("device_token", "")), token):
+        if legacy is not None:
+            return legacy
+        if identity_error is not None:
+            self._send_json(
+                HTTPStatus(identity_error.status),
+                {"error": str(identity_error)},
+            )
+        else:
             self.send_error(HTTPStatus.UNAUTHORIZED)
-            return None
-        if not bool(device.get("enabled", True)) or bool(device.get("revoked", False)):
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return None
-        return device_path, device
+        return None
 
     def _global_config(self) -> dict[str, Any]:
         value = read_json(self._root() / "config.json")
@@ -425,9 +423,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             "update_channel": str(global_config.get("update_channel", "stable")),
             "wireguard": self._wireguard_profile_for_device(device),
         }
-        legacy = str(device.get("legacy_tunnel", "")).strip()
-        if legacy:
-            config["legacy_tunnel"] = legacy
+        apply_legacy_tunnel(device, config)
         return config
 
     def _wireguard_profile_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
@@ -670,8 +666,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "wireguard_public_key": wireguard_public_key,
                         "wireguard_address": wireguard_address,
                         "wgshim_psk": wgshim_psk,
-                        "managed_routes": [],
-                        "legacy_tunnel": "",
                         "created_at": now,
                         "created": now,
                         "last_seen": now,
@@ -836,7 +830,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.UNAUTHORIZED)
                 return
             device_id = uuid.uuid4().hex
-            device_token = secrets.token_hex(32)
+            legacy_credential = secrets.token_hex(32)
             wgshim_psk = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
             now = int(time.time())
             try:
@@ -844,17 +838,18 @@ class ControlHandler(BaseHTTPRequestHandler):
                 global_config = self._global_config()
                 key_path = Path(str(global_config["wgshim_key_dir"])) / f"{device_id}.key"
                 device_path = self._root() / "devices" / f"{device_id}.json"
-                token_path = self._root() / "tokens" / f"{token_index(device_token)}.json"
+                token_path = legacy_token_index_path(self._root(), legacy_credential)
                 device = {
                     "device_id": device_id,
                     "device": device_name,
-                    "device_token": device_token,
                     "public_key": public_key,
                     "wireguard_public_key": wireguard_public_key,
                     "wireguard_address": wireguard_address,
                     "wgshim_psk": wgshim_psk,
-                    "managed_routes": [],
-                    "legacy_tunnel": str(enrollment.get("legacy_tunnel", "")),
+                    **legacy_enrollment_fields(
+                        device_token=legacy_credential,
+                        legacy_tunnel=str(enrollment.get("legacy_tunnel", "")),
+                    ),
                     "created": now,
                     "created_at": now,
                     "last_seen": now,
@@ -877,7 +872,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._remove_wireguard_peer(wireguard_public_key)
                 for rollback in (
                     self._root() / "devices" / f"{device_id}.json",
-                    self._root() / "tokens" / f"{token_index(device_token)}.json",
+                    legacy_token_index_path(self._root(), legacy_credential),
                 ):
                     rollback.unlink(missing_ok=True)
                 try:
@@ -894,7 +889,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             {
                 "device_id": device_id,
-                "device_token": device_token,
+                **legacy_enrollment_response(legacy_credential),
                 "config": config,
                 "wireguard": wireguard,
             },
