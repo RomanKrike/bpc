@@ -443,10 +443,6 @@ func runAgentContext(parent context.Context) error {
 				logger.Printf("credential refresh failed: %v", err)
 				continue
 			}
-			if err := ensureControlCredential(ctx, control, state, statePath); err != nil {
-				logger.Printf("credential refresh failed: %v", err)
-				continue
-			}
 			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
@@ -456,6 +452,10 @@ func runAgentContext(parent context.Context) error {
 				return nil
 			}
 		case <-updateTicker.C:
+			if err := ensureControlCredential(ctx, control, state, statePath); err != nil {
+				logger.Printf("credential refresh failed: %v", err)
+				continue
+			}
 			updated, err := checkAndStageUpdate(ctx, control, state, logger, false)
 			if err != nil {
 				logger.Printf("update check failed: %v", err)
