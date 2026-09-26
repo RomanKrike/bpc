@@ -40,4 +40,5 @@ def test_control_service_runs_server_from_release_tree() -> None:
         encoding="utf-8"
     )
     assert 'control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"' in enable_control
-    assert 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"' not in enable_control
+    copied_server = 'install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py"'
+    assert copied_server not in enable_control
