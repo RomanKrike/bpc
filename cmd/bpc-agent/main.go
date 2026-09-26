@@ -22,12 +22,12 @@ import (
 )
 
 const (
-	version         = "0.16.0"
-	legacyTaskName  = "BPC Agent"
+	version              = "0.16.0"
+	legacyTaskName       = "BPC Agent"
 	bootstrapStart       = "\nBPC_AGENT_BOOTSTRAP_V3\n"
 	legacyBootstrapStart = "\nBPC_AGENT_BOOTSTRAP_V2\n"
-	bootstrapEnd    = "\nBPC_AGENT_BOOTSTRAP_END\n"
-	defaultLogEvery = 30 * time.Second
+	bootstrapEnd         = "\nBPC_AGENT_BOOTSTRAP_END\n"
+	defaultLogEvery      = 30 * time.Second
 )
 
 type tunnelTelemetry struct {
