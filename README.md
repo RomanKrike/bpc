@@ -26,6 +26,32 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 
 This repository intentionally separates the BPC underlay from the corporate VPN. The corporate VPN remains on the work laptop; BPC provides it with a Russian egress path.
 
+
+## Unified Node model
+
+Server-side BPC is modeled as one `Node`. `controller`, `gateway`, `relay`
+and `site_router` are independent capabilities, so the same machine can run
+several of them at once. For example, an RU VPS can be:
+
+```text
+ru-01 = controller + gateway + relay
+```
+
+The canonical local metadata is `/etc/bpc-connect/node.yaml` (schema version
+1). Existing transport state remains under `/etc/bpc-connect/ru-node/` for
+backward compatibility; Stage 1 does not rotate transport keys or change client
+protocols.
+
+Inspect the unified Node state with:
+
+```bash
+sudo bpc node status
+sudo bpc node info
+```
+
+See [docs/architecture.md](docs/architecture.md) for capability semantics and
+legacy migration rules.
+
 ## RU node network layout
 
 ```text
@@ -75,6 +101,7 @@ To provision AWG and native WireGuard immediately:
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
   | sudo bash -s -- \
       --role ru-node \
+      --node-name ru-01 \
       --reality-server-name www.bing.com \
       --with-awg \
       --with-wg
@@ -85,13 +112,14 @@ Optional parameters:
 ```text
 --port 443
 --public-host 203.0.113.10
+--node-name ru-01
 --awg-port 443
 --wg-port 51820
 ```
 
 The provider firewall must permit each enabled protocol/port.
 
-The installer downloads the latest GitHub Release deployment bundle, verifies it against the published `SHA256SUMS`, installs it under `/opt/bpc/releases/<version>`, provisions the RU node on first install, and preserves generated credentials under `/etc/bpc-connect`.
+The installer downloads the latest GitHub Release deployment bundle, verifies it against the published `SHA256SUMS`, installs it under `/opt/bpc/releases/<version>`, provisions the RU gateway profile on first install, creates/reconciles the unified Node metadata, and preserves generated credentials under `/etc/bpc-connect`. The legacy `--role ru-node` option is retained as an install profile for compatibility; it is no longer the architectural Node type.
 
 Before generating credentials, the RU bootstrap checks that the selected REALITY target resolves, completes a TLS 1.3 handshake, and does not expose a Certificate handshake larger than the pinned REALITY parser limit. `www.microsoft.com` is explicitly rejected for the pinned Xray 26.3.27 runtime because its TLS Certificate record can exceed the 8192-byte REALITY limit and cause `handshake did not complete successfully`; see [XTLS/Xray-core#6356](https://github.com/XTLS/Xray-core/issues/6356). `www.bing.com` is the tested BPC recommendation for this runtime.
 
@@ -102,6 +130,8 @@ For RU-node endpoint discovery, BPC first checks the IPv4 source address selecte
 After installation:
 
 ```bash
+sudo bpc node status
+sudo bpc node info
 sudo bpc-status
 sudo bpc-update
 sudo bpc-ensure-dns
