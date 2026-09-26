@@ -204,6 +204,8 @@ if [[ "${role}" == "ru-node" ]]; then
     agent_relay_pid="$(systemctl show -p MainPID --value bpc-agent-relay.service 2>/dev/null || true)"
     agent_relay_ports="${AGENT_WGSHIM_PORTS:-${AGENT_WGSHIM_PORT:-24444}}"
     detected_ports=""
+    detected_tcp="-"
+    agent_tcp_port="${AGENT_WGSHIM_TCP_PORT:-${AGENT_WGSHIM_PORT:-24444}}"
     if [[ "${agent_relay_pid}" =~ ^[1-9][0-9]*$ ]]; then
       detected_ports="$(ss -H -lunp 2>/dev/null | awk -v pid="pid=${agent_relay_pid}," '
         index($0, pid) {
@@ -211,11 +213,14 @@ if [[ "${role}" == "ru-node" ]]; then
           sub(/^.*:/, "", addr)
           if (addr ~ /^[0-9]+$/) print addr
         }' | sort -n -u | paste -sd, -)"
+      if ss -H -ltnp "sport = :${agent_tcp_port}" 2>/dev/null | grep -Fq "pid=${agent_relay_pid},"; then
+        detected_tcp="${agent_tcp_port}"
+      fi
     fi
-    printf 'Agent data plane: relay=%s wg=%s (%s udp-pool=%s; listening=%s; subnet=%s; peers=%s)\n' \
+    printf 'Agent data plane: relay=%s wg=%s (%s udp-pool=%s; udp-listening=%s; tcp=%s; subnet=%s; peers=%s)\n' \
       "${agent_relay_state:-unknown}" "${agent_wg_state:-unknown}" \
       "${AGENT_PUBLIC_HOST:-${host:-unknown}}" "${agent_relay_ports}" "${detected_ports:--}" \
-      "${AGENT_WG_SUBNET:-unknown}" "${peers:-0}"
+      "${detected_tcp}" "${AGENT_WG_SUBNET:-unknown}" "${peers:-0}"
   else
     echo 'Agent data plane: disabled'
   fi
