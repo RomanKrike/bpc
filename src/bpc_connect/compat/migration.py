@@ -187,18 +187,23 @@ def _copy_legacy_control(source: Path, target: Path, backup: Path) -> bool:
         target.mkdir(parents=True, exist_ok=True, mode=0o700)
         return False
 
+    source_manifest = _tree_manifest(source)
     backup_state = backup / "legacy-control"
     shutil.copytree(source, backup_state, symlinks=True)
-    if _tree_manifest(source) != _tree_manifest(backup_state):
+    if source_manifest != _tree_manifest(backup_state):
         raise RuntimeError("legacy Controller backup verification failed")
 
     if target.exists():
         current = _tree_manifest(target)
         if current:
-            if current != _tree_manifest(source):
+            if current != source_manifest:
                 raise RuntimeError(
                     "canonical Controller state already exists and differs from legacy state; "
                     "refusing to overwrite either copy"
+                )
+            if _tree_manifest(source) != source_manifest:
+                raise RuntimeError(
+                    "legacy Controller state changed during migration; retry when state is stable"
                 )
             return True
         target.rmdir()
@@ -207,9 +212,14 @@ def _copy_legacy_control(source: Path, target: Path, backup: Path) -> bool:
     if staged.exists():
         shutil.rmtree(staged)
     shutil.copytree(source, staged, symlinks=True)
-    if _tree_manifest(source) != _tree_manifest(staged):
+    if (
+        _tree_manifest(source) != source_manifest
+        or _tree_manifest(staged) != source_manifest
+    ):
         shutil.rmtree(staged, ignore_errors=True)
-        raise RuntimeError("canonical Controller state verification failed")
+        raise RuntimeError(
+            "legacy Controller state changed during migration; no canonical state was activated"
+        )
     os.replace(staged, target)
     return True
 
@@ -225,6 +235,11 @@ def migrate_canonical_state(
     state.compat_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     marker = state.compat_dir / MIGRATION_MARKER
     if marker.is_file():
+        control_marker = state.control_dir / ".bpc-state.json"
+        if not control_marker.is_file():
+            raise RuntimeError(
+                "Stage 4.5 marker exists but canonical Controller ownership marker is missing"
+            )
         value = json.loads(marker.read_text(encoding="utf-8"))
         report = value.get("report", {})
         if not isinstance(report, dict):
