@@ -33,6 +33,7 @@ from bpc_identity import (
     logout_session,
     refresh_device_session,
     registration_message,
+    revoke_device_credentials,
     verify_device_proof,
 )
 
@@ -557,12 +558,14 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         refresh_token = str(body.get("refresh_token", "")).strip()
         proof = str(body.get("proof", "")).strip()
+        identity_lock: threading.Lock = self.server.enroll_lock  # type: ignore[attr-defined]
         try:
-            response = refresh_device_session(
-                self._root(),
-                refresh_token,
-                proof,
-            )
+            with identity_lock:
+                response = refresh_device_session(
+                    self._root(),
+                    refresh_token,
+                    proof,
+                )
         except IdentityError as exc:
             self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
             return
@@ -707,13 +710,15 @@ class ControlHandler(BaseHTTPRequestHandler):
                     return
 
             try:
+                config = self._config_for_device(device)
+                wireguard = self._wireguard_profile_for_device(device)
+                if existing is not None:
+                    revoke_device_credentials(self._root(), device_id)
                 session = issue_device_session(
                     self._root(),
                     user_id=str(user["id"]),
                     device_id=device_id,
                 )
-                config = self._config_for_device(device)
-                wireguard = self._wireguard_profile_for_device(device)
                 (
                     self._root()
                     / "identity"
@@ -771,16 +776,18 @@ class ControlHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         target_id = str(body.get("device_id", "")).strip()
+        identity_lock: threading.Lock = self.server.enroll_lock  # type: ignore[attr-defined]
         try:
             user, _, _ = authorize_access_credential(
                 self._root(),
                 access_token,
                 require_device=True,
             )
-            target = identity_load_device(self._root(), target_id)
-            if str(target.get("user_id", "")) != str(user["id"]):
-                raise IdentityError("device not found", 404)
-            deactivate_device(self._root(), target_id, revoked=True)
+            with identity_lock:
+                target = identity_load_device(self._root(), target_id)
+                if str(target.get("user_id", "")) != str(user["id"]):
+                    raise IdentityError("device not found", 404)
+                deactivate_device(self._root(), target_id, revoked=True)
         except IdentityError as exc:
             self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
             return
