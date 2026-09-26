@@ -266,14 +266,35 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
     return devices
 
 
+def _require_owned_wireguard_interface(root: Path, config: dict[str, Any]) -> str:
+    interface = str(config.get("wireguard_interface", "")).strip()
+    key_dir = str(config.get("wgshim_key_dir", "")).strip()
+    if not interface or not key_dir:
+        raise AccessError("BPC WireGuard ownership evidence is incomplete")
+    ownership_path = Path(key_dir).parent / "ownership.json"
+    try:
+        value = read_json(ownership_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise AccessError(
+            f"refusing firewall mutation: BPC ownership is not proven for {interface}"
+        ) from exc
+    if (
+        value.get("owner") != "bpc"
+        or value.get("kind") != "wireguard-interface"
+        or str(value.get("name", "")) != interface
+    ):
+        raise AccessError(
+            f"refusing firewall mutation: BPC ownership is not proven for {interface}"
+        )
+    return interface
+
+
 def sync_access_firewall(root: Path) -> None:
     try:
         config = read_json(root / "config.json")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise AccessError("BPC control config is unavailable") from exc
-    interface = str(config.get("wireguard_interface", "")).strip()
-    if not interface:
-        raise AccessError("wireguard_interface is missing from BPC control config")
+    interface = _require_owned_wireguard_interface(root, config)
 
     chain_check = _run(["iptables", "-nL", CHAIN_NAME], check=False)
     if chain_check.returncode != 0:
