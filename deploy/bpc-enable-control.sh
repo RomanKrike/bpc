@@ -105,7 +105,7 @@ fi
 chmod 0600 "${signing_key}" "${signing_public}"
 
 python3 - "${CONTROL_DIR}/config.json" \
-  "${AGENT_PUBLIC_HOST}" "${AGENT_WGSHIM_PORT}" "${AGENT_WGSHIM_PORTS}" "${AGENT_WGSHIM_LOCAL_PORT}" \
+  "${AGENT_PUBLIC_HOST}" "${AGENT_WGSHIM_PORT}" "${AGENT_WGSHIM_PORTS}" "${AGENT_WGSHIM_TCP_PORT}" "${AGENT_WGSHIM_LOCAL_PORT}" \
   "${AGENT_WG_PORT}" "${AGENT_WGSHIM_PADDING_MIN}" "${AGENT_WGSHIM_PADDING_MAX}" \
   "${AGENT_WG_INTERFACE}" "${AGENT_WG_SUBNET}" "${AGENT_WG_SERVER_ADDRESS}" \
   "${AGENT_WG_SERVER_PUBLIC_KEY}" "${AGENT_WG_MTU}" "${AGENT_WG_KEEPALIVE}" \
@@ -119,22 +119,24 @@ path = Path(sys.argv[1])
 host = sys.argv[2]
 primary_port = sys.argv[3]
 ports = [item.strip() for item in sys.argv[4].split(",") if item.strip()]
+tcp_port = sys.argv[5]
 value = {
     "config_version": 4,
     "wgshim_server": f"{host}:{primary_port}",
     "wgshim_servers": [f"{host}:{port}" for port in ports],
-    "wgshim_listen": f"127.0.0.1:{sys.argv[5]}",
-    "wgshim_target": f"127.0.0.1:{sys.argv[6]}",
-    "padding_min": int(sys.argv[7]),
-    "padding_max": int(sys.argv[8]),
-    "wireguard_interface": sys.argv[9],
-    "wireguard_subnet": sys.argv[10],
-    "wireguard_server_address": sys.argv[11],
-    "wireguard_server_public_key": sys.argv[12],
-    "wireguard_mtu": int(sys.argv[13]),
-    "wireguard_keepalive": int(sys.argv[14]),
-    "wireguard_allowed_ips": [item.strip() for item in sys.argv[15].split(",") if item.strip()],
-    "wgshim_key_dir": sys.argv[16],
+    "wgshim_tcp_server": f"{host}:{tcp_port}",
+    "wgshim_listen": f"127.0.0.1:{sys.argv[6]}",
+    "wgshim_target": f"127.0.0.1:{sys.argv[7]}",
+    "padding_min": int(sys.argv[8]),
+    "padding_max": int(sys.argv[9]),
+    "wireguard_interface": sys.argv[10],
+    "wireguard_subnet": sys.argv[11],
+    "wireguard_server_address": sys.argv[12],
+    "wireguard_server_public_key": sys.argv[13],
+    "wireguard_mtu": int(sys.argv[14]),
+    "wireguard_keepalive": int(sys.argv[15]),
+    "wireguard_allowed_ips": [item.strip() for item in sys.argv[16].split(",") if item.strip()],
+    "wgshim_key_dir": sys.argv[17],
     "update_channel": "stable",
 }
 tmp = path.with_suffix(".tmp")
@@ -215,5 +217,5 @@ State:
 Update signing public key:
   ${signing_public}
 
-Allow inbound TCP/${PORT} and Agent UDP pool ports ${AGENT_WGSHIM_PORTS} in the VPS provider firewall if filtered there.
+Allow inbound TCP/${PORT}, Agent UDP pool ports ${AGENT_WGSHIM_PORTS}, and Agent TCP/${AGENT_WGSHIM_TCP_PORT} in the VPS provider firewall if filtered there.
 DONE
