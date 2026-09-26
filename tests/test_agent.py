@@ -399,3 +399,13 @@ def test_windows_client_uses_bp_connect_branding() -> None:
     assert "$form.Text = 'BP Connect'" in UI
     assert "$tray.Text = 'BP Connect'" in UI
     assert "Open BP Connect" in UI
+
+
+def test_bp_gateway_has_one_time_https_installer_link() -> None:
+    assert "gateway link NAME [--ttl SECONDS]" in NODE
+    assert "one_time" in NODE
+    assert "text/x-shellscript" in NODE
+    assert 'downloads / f"{token}.sh"' in CONTROL
+    assert 'suffix not in {".exe", ".sh"}' in CONTROL
+    assert "if one_time:" in CONTROL
+    assert "self._delete_bootstrap_download(token)" in CONTROL
