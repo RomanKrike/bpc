@@ -195,6 +195,9 @@ def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_runtime(
     assert 'release_identity="${BPC_ROOT}/current/deploy/bpc_identity.py"' in ENABLE_CONTROL
     identity_copy = 'install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"'
     assert identity_copy in ENABLE_CONTROL
+    assert 'release_access="${BPC_ROOT}/current/deploy/bpc_access.py"' in ENABLE_CONTROL
+    access_copy = 'install -m 0600 "${release_access}" "${runtime_tmp}/bpc_access.py"'
+    assert access_copy in ENABLE_CONTROL
     assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in ENABLE_CONTROL
     assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
 
@@ -325,12 +328,11 @@ def test_agent_overlay_allows_server_health_ping() -> None:
     assert "--icmp-type echo-request -j ACCEPT" in down_block
 
 
-def test_agent_managed_routes_are_per_device_and_remain_split_tunnel() -> None:
+def test_agent_managed_routes_remain_legacy_access_compatibility() -> None:
     assert "bpc-agent routes NAME [CIDR ... | --clear]" in SERVER
     assert '\"managed_routes\": []' in CONTROL
-    assert 'device.get(\"managed_routes\", [])' in CONTROL
+    assert "effective_routes(self._root(), device)" in CONTROL
     assert "0.0.0.0/0 is not allowed for managed Agent routes" in SERVER
-    assert "next config sync (up to 30 seconds)" in SERVER
     assert "profile.AllowedIPs" in TUNNEL
     assert '! -d \"${AGENT_WG_SUBNET}\" -j MASQUERADE' in DATAPLANE
 
@@ -471,3 +473,17 @@ def test_gateway_upgrade_reconciles_forwarding_and_nat() -> None:
     assert '-o "${BP_GATEWAY_LAN_INTERFACE}" -j MASQUERADE' in GATEWAY_UPGRADE
     assert "systemctl restart bp-gateway-firewall.service" in GATEWAY_UPGRADE
     assert "systemctl --quiet is-active bp-gateway-firewall.service" in GATEWAY_UPGRADE
+
+
+def test_access_policy_controls_client_routes_and_node_firewall() -> None:
+    access = pathlib.Path("deploy/bpc_access.py").read_text(encoding="utf-8")
+    bpc = pathlib.Path("deploy/bpc.sh").read_text(encoding="utf-8")
+    assert "bpc access list" in bpc
+    assert "bpc access grant" in bpc
+    assert "bpc access revoke" in bpc
+    assert "effective_routes(self._root(), device)" in CONTROL
+    assert "sync_access_firewall(state_dir)" in CONTROL
+    assert 'CHAIN_NAME = "BPC-ACCESS"' in access
+    assert '"-j", "DROP"' in access
+    assert "_subtract_denies" in access
+    assert "device.get(\"revoked\"" in access
