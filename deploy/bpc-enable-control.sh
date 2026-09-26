@@ -88,12 +88,24 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends openssl python3 python3-yaml ca-certificates
+apt-get install -y --no-install-recommends openssl python3 python3-yaml python3-argon2 python3-cryptography ca-certificates
 
-install -d -m 0700   "${CONTROL_DIR}"   "${CONTROL_DIR}/enroll"   "${CONTROL_DIR}/devices"   "${CONTROL_DIR}/tokens"   "${CONTROL_DIR}/downloads"   "${CONTROL_DIR}/update"
+install -d -m 0700 \
+  "${CONTROL_DIR}" \
+  "${CONTROL_DIR}/enroll" \
+  "${CONTROL_DIR}/devices" \
+  "${CONTROL_DIR}/tokens" \
+  "${CONTROL_DIR}/downloads" \
+  "${CONTROL_DIR}/update" \
+  "${CONTROL_DIR}/identity/users" \
+  "${CONTROL_DIR}/identity/usernames" \
+  "${CONTROL_DIR}/identity/access" \
+  "${CONTROL_DIR}/identity/refresh"
 
 control_server="${CONTROL_DIR}/bpc-control-server.py"
 install -m 0700 "${BPC_ROOT}/current/deploy/bpc-control-server.py" "${control_server}"
+install -m 0700 "${BPC_ROOT}/current/deploy/bpc_identity.py" "${CONTROL_DIR}/bpc_identity.py"
+install -m 0700 "${BPC_ROOT}/current/deploy/bpc_node_enrollment.py" "${CONTROL_DIR}/bpc_node_enrollment.py"
 
 signing_key="${CONTROL_DIR}/update-signing-key.pem"
 signing_public="${CONTROL_DIR}/update-signing-public.pem"
