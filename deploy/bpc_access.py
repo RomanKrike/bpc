@@ -19,7 +19,7 @@ else:
     SOURCE_ROOT = MODULE_DIR.parent / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
-from bpc_connect.compat.legacy import is_legacy_site_router, legacy_managed_routes  # noqa: E402
+from bpc_connect.compat.legacy import compat_route_grants, is_compat_site_router  # noqa: E402
 
 DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 CHAIN_NAME = "BPC-ACCESS"
@@ -208,7 +208,7 @@ def effective_networks(root: Path, device: dict[str, Any]) -> list[ipaddress.IPv
 
     # Historical Device route grants are read only through the compatibility
     # adapter. Access deny rules still override them.
-    allows.extend(_canonical_networks(legacy_managed_routes(device)))
+    allows.extend(_canonical_networks(compat_route_grants(device)))
 
     return _subtract_denies(
         list(ipaddress.collapse_addresses(allows)),
@@ -245,7 +245,7 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
             device = read_json(path)
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        if is_legacy_site_router(device):
+        if is_compat_site_router(device):
             continue
         if not bool(device.get("enabled", True)):
             continue
