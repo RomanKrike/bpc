@@ -15,10 +15,11 @@ import (
 	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
-const version = "0.13.1"
+const version = "0.14.0"
 
 func main() {
 	listen := flag.String("listen", "0.0.0.0:24444", "comma-separated public WGShim UDP listen addresses")
+	listenTCP := flag.String("listen-tcp", "", "optional public WGShim TCP listen address")
 	target := flag.String("target", "127.0.0.1:51821", "local WireGuard UDP target")
 	keyDir := flag.String("key-dir", "", "directory containing one base64 PSK per device")
 	paddingMin := flag.Int("padding-min", 0, "minimum random padding bytes per packet")
@@ -45,18 +46,41 @@ func main() {
 	if len(listeners) == 0 {
 		logger.Fatal("at least one WGShim listen address is required")
 	}
-	logger.Printf("starting adaptive port pool listeners=%s target=%s", strings.Join(listeners, ","), *target)
+	tcpListener := strings.TrimSpace(*listenTCP)
+	logger.Printf(
+		"starting relay udp=%s tcp=%s target=%s",
+		strings.Join(listeners, ","),
+		valueOrDisabled(tcpListener),
+		*target,
+	)
 
-	errCh := make(chan error, len(listeners))
+	errCount := len(listeners)
+	if tcpListener != "" {
+		errCount++
+	}
+	errCh := make(chan error, errCount)
+	load := func() (map[string]wgshim.MultiServerPeer, error) {
+		return loadPeers(*keyDir, *paddingMin, *paddingMax)
+	}
 	for _, listener := range listeners {
 		listener := listener
 		go func() {
 			errCh <- wgshim.RunMultiServer(ctx, wgshim.MultiServerConfig{
-				Listen: listener,
-				Target: *target,
-				LoadPeers: func() (map[string]wgshim.MultiServerPeer, error) {
-					return loadPeers(*keyDir, *paddingMin, *paddingMax)
-				},
+				Listen:         listener,
+				Target:         *target,
+				LoadPeers:      load,
+				ReloadInterval: *reloadInterval,
+				Logger:         logger,
+				StatsInterval:  *statsInterval,
+			})
+		}()
+	}
+	if tcpListener != "" {
+		go func() {
+			errCh <- wgshim.RunTCPMultiServer(ctx, wgshim.TCPMultiServerConfig{
+				Listen:         tcpListener,
+				Target:         *target,
+				LoadPeers:      load,
 				ReloadInterval: *reloadInterval,
 				Logger:         logger,
 				StatsInterval:  *statsInterval,
@@ -67,6 +91,13 @@ func main() {
 		stop()
 		logger.Fatal(err)
 	}
+}
+
+func valueOrDisabled(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "disabled"
+	}
+	return value
 }
 
 func splitListeners(raw string) []string {
