@@ -8,6 +8,7 @@ ROLE="ru-node"
 REALITY_SERVER_NAME=""
 XRAY_PORT="443"
 BPC_PUBLIC_HOST=""
+BPC_NODE_NAME=""
 WITH_AWG="false"
 AWG_PORT="443"
 WITH_WG="false"
@@ -18,10 +19,11 @@ usage() {
 Usage: install.sh [options]
 
 Options:
-  --role ru-node                 Node role (currently only ru-node)
+  --role ru-node                 Legacy install profile (currently only ru-node)
   --reality-server-name HOST     Required REALITY target hostname
   --port PORT                    Xray TCP listen port (default: 443)
   --public-host HOST             Public VPS IPv4/FQDN (auto-detected by default)
+  --node-name NAME               Unified BPC Node name (default: system hostname)
   --with-awg                     Also enable AmneziaWG 2.0
   --awg-port PORT                AmneziaWG UDP listen port (default: 443)
   --with-wg                      Also enable native WireGuard
@@ -121,6 +123,10 @@ while [[ $# -gt 0 ]]; do
       BPC_PUBLIC_HOST="${2:-}"
       shift 2
       ;;
+    --node-name)
+      BPC_NODE_NAME="${2:-}"
+      shift 2
+      ;;
     --with-awg)
       WITH_AWG="true"
       shift
@@ -177,7 +183,7 @@ ensure_bootstrap_dns
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl tar
+apt-get install -y --no-install-recommends ca-certificates curl tar python3 python3-yaml
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
@@ -225,6 +231,7 @@ chmod 0755 "${release_dir}/deploy/"*.sh
 ln -sfn "${release_dir}" "${BPC_ROOT}/current"
 
 for spec in \
+  "bpc:bpc.sh" \
   "bpc-update:bpc-update.sh" \
   "bpc-status:bpc-status.sh" \
   "bpc-ensure-dns:bpc-ensure-dns.sh" \
@@ -253,6 +260,7 @@ done
 cat > "${BPC_STATE_DIR}/install.env" <<STATE
 BPC_ROLE=${ROLE}
 BPC_ROOT=${BPC_ROOT}
+BPC_NODE_CONFIG=${BPC_STATE_DIR}/node.yaml
 STATE
 chmod 0600 "${BPC_STATE_DIR}/install.env"
 
@@ -298,14 +306,25 @@ if [[ -x "${BPC_ROOT}/current/deploy/bpc-render-clash.sh" ]]; then
   "${BPC_ROOT}/current/deploy/bpc-render-clash.sh"
 fi
 
+node_model="${BPC_ROOT}/current/deploy/bpc-node-model.py"
+if [[ -f "${node_model}" ]]; then
+  node_args=(--state-dir "${BPC_STATE_DIR}")
+  if [[ -n "${BPC_NODE_NAME}" ]]; then
+    node_args+=(--name "${BPC_NODE_NAME}")
+  fi
+  python3 "${node_model}" "${node_args[@]}" migrate
+fi
+
 cat <<DONE
 BPC ${version} installed successfully.
 
-Role: ${ROLE}
+Install profile (legacy): ${ROLE}
 Release: ${release_dir}
 Current: ${BPC_ROOT}/current
 
 Commands:
+  bpc node status
+  bpc node info
   bpc-status
   bpc-update
   bpc-ensure-dns

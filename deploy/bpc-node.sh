@@ -5,10 +5,13 @@ BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RU_DIR="${BPC_STATE_DIR}/ru-node"
 CONTROL_DIR="${RU_DIR}/control"
+NODE_MODEL="${BPC_ROOT}/current/deploy/bpc-node-model.py"
 
 usage() {
   cat <<'USAGE'
 Usage:
+  bpc-node status
+  bpc-node info
   bpc-node gateway create NAME --route CIDR [--route CIDR ...] [--grant DEVICE ...] [--output FILE]
   bpc-node gateway grant NAME DEVICE [DEVICE ...]
   bpc-node gateway ungrant NAME DEVICE [DEVICE ...]
@@ -40,6 +43,23 @@ require_control() {
 
 validate_name() {
   [[ "${1:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
+}
+
+require_node_model() {
+  if [[ ! -f "${NODE_MODEL}" ]]; then
+    echo "BPC node model helper is missing: ${NODE_MODEL}" >&2
+    exit 3
+  fi
+}
+
+node_status() {
+  require_node_model
+  exec python3 "${NODE_MODEL}" --state-dir "${BPC_STATE_DIR}" status
+}
+
+node_info() {
+  require_node_model
+  exec python3 "${NODE_MODEL}" --state-dir "${BPC_STATE_DIR}" info
 }
 
 restart_control() {
@@ -520,6 +540,17 @@ PY
 require_root
 scope="${1:-}"
 command="${2:-}"
+case "${scope}" in
+  status)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    node_status
+    ;;
+  info)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    node_info
+    ;;
+esac
+
 if [[ "${scope}" != "gateway" ]]; then
   usage
   [[ -z "${scope}" || "${scope}" == "-h" || "${scope}" == "--help" || "${scope}" == "help" ]] && exit 0

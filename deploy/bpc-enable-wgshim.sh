@@ -239,6 +239,12 @@ fi
 touch "${WGSHIM_DIR}/enabled"
 chmod 0600 "${WGSHIM_DIR}/enabled"
 
+node_model="${BPC_ROOT}/current/deploy/bpc-node-model.py"
+if [[ -f "${node_model}" ]] && python3 -c 'import yaml' >/dev/null 2>&1; then
+  python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" migrate >/dev/null
+  python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" capability relay enable >/dev/null
+fi
+
 cat <<DONE
 BPC WGShim low-latency relay is active.
 Public endpoint: ${BPC_RU_HOST}:${WGSHIM_PORT}/udp

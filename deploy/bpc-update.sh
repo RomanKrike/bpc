@@ -21,6 +21,7 @@ reconcile_command_links() {
   local spec name script
 
   for spec in \
+    "bpc:bpc.sh" \
     "bpc-update:bpc-update.sh" \
     "bpc-status:bpc-status.sh" \
     "bpc-ensure-dns:bpc-ensure-dns.sh" \
@@ -58,6 +59,12 @@ reconcile_command_links "${BPC_ROOT}/current"
 
 if [[ -x "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
   "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh"
+fi
+
+if ! python3 -c 'import yaml' >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends python3 python3-yaml
 fi
 
 tmp="$(mktemp -d)"

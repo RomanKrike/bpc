@@ -3,7 +3,7 @@ set -euo pipefail
 
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
-role="unknown"
+legacy_role="unknown"
 
 format_age() {
   local seconds="$1"
@@ -41,7 +41,7 @@ print_peer_line() {
 if [[ -f "${BPC_STATE_DIR}/install.env" ]]; then
   # shellcheck disable=SC1090,SC1091
   source "${BPC_STATE_DIR}/install.env"
-  role="${BPC_ROLE:-unknown}"
+  legacy_role="${BPC_ROLE:-unknown}"
 fi
 
 version="unknown"
@@ -50,7 +50,11 @@ if [[ -f "${BPC_ROOT}/current/VERSION" ]]; then
 fi
 
 printf 'BPC version: %s\n' "${version}"
-printf 'Role: %s\n' "${role}"
+printf 'Install profile (legacy): %s\n' "${legacy_role}"
+node_model="${BPC_ROOT}/current/deploy/bpc-node-model.py"
+if [[ -f "${node_model}" ]] && python3 -c 'import yaml' >/dev/null 2>&1; then
+  python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" status
+fi
 
 if "${BPC_ROOT}/current/deploy/bpc-healthcheck.sh"; then
   echo "Health: OK"
@@ -65,7 +69,7 @@ else
   echo "DNS: FAILED (run bpc-ensure-dns)"
 fi
 
-if [[ "${role}" == "ru-node" ]]; then
+if [[ -d "${BPC_STATE_DIR}/ru-node" ]]; then
   printf 'Xray: %s\n' "$(systemctl is-active xray 2>/dev/null || true)"
   host="unknown"
   if [[ -f "${BPC_STATE_DIR}/ru-node/client.env" ]]; then
