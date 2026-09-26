@@ -88,7 +88,7 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends openssl python3 ca-certificates
+apt-get install -y --no-install-recommends openssl python3 python3-yaml ca-certificates
 
 install -d -m 0700   "${CONTROL_DIR}"   "${CONTROL_DIR}/enroll"   "${CONTROL_DIR}/devices"   "${CONTROL_DIR}/tokens"   "${CONTROL_DIR}/downloads"   "${CONTROL_DIR}/update"
 
@@ -200,6 +200,13 @@ fi
 
 touch "${CONTROL_DIR}/enabled"
 chmod 0600 "${CONTROL_DIR}/enabled"
+
+node_model="${BPC_ROOT}/current/deploy/bpc-node-model.py"
+if [[ -f "${node_model}" ]]; then
+  python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" migrate >/dev/null
+  python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" capability controller enable >/dev/null
+  python3 "${node_model}" --state-dir "${BPC_STATE_DIR}" capability relay enable >/dev/null
+fi
 
 if [[ -x "${BPC_ROOT}/current/deploy/bpc-agent.sh" ]]; then
   "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update
