@@ -12,7 +12,7 @@ import (
 	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
-const version = "0.14.2"
+const version = "0.16.2"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -27,6 +27,8 @@ func main() {
 		runTCPClient(os.Args[2:])
 	case "client-auto":
 		runAutoClient(os.Args[2:])
+	case "client-flow-auto":
+		runFlowAutoClient(os.Args[2:])
 	case "server":
 		runServer(os.Args[2:])
 	case "version", "--version", "-version":
@@ -157,6 +159,69 @@ func runAutoClient(args []string) {
 	}
 }
 
+func runFlowAutoClient(args []string) {
+	fs := flag.NewFlagSet("client-flow-auto", flag.ExitOnError)
+	listen := fs.String("listen", "127.0.0.1:24081", "local UDP endpoint used by WireGuard")
+	udpServer := fs.String("udp-server", "", "BPC WGShim UDP server host:port")
+	udpFlows := fs.Int("udp-flows", 6, "number of independent UDP source flows")
+	tcpServer := fs.String("tcp-server", "", "BPC WGShim TCP server host:port")
+	tcpFlows := fs.Int("tcp-flows", 2, "number of independent TCP connections")
+	keyFile := fs.String("key-file", "", "file containing a base64 32-byte PSK")
+	paddingMin := fs.Int("padding-min", 0, "minimum random padding bytes per packet")
+	paddingMax := fs.Int("padding-max", 31, "maximum random padding bytes per packet")
+	probeInterval := fs.Duration("probe-interval", 15*time.Second, "interval between flow comparisons")
+	probeTimeout := fs.Duration("probe-timeout", 750*time.Millisecond, "per-cycle flow probe timeout")
+	switchThreshold := fs.Duration("switch-threshold", 5*time.Millisecond, "minimum RTT improvement required to switch flow")
+	statsInterval := fs.Duration("stats-interval", 30*time.Second, "stats log interval; 0 disables")
+	_ = fs.Parse(args)
+	if *udpServer == "" || *keyFile == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+	if *udpFlows < 1 || *udpFlows > 16 || *tcpFlows < 0 || *tcpFlows > 8 {
+		fs.Usage()
+		os.Exit(2)
+	}
+	if *tcpFlows > 0 && *tcpServer == "" {
+		fs.Usage()
+		os.Exit(2)
+	}
+
+	psk := mustLoadPSK(*keyFile)
+	tx := mustCodec(psk, wgshim.ClientToServer, *paddingMin, *paddingMax)
+	rx := mustCodec(psk, wgshim.ServerToClient, *paddingMin, *paddingMax)
+	logger := log.New(os.Stdout, "bpc-wgshim ", log.LstdFlags|log.LUTC)
+	logger.Printf(
+		"starting adaptive flow client listen=%s udp=%s udp_flows=%d tcp=%s tcp_flows=%d padding=%d..%d",
+		*listen,
+		*udpServer,
+		*udpFlows,
+		*tcpServer,
+		*tcpFlows,
+		*paddingMin,
+		*paddingMax,
+	)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	if err := wgshim.RunAdaptiveFlowTransportClient(ctx, wgshim.AdaptiveFlowTransportClientConfig{
+		LocalListen:     *listen,
+		UDPServer:       *udpServer,
+		UDPFlows:        *udpFlows,
+		TCPServer:       *tcpServer,
+		TCPFlows:        *tcpFlows,
+		TX:              tx,
+		RX:              rx,
+		Logger:          logger,
+		StatsInterval:   *statsInterval,
+		ProbeInterval:   *probeInterval,
+		ProbeTimeout:    *probeTimeout,
+		SwitchThreshold: *switchThreshold,
+	}); err != nil {
+		logger.Fatal(err)
+	}
+}
+
 func runServer(args []string) {
 	fs := flag.NewFlagSet("server", flag.ExitOnError)
 	listen := fs.String("listen", "0.0.0.0:24443", "outer UDP listen address")
@@ -218,10 +283,12 @@ Usage:
   bpc-wgshim client --server HOST:PORT --key-file FILE [options]
   bpc-wgshim client-tcp --server HOST:PORT --key-file FILE [options]
   bpc-wgshim client-auto --udp-server HOST:PORT --tcp-server HOST:PORT --key-file FILE [options]
+  bpc-wgshim client-flow-auto --udp-server HOST:PORT --tcp-server HOST:PORT --key-file FILE [options]
   bpc-wgshim server --target HOST:PORT --key-file FILE [options]
   bpc-wgshim version
 
 Clients listen on 127.0.0.1:24081 by default. Point the normal WireGuard peer
-Endpoint at that address. client-auto measures authenticated UDP and TCP probes
-and selects the lower-latency reachable outer transport. No WireGuard cryptography is modified.`)
+Endpoint at that address. client-auto compares one UDP flow with one TCP flow.
+client-flow-auto keeps several independent source flows alive and selects the
+healthiest concrete path. No WireGuard cryptography is modified.`)
 }
