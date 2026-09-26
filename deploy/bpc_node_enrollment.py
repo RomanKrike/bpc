@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Any
 
 MODULE_DIR = Path(__file__).resolve().parent
-SOURCE_ROOTS = (MODULE_DIR / "src", MODULE_DIR.parent / "src")
-for source_root in SOURCE_ROOTS:
-    if (source_root / "bpc_connect").is_dir():
-        sys.path.insert(0, str(source_root))
-        break
+if (MODULE_DIR / "src" / "bpc_connect").is_dir():
+    ROOT = MODULE_DIR
+    SOURCE_ROOT = MODULE_DIR / "src"
 else:
-    sys.path.insert(0, str(MODULE_DIR.parent / "src"))
+    ROOT = MODULE_DIR.parent
+    SOURCE_ROOT = ROOT / "src"
+sys.path.insert(0, str(SOURCE_ROOT))
 
 from bpc_connect.node import (  # noqa: E402
     Capabilities,
