@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import ssl
 import subprocess
@@ -626,7 +627,62 @@ def reconcile_roles(
     return results
 
 
+def stage_node_runtime(state_dir: Path) -> Path:
+    version_path = ROOT / "VERSION"
+    version = (
+        version_path.read_text(encoding="utf-8").strip()
+        if version_path.is_file()
+        else "source"
+    )
+    if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._-]{0,63}", version):
+        raise EnrollmentError("invalid BPC runtime version")
+
+    release_deploy = ROOT / "deploy"
+    release_package = ROOT / "src" / "bpc_connect"
+    if not (release_deploy / "bpc_node_enrollment.py").is_file():
+        raise EnrollmentError("BPC Node enrollment runtime is missing")
+    if not release_package.is_dir():
+        raise EnrollmentError("BPC Python package is missing")
+
+    runtime_version = state_dir / f"runtime-{version}"
+    runtime_link = state_dir / "runtime"
+    runtime_tmp = state_dir / f".runtime.{secrets.token_hex(4)}"
+    runtime_tmp.mkdir(parents=True, mode=0o700)
+    try:
+        shutil.copytree(release_deploy, runtime_tmp / "deploy")
+        (runtime_tmp / "src").mkdir(mode=0o700)
+        shutil.copytree(release_package, runtime_tmp / "src" / "bpc_connect")
+        if version_path.is_file():
+            shutil.copy2(version_path, runtime_tmp / "VERSION")
+
+        for directory in [runtime_tmp, *runtime_tmp.rglob("*")]:
+            if directory.is_dir():
+                os.chmod(directory, 0o700)
+            elif directory.is_file():
+                mode = 0o700 if directory.suffix == ".sh" else 0o600
+                os.chmod(directory, mode)
+
+        if runtime_version.exists():
+            shutil.rmtree(runtime_version)
+        os.replace(runtime_tmp, runtime_version)
+    finally:
+        if runtime_tmp.exists():
+            shutil.rmtree(runtime_tmp)
+
+    if runtime_link.exists() and not runtime_link.is_symlink():
+        if runtime_link.is_dir():
+            shutil.rmtree(runtime_link)
+        else:
+            runtime_link.unlink()
+    link_tmp = state_dir / f".runtime-link.{secrets.token_hex(4)}"
+    link_tmp.symlink_to(runtime_version.name)
+    os.replace(link_tmp, runtime_link)
+    return runtime_link
+
+
 def install_runtime_service(state_dir: Path) -> None:
+    runtime = stage_node_runtime(state_dir)
+    runtime_entrypoint = runtime / "deploy" / "bpc_node_enrollment.py"
     unit = Path("/etc/systemd/system/bpc-node.service")
     content = f"""[Unit]
 Description=BPC Node control-plane runtime
@@ -635,7 +691,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/python3 {ROOT / 'deploy' / 'bpc_node_enrollment.py'} \
+ExecStart=/usr/bin/python3 {runtime_entrypoint} \
   --state-dir {state_dir} daemon
 Restart=always
 RestartSec=5
@@ -969,6 +1025,7 @@ def build_parser() -> argparse.ArgumentParser:
     join.add_argument("token")
 
     sub.add_parser("status")
+    sub.add_parser("runtime-install")
 
     leave = sub.add_parser("leave")
     leave.add_argument("--force", action="store_true")
@@ -988,6 +1045,14 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_join(args)
         if args.command == "status":
             return cmd_status(args)
+        if args.command == "runtime-install":
+            if os.geteuid() != 0:
+                raise EnrollmentError("run BPC runtime installation as root")
+            if enrolled_state(args.state_dir) is None:
+                raise EnrollmentError("node is not joined")
+            install_runtime_service(args.state_dir)
+            print("BPC Node runtime service installed.")
+            return 0
         if args.command == "leave":
             return cmd_leave(args)
         if args.command == "daemon":
