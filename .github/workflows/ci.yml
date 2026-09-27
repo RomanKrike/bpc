@@ -40,6 +40,7 @@ jobs:
           files="$(gofmt -l cmd internal)"
           if [[ -n "$files" ]]; then
             printf 'Files requiring gofmt:\n%s\n' "$files"
+            gofmt -d cmd internal
             exit 1
           fi
       - run: go test ./...
