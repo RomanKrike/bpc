@@ -186,14 +186,12 @@ def run_wg(*args: str) -> None:
         raise RuntimeError(message or f"wg exited with {completed.returncode}")
 
 
-def active_wireguard_devices(state_dir: Path) -> list[dict[str, Any]]:
+def wireguard_device_records(state_dir: Path) -> list[dict[str, Any]]:
     devices: list[dict[str, Any]] = []
     for path in sorted((state_dir / "devices").glob("*.json")):
         try:
             device = read_json(path)
         except (OSError, ValueError, json.JSONDecodeError):
-            continue
-        if bool(device.get("revoked", False)) or not bool(device.get("enabled", True)):
             continue
         public_key = str(device.get("wireguard_public_key", "")).strip()
         address = str(device.get("wireguard_address", "")).strip()
@@ -201,6 +199,14 @@ def active_wireguard_devices(state_dir: Path) -> list[dict[str, Any]]:
             continue
         devices.append(device)
     return devices
+
+
+def active_wireguard_devices(state_dir: Path) -> list[dict[str, Any]]:
+    return [
+        device
+        for device in wireguard_device_records(state_dir)
+        if not bool(device.get("revoked", False)) and bool(device.get("enabled", True))
+    ]
 
 
 def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
@@ -235,7 +241,12 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
 
 def sync_wireguard_peers(state_dir: Path) -> None:
     interface = require_owned_wireguard_interface(state_dir)
-    devices = active_wireguard_devices(state_dir)
+    records = wireguard_device_records(state_dir)
+    devices = [
+        device
+        for device in records
+        if not bool(device.get("revoked", False)) and bool(device.get("enabled", True))
+    ]
     gateway_routes(devices)
 
     completed = subprocess.run(
@@ -247,8 +258,18 @@ def sync_wireguard_peers(state_dir: Path) -> None:
     if completed.returncode != 0:
         message = completed.stderr.strip() or f"WireGuard interface {interface} unavailable"
         raise RuntimeError(message)
-    for peer in completed.stdout.split():
-        run_wg("set", interface, "peer", peer, "remove")
+    current_peers = set(completed.stdout.split())
+
+    # Do not tear down and recreate every peer on Controller restart. WireGuard
+    # learns the relay endpoint dynamically, and removing an otherwise active
+    # peer discards that endpoint. Unknown peers can also belong to a BPC Node
+    # transport that is not represented by a User Device record. Reconcile only
+    # records the control plane actually owns.
+    for device in records:
+        public_key = str(device["wireguard_public_key"]).strip()
+        if bool(device.get("revoked", False)) or not bool(device.get("enabled", True)):
+            if public_key in current_peers:
+                run_wg("set", interface, "peer", public_key, "remove")
 
     for device in devices:
         public_key = str(device["wireguard_public_key"]).strip()

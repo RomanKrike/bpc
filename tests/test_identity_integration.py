@@ -315,3 +315,59 @@ def test_user_device_http_flow_login_register_refresh_revoke(
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_wireguard_sync_preserves_live_and_unknown_peer_endpoints(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    key_dir = tmp_path / "wgshim-keys"
+    key_dir.mkdir()
+    write_control_config(tmp_path, key_dir)
+
+    active_key = base64.b64encode(b"a" * 32).decode("ascii")
+    revoked_key = base64.b64encode(b"r" * 32).decode("ascii")
+    unknown_key = base64.b64encode(b"u" * 32).decode("ascii")
+    identity.atomic_json(
+        tmp_path / "devices" / "active.json",
+        {
+            "id": "active",
+            "wireguard_public_key": active_key,
+            "wireguard_address": "10.253.0.2/32",
+            "enabled": True,
+            "revoked": False,
+        },
+    )
+    identity.atomic_json(
+        tmp_path / "devices" / "revoked.json",
+        {
+            "id": "revoked",
+            "wireguard_public_key": revoked_key,
+            "wireguard_address": "10.253.0.9/32",
+            "enabled": False,
+            "revoked": True,
+        },
+    )
+
+    class Result:
+        returncode = 0
+        stdout = f"{active_key} {revoked_key} {unknown_key}\n"
+        stderr = ""
+
+    monkeypatch.setattr(control_server.subprocess, "run", lambda *args, **kwargs: Result())
+    calls: list[tuple[str, ...]] = []
+    monkeypatch.setattr(control_server, "run_wg", lambda *args: calls.append(args))
+
+    control_server.sync_wireguard_peers(tmp_path)
+
+    assert ("set", "bpcag0", "peer", revoked_key, "remove") in calls
+    assert ("set", "bpcag0", "peer", active_key, "remove") not in calls
+    assert ("set", "bpcag0", "peer", unknown_key, "remove") not in calls
+    assert (
+        "set",
+        "bpcag0",
+        "peer",
+        active_key,
+        "allowed-ips",
+        "10.253.0.2/32",
+    ) in calls
