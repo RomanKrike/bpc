@@ -89,3 +89,10 @@ def test_node_config_does_not_embed_transport_credentials() -> None:
 def test_cluster_init_roles_are_parsed_as_role_values() -> None:
     assert 'init.add_argument("--roles", action="append")' in CLUSTER
     assert 'normalize_roles(args.roles or ["controller,gateway,relay"])' in CLUSTER
+
+
+def test_agent_dataplane_preserves_live_wireguard_peers_on_reconcile() -> None:
+    assert 'interface_live="false"' in DATAPLANE
+    assert 'wg set "${WG_INTERFACE}" private-key' in DATAPLANE
+    assert 'if [[ "${interface_live}" == "true" ]]' in DATAPLANE
+    assert 'systemctl restart "wg-quick@${WG_INTERFACE}.service"' in DATAPLANE

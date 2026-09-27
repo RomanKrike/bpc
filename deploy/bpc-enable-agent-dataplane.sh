@@ -270,6 +270,13 @@ if [[ -e "${wg_config}" || -d "/sys/class/net/${WG_INTERFACE}" ]]; then
   fi
 fi
 
+interface_live="false"
+if [[ "${interface_owned}" == "true" ]] && \
+  [[ -d "/sys/class/net/${WG_INTERFACE}" ]] && \
+  systemctl --quiet is-active "wg-quick@${WG_INTERFACE}.service" 2>/dev/null; then
+  interface_live="true"
+fi
+
 install -d -m 0700 "${AGENT_DIR}" "${KEY_DIR}" /etc/wireguard
 python3 - "${ownership_file}" "${WG_INTERFACE}" "${wg_config}" <<'PY'
 import json
@@ -442,7 +449,20 @@ UNIT
 
 systemctl daemon-reload
 systemctl enable "wg-quick@${WG_INTERFACE}.service" >/dev/null
-systemctl restart "wg-quick@${WG_INTERFACE}.service"
+if [[ "${interface_live}" == "true" ]]; then
+  # Keep the live BPC-owned interface and its peer/endpoints intact. Replacing
+  # wg-quick would destroy dynamically learned relay endpoints and interrupt
+  # site-router/home connectivity during an otherwise routine update.
+  wg set "${WG_INTERFACE}" private-key "${AGENT_DIR}/server.key" listen-port "${WG_PORT}"
+  ip link set dev "${WG_INTERFACE}" mtu "${WG_MTU}"
+  if ! ip -o -4 addr show dev "${WG_INTERFACE}" | awk '{print $4}' | grep -Fxq "${WG_SERVER_ADDRESS}"; then
+    ip -4 addr flush dev "${WG_INTERFACE}" scope global
+    ip address add "${WG_SERVER_ADDRESS}" dev "${WG_INTERFACE}"
+  fi
+  ip link set dev "${WG_INTERFACE}" up
+else
+  systemctl restart "wg-quick@${WG_INTERFACE}.service"
+fi
 systemctl enable bpc-agent-dataplane-firewall.service >/dev/null
 systemctl restart bpc-agent-dataplane-firewall.service
 systemctl enable bpc-agent-relay.service >/dev/null
