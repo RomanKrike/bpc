@@ -59,7 +59,7 @@ func TestStateMachineAppliesDeterministicCanonicalMutation(t *testing.T) {
 
 func TestStateMachineRejectsExternalOrRuntimePaths(t *testing.T) {
 	_, fsm, _ := testFSM(t)
-	for _, path := range []string{"../etc/passwd", "control/config.json", "runtime/secret.json", "transports/wg.key"} {
+	for _, path := range []string{"../etc/passwd", "control/downloads/file.exe", "runtime/secret.json", "transports/wg.key"} {
 		result := applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: "x", Kind: "Bad", Operations: []Operation{{Op: "put", Path: path, Data: []byte("x")}}})
 		if result.OK || result.Error == "" {
 			t.Fatalf("path %q should be rejected: %+v", path, result)
