@@ -45,6 +45,8 @@ from bpc_connect.node import (  # noqa: E402
 )
 from bpc_connect.state import StateLayout  # noqa: E402
 
+import bpc_control_state  # noqa: E402
+
 DEFAULT_STATE_DIR = Path("/etc/bpc-connect")
 DEFAULT_CONTROL_DIR = StateLayout.from_root(DEFAULT_STATE_DIR).control_dir
 TOKEN_PREFIX = "BPC-"
@@ -60,13 +62,68 @@ class EnrollmentError(RuntimeError):
         self.status = status
 
 
+def _control_root_for_path(path: Path) -> Path | None:
+    for candidate in (path, *path.parents):
+        if candidate.name == "control":
+            return candidate
+    return None
+
+
+def _raise_control_state(exc: bpc_control_state.ControlStateError) -> None:
+    raise EnrollmentError(str(exc), exc.status) from exc
+
+
 def atomic_json(path: Path, value: dict[str, Any], mode: int = 0o600) -> None:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    control_root = _control_root_for_path(path)
+    if (
+        control_root is not None
+        and bpc_control_state.cluster_enabled(control_root)
+        and bpc_control_state.is_replicated_path(control_root, path)
+    ):
+        try:
+            bpc_control_state.mutation(
+                control_root,
+                "PutCanonicalRecord",
+                [{"op": "put", "path": path, "data": payload.encode("utf-8")}],
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+        return
+
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
     tmp.write_text(payload, encoding="utf-8")
     os.chmod(tmp, mode)
     os.replace(tmp, path)
+
+
+def delete_canonical(path: Path, *, kind: str = "DeleteCanonicalRecord") -> None:
+    control_root = _control_root_for_path(path)
+    if (
+        control_root is not None
+        and bpc_control_state.cluster_enabled(control_root)
+        and bpc_control_state.is_replicated_path(control_root, path)
+    ):
+        try:
+            bpc_control_state.mutation(
+                control_root,
+                kind,
+                [{"op": "delete", "path": path}],
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+        return
+    path.unlink(missing_ok=True)
+
+
+def strong_read(control_dir: Path) -> None:
+    if not bpc_control_state.cluster_enabled(control_dir):
+        return
+    try:
+        bpc_control_state.strong_read(control_dir)
+    except bpc_control_state.ControlStateError as exc:
+        _raise_control_state(exc)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -227,6 +284,7 @@ def create_join_token(
 
 
 def _join_record(control_dir: Path, token: str) -> tuple[Path, dict[str, Any], str]:
+    strong_read(control_dir)
     controller_url, secret = parse_join_token(token)
     index = token_index(secret)
     path = control_dir / "node-join" / f"{index}.json"
@@ -256,11 +314,39 @@ def enroll_node(
     token_path, record, index = _join_record(control_dir, token)
     expires_at = int(record.get("expires_at", 0))
     if expires_at <= timestamp:
-        token_path.unlink(missing_ok=True)
-        atomic_json(
-            control_dir / "node-join-used" / f"{index}.json",
-            {"reason": "expired", "used_at": timestamp},
-        )
+        used_path = control_dir / "node-join-used" / f"{index}.json"
+        if bpc_control_state.cluster_enabled(control_dir):
+            try:
+                bpc_control_state.mutation(
+                    control_dir,
+                    "ExpireNodeJoinToken",
+                    [
+                        {
+                            "op": "delete",
+                            "path": token_path,
+                            "require_present": True,
+                            "expected_sha256": hashlib.sha256(
+                                token_path.read_bytes()
+                            ).hexdigest(),
+                        },
+                        {
+                            "op": "put",
+                            "path": used_path,
+                            "data": json.dumps(
+                                {"reason": "expired", "used_at": timestamp},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8"),
+                            "if_absent": True,
+                        },
+                    ],
+                    issued_at=timestamp,
+                )
+            except bpc_control_state.ControlStateError as exc:
+                _raise_control_state(exc)
+        else:
+            token_path.unlink(missing_ok=True)
+            atomic_json(used_path, {"reason": "expired", "used_at": timestamp})
         raise EnrollmentError("join token has expired", 401)
 
     roles = normalize_roles([str(item) for item in record.get("roles", [])])
@@ -299,20 +385,82 @@ def enroll_node(
 
     node_path = control_dir / "nodes" / f"{node_id}.json"
     credential_path = control_dir / "node-credentials" / f"{credential_index}.json"
-    try:
-        atomic_json(node_path, node)
-        atomic_json(public_index, {"node_id": node_id})
-        atomic_json(credential_path, {"node_id": node_id})
-        atomic_json(
-            control_dir / "node-join-used" / f"{index}.json",
-            {"reason": "used", "used_at": timestamp, "node_id": node_id},
-        )
-        token_path.unlink()
-    except OSError:
-        node_path.unlink(missing_ok=True)
-        public_index.unlink(missing_ok=True)
-        credential_path.unlink(missing_ok=True)
-        raise
+    used_path = control_dir / "node-join-used" / f"{index}.json"
+    if bpc_control_state.cluster_enabled(control_dir):
+        try:
+            token_hash = hashlib.sha256(token_path.read_bytes()).hexdigest()
+            bpc_control_state.mutation(
+                control_dir,
+                "EnrollNode",
+                [
+                    {
+                        "op": "put",
+                        "path": node_path,
+                        "data": json.dumps(
+                            node, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                    {
+                        "op": "put",
+                        "path": public_index,
+                        "data": json.dumps(
+                            {"node_id": node_id},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                    {
+                        "op": "put",
+                        "path": credential_path,
+                        "data": json.dumps(
+                            {"node_id": node_id},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                    {
+                        "op": "put",
+                        "path": used_path,
+                        "data": json.dumps(
+                            {
+                                "reason": "used",
+                                "used_at": timestamp,
+                                "node_id": node_id,
+                            },
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                    {
+                        "op": "delete",
+                        "path": token_path,
+                        "require_present": True,
+                        "expected_sha256": token_hash,
+                    },
+                ],
+                issued_at=timestamp,
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+    else:
+        try:
+            atomic_json(node_path, node)
+            atomic_json(public_index, {"node_id": node_id})
+            atomic_json(credential_path, {"node_id": node_id})
+            atomic_json(
+                used_path,
+                {"reason": "used", "used_at": timestamp, "node_id": node_id},
+            )
+            token_path.unlink()
+        except OSError:
+            node_path.unlink(missing_ok=True)
+            public_index.unlink(missing_ok=True)
+            credential_path.unlink(missing_ok=True)
+            raise
 
     return {
         "node_id": node_id,
@@ -329,6 +477,7 @@ def enroll_node(
 
 
 def authorize_node(control_dir: Path, credential: str) -> tuple[Path, dict[str, Any]]:
+    strong_read(control_dir)
     value = credential.strip()
     if len(value) != 64:
         raise EnrollmentError("invalid node credential", 401)
@@ -389,13 +538,41 @@ def leave_node(control_dir: Path, *, credential: str, now: int | None = None) ->
     node["revoked"] = True
     node["last_seen"] = timestamp
     node["last_status"] = "left"
-    atomic_json(node_path, node)
 
     credential_path = control_dir / "node-credentials" / f"{token_index(credential)}.json"
-    credential_path.unlink(missing_ok=True)
     fingerprint = str(node.get("public_key_fingerprint", ""))
-    if fingerprint:
-        (control_dir / "node-public-keys" / f"{fingerprint}.json").unlink(missing_ok=True)
+    public_path = (
+        control_dir / "node-public-keys" / f"{fingerprint}.json"
+        if fingerprint
+        else None
+    )
+    if bpc_control_state.cluster_enabled(control_dir):
+        operations: list[dict[str, Any]] = [
+            {
+                "op": "put",
+                "path": node_path,
+                "data": json.dumps(
+                    node, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8"),
+            },
+            {"op": "delete", "path": credential_path},
+        ]
+        if public_path is not None:
+            operations.append({"op": "delete", "path": public_path})
+        try:
+            bpc_control_state.mutation(
+                control_dir,
+                "RevokeNode",
+                operations,
+                issued_at=timestamp,
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+    else:
+        atomic_json(node_path, node)
+        credential_path.unlink(missing_ok=True)
+        if public_path is not None:
+            public_path.unlink(missing_ok=True)
     return {"ok": True, "node_id": str(node["node_id"])}
 
 
