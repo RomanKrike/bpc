@@ -30,27 +30,40 @@ This repository intentionally separates the BPC underlay from the corporate VPN.
 ## Unified Node model
 
 Server-side BPC is modeled as one `Node`. `controller`, `gateway`, `relay`
-and `site_router` are independent capabilities, so the same machine can run
-several of them at once. For example, an RU VPS can be:
+and `site_router` are independent capabilities, so one machine can run several
+of them at once.
 
 ```text
 ru-01 = controller + gateway + relay
 ```
 
-The canonical local metadata is `/etc/bpc-connect/node.yaml` (schema version
-1). Existing transport state remains under `/etc/bpc-connect/ru-node/` for
-backward compatibility; Stage 1 does not rotate transport keys or change client
-protocols.
+Canonical domain state is rooted at `/etc/bpc-connect/`:
 
-Inspect the unified Node state with:
+```text
+node.yaml
+identity/
+cluster/
+control/
+runtime/
+transports/
+compat/
+backups/
+```
+
+Controller state is now canonical at `/etc/bpc-connect/control/`. Historical
+transport state under `/etc/bpc-connect/ru-node/` remains compatibility input
+for existing installations; new core code does not use it as the domain model.
+
+Inspect Node state with:
 
 ```bash
 sudo bpc node status
 sudo bpc node info
 ```
 
-See [docs/architecture.md](docs/architecture.md) for capability semantics and
-legacy migration rules.
+Stage 4.5 also adds backup-first canonical migration and explicit network
+ownership. Unknown or external WireGuard interfaces, routes and firewall state
+are not migration targets. See [docs/architecture.md](docs/architecture.md).
 
 ## One-command Node Join
 
@@ -166,84 +179,58 @@ Only transports that are actually enabled are included. Mihomo continuously heal
 
 OpenVPN and SSH rescue are intentionally not inserted into `BPC-AUTO`. The aggregate profile always exposes `BPC-MANUAL` for forcing one primary transport and `BPC-ROUTE`, which defaults to `BPC-AUTO` and can switch to `BPC-MANUAL` plus any enabled OpenVPN/SSH rescue fallback. IKEv2 is an OS-level transport and never appears in Clash.
 
-## One-command RU node install
+## Install and initialize a BPC Node
 
-On a clean Debian 13 VPS:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
-  | sudo bash -s -- --role ru-node --reality-server-name www.bing.com
-```
-
-To provision AWG and native WireGuard immediately:
+Install the runtime on a clean Debian/Ubuntu server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
-  | sudo bash -s -- \
-      --role ru-node \
-      --node-name ru-01 \
-      --reality-server-name www.bing.com \
-      --with-awg \
-      --with-wg
+curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh | sudo bash
 ```
 
-Optional parameters:
-
-```text
---port 443
---public-host 203.0.113.10
---node-name ru-01
---awg-port 443
---wg-port 51820
-```
-
-The provider firewall must permit each enabled protocol/port.
-
-The installer downloads the latest GitHub Release deployment bundle, verifies it against the published `SHA256SUMS`, installs it under `/opt/bpc/releases/<version>`, provisions the RU gateway profile on first install, creates/reconciles the unified Node metadata, and preserves generated credentials under `/etc/bpc-connect`. The legacy `--role ru-node` option is retained as an install profile for compatibility; it is no longer the architectural Node type.
-
-Before generating credentials, the RU bootstrap checks that the selected REALITY target resolves, completes a TLS 1.3 handshake, and does not expose a Certificate handshake larger than the pinned REALITY parser limit. `www.microsoft.com` is explicitly rejected for the pinned Xray 26.3.27 runtime because its TLS Certificate record can exceed the 8192-byte REALITY limit and cause `handshake did not complete successfully`; see [XTLS/Xray-core#6356](https://github.com/XTLS/Xray-core/issues/6356). `www.bing.com` is the tested BPC recommendation for this runtime.
-
-If DNS resolution is unavailable, the installer first attempts to repair `systemd-resolved` with public resolvers. If `systemd-resolved` is unavailable, BPC can install a static `/etc/resolv.conf` fallback and preserves the previous file as `/etc/resolv.conf.bpc-backup` when possible. Resolver defaults can be overridden with `BPC_DNS_SERVERS` and `BPC_FALLBACK_DNS`.
-
-For RU-node endpoint discovery, BPC first checks the IPv4 source address selected by the default route and then public IPv4 lookup services. It no longer silently writes the local machine hostname as the client endpoint. If a usable public endpoint cannot be detected, install with `--public-host` explicitly.
-
-After installation:
+Initialize the first Controller explicitly:
 
 ```bash
+bpc init \
+  --name ru-01 \
+  --roles controller,gateway,relay \
+  --hostname sub.example.com
+```
+
+Or join an existing Controller with a one-time token:
+
+```bash
+bpc join BPC-<controller-envelope>.<one-time-secret>
+```
+
+The historical `--role ru-node` installer remains available for compatibility
+with existing deployments, but `ru-node` is not a canonical Node type.
+
+Stage 4.5 migration can also be run explicitly:
+
+```bash
+bpc state migrate
+```
+
+It inventories links, routes, rules, WireGuard and firewall state before copying
+BPC-owned Controller state to the canonical location. It does not intentionally
+modify external network objects.
+
+Common commands:
+
+```bash
+sudo bpc status
 sudo bpc node status
 sudo bpc node info
-sudo bpc-status
 sudo bpc-update
-sudo bpc-ensure-dns
-sudo bpc-render-clash
-sudo bpc-route-target list
-```
-
-Enable additional transports later on an existing node:
-
-```bash
-sudo bpc-enable-awg
-sudo bpc-enable-wg
-sudo bpc-enable-wgshim --target 176.32.35.91:24081
-sudo bpc-enable-mihomo-transports --hostname sub.example.com
-sudo bpc-enable-openvpn
-sudo bpc-enable-ikev2 --hostname sub.example.com
-sudo bpc-enable-ssh-rescue
-sudo bpc-render-clash
 sudo bpc-status
 ```
 
-`bpc-update` downloads the latest release, backs up `/etc/bpc-connect`, atomically switches `/opt/bpc/current`, validates managed services, and rolls back to the previous release if the health check fails.
+Existing transport enablement commands remain available. Their historical
+`ru-node/` state directories are compatibility runtime until transport storage
+is migrated in a later stage.
 
-`bpc-status` reports service health, enabled transport endpoints and WireGuard/AmneziaWG peer handshake and traffic counters without printing credentials.
-
-`bpc-render-clash` creates a root-only aggregate profile at `/etc/bpc-connect/ru-node/clash-verge-auto.yaml`. Existing installations automatically receive this profile during migration. The default preference can be overridden, for example:
-
-```bash
-BPC_CLASH_TRANSPORT_ORDER="hy2 tuic awg wg vless anytls" sudo -E bpc-render-clash
-```
-
-Health-check behavior can be tuned through `BPC_CLASH_HEALTH_URL`, `BPC_CLASH_HEALTH_INTERVAL`, `BPC_CLASH_HEALTH_TIMEOUT` and `BPC_CLASH_MAX_FAILED_TIMES`.
+See [docs/install-update.md](docs/install-update.md) for the canonical filesystem,
+ownership rules, migration backup/report format and rollback behavior.
 
 ## Selective underlay routing
 
@@ -280,104 +267,73 @@ sudo bpc-route-target clear
 
 ## Self-contained Windows BPC Agent
 
-BPC 0.10 adds a prepared Windows agent that no longer requires WireGuard for
-Windows on a clean machine. The VPS provisions a dedicated per-device
-WireGuard peer and a per-device WGShim key during one-time HTTPS enrollment.
-The agent embeds Wintun and the userspace WireGuard implementation, installs as
-a native Windows service, reports heartbeats, synchronizes runtime
-configuration and applies signed automatic updates.
+The Windows Agent uses a per-Device WireGuard peer and WGShim key, embeds Wintun
+and userspace WireGuard, runs as a native Windows service, synchronizes
+Controller configuration and supports signed updates.
 
-Enable the HTTPS control plane once on the RU node:
-
-```bash
-sudo bpc-enable-subscription --hostname sub.example.com
-sudo bpc-enable-control
-```
-
-The control-plane command also provisions the dedicated agent data plane:
-`bpcag0` uses `10.253.0.0/24` by default and the public multi-client relay
-listens on UDP/24444. The inner WireGuard listener is restricted to loopback;
-only the WGShim relay port must be exposed by the VPS provider firewall.
-
-Create a one-time installer for a device:
+Enable trusted HTTPS and the Controller on the primary Node, then prepare an
+installer:
 
 ```bash
 sudo bpc-agent create pc004
 ```
 
-Copy the generated EXE to that Windows machine and run it. The installer
-elevates once, enrolls the device, stores its private WireGuard key only on the
-client, installs the BPC Agent Windows service and starts the embedded tunnel.
-No separate WireGuard application or hand-edited tunnel profile is required.
+On first install BP Connect asks for the BPC User credentials, creates Device
+and WireGuard private keys locally and sends only the required public material
+and proof-of-possession to the Controller.
 
-Server-side device operations:
+Administration uses the canonical Device and Access model:
 
 ```bash
 sudo bpc-agent list
-sudo bpc-agent revoke pc004
+sudo bpc device list
+sudo bpc device revoke pc004
+sudo bpc access grant --device pc004 192.168.88.0/24
+sudo bpc access revoke --device pc004 192.168.88.0/24
 ```
 
-Revocation invalidates the control-plane bearer token, removes the device
-WireGuard peer and removes its WGShim relay key. Each active device has a
-separate relay session, so multiple agents can be connected concurrently.
+The old `bpc-agent routes` and `bpc-agent revoke` write paths are disabled.
+Historical Device route/static-token fields remain readable only through the
+compatibility layer.
 
-## BP Network home gateway
+The BPC Agent WireGuard interface is mutated only after BPC ownership is proven;
+a pre-existing interface with the same name is not automatically adopted.
 
-BPC 0.13 added BP Network subnet routing. BPC 0.14 adds adaptive outer transport
-selection for Linux **BP Gateway** nodes. A gateway joins the same
-`10.253.0.0/24` Agent overlay as BP Connect, and the relay routes only explicitly
-advertised LAN CIDRs to it. The gateway continuously compares authenticated UDP
-and TCP WGShim probes and can use TCP when a provider's UDP path has materially
-higher RTT.
+## Routed sites and legacy BP Gateway compatibility
 
-The initial path is:
+Pre-Stage-4.5 releases represented a routed site as a special BP Gateway Device
+record. That write model is retired.
+
+The following historical mutation commands are disabled:
 
 ```text
-BP Connect (Windows)
-        |
-        | encrypted BP overlay
-        v
-BP Relay
-        |
-        | gateway WireGuard peer
-        v
-BP Gateway (home Debian host/VM)
-        |
-        v
-home LAN
+bpc-node gateway create
+bpc-node gateway grant
+bpc-node gateway ungrant
+bpc-node gateway remove
 ```
 
-Create a gateway on the BP Relay and grant its routes to a Windows device:
-
-```bash
-sudo bpc-node gateway create ru-gw-01 \
-  --route 192.168.88.0/24 \
-  --grant pc004
-```
-
-The command creates a root-only installer under
-`/etc/bpc-connect/ru-node/control/nodes/ru-gw-01/install.sh`. Copy that file
-to an always-on Debian host or VM inside the home LAN and run it as root. The
-installer provisions WireGuard, WGShim, forwarding and scoped NAT automatically.
-
-New installers default to `BP_GATEWAY_TRANSPORT=auto`. Explicit `udp` and
-`tcp` modes remain available through the `BP_GATEWAY_TRANSPORT` environment
-variable. Existing 0.13 gateways can be upgraded in place with
-`deploy/bp-gateway-upgrade.sh` after the relay is updated to 0.14.
-
-Manage access later with:
+Existing records can still be inspected:
 
 ```bash
 sudo bpc-node gateway list
-sudo bpc-node gateway grant ru-gw-01 pc004
-sudo bpc-node gateway ungrant ru-gw-01 pc004
-sudo bpc-node gateway remove ru-gw-01
 ```
 
-BP Connect receives granted CIDRs through its normal control-plane sync, so no
-manual Windows routes or separate WireGuard application are required. This
-milestone uses the relay path; direct peer-to-peer/NAT traversal can be added
-later without changing the gateway/address model.
+The canonical model is a normal BPC Node with the `site_router` capability and
+Node-owned `advertised_routes`:
+
+```text
+Node(site_router)
+        |
+        +-- advertised_routes
+        |
+        v
+Controller routing policy
+```
+
+Stage 4.5 does not implement the replacement site-router/MikroTik data plane.
+Existing BP Gateway installer/upgrade scripts remain compatibility assets for
+already deployed gateways, not the basis for new provisioning.
 
 ## WGShim low-latency WireGuard wrapper
 
