@@ -19,6 +19,10 @@ from pathlib import Path
 from typing import Any
 
 from bpc_access import AccessError, effective_routes, sync_access_firewall
+from bpc_controller_enrollment import (
+    ControllerEnrollmentError,
+    build_controller_enrollment,
+)
 from bpc_identity import (
     IdentityError,
     authenticate_local_user,
@@ -46,6 +50,7 @@ from bpc_identity import (
 from bpc_node_enrollment import (
     EnrollmentError,
     enroll_node,
+    join_token_metadata,
     leave_node,
     node_heartbeat,
 )
@@ -977,13 +982,35 @@ class ControlHandler(BaseHTTPRequestHandler):
         node_join_lock: threading.Lock = self.server.node_join_lock  # type: ignore[attr-defined]
         try:
             with node_join_lock:
+                metadata = join_token_metadata(self._root(), token)
+                roles = [str(item) for item in metadata.get("roles", [])]
+                assigned_node_id: str | None = None
+                extra_operations: list[dict[str, Any]] = []
+                controller_payload: dict[str, Any] | None = None
+                if "controller" in roles:
+                    assigned_node_id = uuid.uuid4().hex
+                    controller_payload, membership_operation = build_controller_enrollment(
+                        self._root(),
+                        node_id=assigned_node_id,
+                        advertise_host=str(
+                            body.get("controller_advertise_host", "")
+                        ),
+                        csr_pem=str(body.get("controller_csr", "")),
+                        software_version=str(body.get("version", "")),
+                    )
+                    extra_operations.append(membership_operation)
+
                 response = enroll_node(
                     self._root(),
                     token=token,
                     public_key=public_key,
                     presented_name=name,
+                    assigned_node_id=assigned_node_id,
+                    extra_operations=extra_operations,
                 )
-        except EnrollmentError as exc:
+                if controller_payload is not None:
+                    response["controller"] = controller_payload
+        except (EnrollmentError, ControllerEnrollmentError) as exc:
             self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
             return
         except (OSError, ValueError, json.JSONDecodeError):
