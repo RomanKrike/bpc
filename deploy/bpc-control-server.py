@@ -29,6 +29,7 @@ from bpc_identity import (
     authenticate_local_user,
     authorize_access_credential,
     deactivate_device,
+    delete_canonical as identity_delete_canonical,
     device_is_active,
     find_device_by_public_key,
     issue_access_credential,
@@ -136,6 +137,14 @@ def require_owned_wireguard_interface(state_dir: Path) -> str:
             f"refusing WireGuard mutation: ownership is not proven for {interface}"
         )
     return interface
+
+
+def local_dataplane_available(state_dir: Path) -> bool:
+    try:
+        require_owned_wireguard_interface(state_dir)
+    except (OSError, KeyError, ValueError, RuntimeError, json.JSONDecodeError):
+        return False
+    return True
 
 
 def run_wg(*args: str) -> None:
@@ -425,6 +434,33 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.UNAUTHORIZED)
         return None
 
+    def _put_device(
+        self,
+        device: dict[str, Any],
+        *,
+        kind: str,
+        extra_operations: list[dict[str, Any]] | None = None,
+    ) -> None:
+        device_id = str(device.get("id", device.get("device_id", ""))).strip()
+        if not device_id:
+            raise ValueError("Device ID is missing")
+        path = self._root() / "devices" / f"{device_id}.json"
+        payload = json.dumps(device, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        if bpc_control_state.cluster_enabled(self._root()):
+            operations: list[dict[str, Any]] = [
+                {"op": "put", "path": path, "data": payload}
+            ]
+            if extra_operations:
+                operations.extend(extra_operations)
+            bpc_control_state.mutation(self._root(), kind, operations)
+            return
+        atomic_json(path, device)
+
+    def _local_dataplane(self) -> bool:
+        return local_dataplane_available(self._root())
+
     def _global_config(self) -> dict[str, Any]:
         value = read_json(self._root() / "config.json")
         required = (
@@ -688,8 +724,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                 device["last_seen"] = int(time.time())
                 device["last_version"] = agent_version
                 try:
-                    atomic_json(self._root() / "devices" / f"{device_id}.json", device)
-                except OSError:
+                    self._put_device(device, kind="UpdateRegisteredDevice")
+                except (OSError, ValueError, bpc_control_state.ControlStateError):
                     self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
                     return
             else:
@@ -719,20 +755,55 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "revoked_at": None,
                         "revoked": False,
                     }
-                    atomic_json(device_path, device)
-                    atomic_text(key_path, wgshim_psk + "\n")
-                    self._install_wireguard_peer(wireguard_public_key, wireguard_address)
-                    sync_access_firewall(self._root())
-                except (AccessError, OSError, ValueError, KeyError, RuntimeError):
-                    self._remove_wireguard_peer(wireguard_public_key)
-                    (self._root() / "devices" / f"{device_id}.json").unlink(missing_ok=True)
-                    try:
-                        global_config = self._global_config()
-                        (Path(str(global_config["wgshim_key_dir"])) / f"{device_id}.key").unlink(
-                            missing_ok=True
+                    address_ip = str(ipaddress.ip_interface(wireguard_address).ip)
+                    public_index = hashlib.sha256(
+                        public_key.encode("ascii")
+                    ).hexdigest()
+                    self._put_device(
+                        device,
+                        kind="RegisterDevice",
+                        extra_operations=[
+                            {
+                                "op": "put",
+                                "path": (
+                                    self._root()
+                                    / "device-addresses"
+                                    / f"{address_ip}.json"
+                                ),
+                                "data": json.dumps(
+                                    {"device_id": device_id},
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ).encode("utf-8"),
+                                "if_absent": True,
+                            },
+                            {
+                                "op": "put",
+                                "path": (
+                                    self._root()
+                                    / "device-public-keys"
+                                    / f"{public_index}.json"
+                                ),
+                                "data": json.dumps(
+                                    {"device_id": device_id},
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ).encode("utf-8"),
+                                "if_absent": True,
+                            },
+                        ],
+                    )
+                    if self._local_dataplane():
+                        atomic_text(key_path, wgshim_psk + "\n")
+                        self._install_wireguard_peer(
+                            wireguard_public_key,
+                            wireguard_address,
                         )
-                    except (OSError, ValueError, KeyError, json.JSONDecodeError):
-                        pass
+                        sync_access_firewall(self._root())
+                except bpc_control_state.ControlStateError as exc:
+                    self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+                    return
+                except (AccessError, OSError, ValueError, KeyError, RuntimeError):
                     self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
                     return
 
@@ -746,12 +817,13 @@ class ControlHandler(BaseHTTPRequestHandler):
                     user_id=str(user["id"]),
                     device_id=device_id,
                 )
-                (
+                identity_delete_canonical(
                     self._root()
                     / "identity"
                     / "access"
-                    / f"{identity_credential_index(access_token)}.json"
-                ).unlink(missing_ok=True)
+                    / f"{identity_credential_index(access_token)}.json",
+                    kind="ConsumeLoginCredential",
+                )
             except (IdentityError, OSError, ValueError, KeyError, json.JSONDecodeError):
                 self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
                 return
@@ -971,8 +1043,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         device["last_transport"] = str(body.get("transport", ""))[:32]
         device["last_status"] = str(body.get("status", ""))[:64]
         try:
-            atomic_json(device_path, device)
-        except OSError:
+            self._put_device(device, kind="DeviceHeartbeat")
+        except (OSError, ValueError, bpc_control_state.ControlStateError):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
             return
         self._send_json(HTTPStatus.OK, {"ok": True})
@@ -1225,9 +1297,10 @@ def main() -> int:
         if not path.is_file():
             raise SystemExit(f"required file is missing: {path}")
 
-    sync_wireguard_peers(state_dir)
-    sync_gateway_routes(state_dir)
-    sync_access_firewall(state_dir)
+    if local_dataplane_available(state_dir):
+        sync_wireguard_peers(state_dir)
+        sync_gateway_routes(state_dir)
+        sync_access_firewall(state_dir)
 
     server = ControlServer((args.listen, args.port), ControlHandler)
     server.state_dir = str(state_dir)
