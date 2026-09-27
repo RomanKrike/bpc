@@ -10,6 +10,23 @@ from pathlib import Path
 from typing import Any
 
 LOCAL_API = "http://127.0.0.1:9446"
+REPLICATED_PREFIXES = (
+    "control/identity/users/",
+    "control/identity/usernames/",
+    "control/identity/access/",
+    "control/identity/refresh/",
+    "control/devices/",
+    "control/access/",
+    "control/node-join/",
+    "control/node-join-used/",
+    "control/nodes/",
+    "control/node-public-keys/",
+    "control/node-credentials/",
+    "control/routes/",
+    "control/revocations/",
+    "cluster/controllers/",
+)
+REPLICATED_EXACT = {"cluster/cluster.json"}
 
 
 class ControlStateError(RuntimeError):
@@ -33,6 +50,14 @@ def canonical_relative(control_root: Path, path: Path) -> str:
         return Path(path).resolve().relative_to(root).as_posix()
     except ValueError as exc:
         raise ControlStateError(f"path escapes BPC state root: {path}", 500) from exc
+
+
+def is_replicated_path(control_root: Path, path: Path) -> bool:
+    relative = canonical_relative(control_root, path)
+    return relative in REPLICATED_EXACT or any(
+        relative.startswith(prefix) and len(relative) > len(prefix)
+        for prefix in REPLICATED_PREFIXES
+    )
 
 
 def _post(path: str, value: dict[str, Any]) -> dict[str, Any]:
@@ -71,7 +96,10 @@ def mutation(
     encoded = []
     for operation in operations:
         item = dict(operation)
-        item["path"] = canonical_relative(control_root, Path(item["path"]))
+        path = Path(item["path"])
+        if not is_replicated_path(control_root, path):
+            raise ControlStateError(f"path is not replicated canonical state: {path}", 500)
+        item["path"] = canonical_relative(control_root, path)
         data = item.get("data")
         if data is not None:
             if not isinstance(data, bytes):
