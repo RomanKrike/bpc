@@ -7,6 +7,13 @@ ru_dir="${BPC_STATE_DIR}/ru-node"
 config="${ru_dir}/config.json"
 client_env="${ru_dir}/client.env"
 gateway_transport="${ru_dir}/gateway-transport.yaml"
+control_dir="${BPC_STATE_DIR}/control"
+
+# Stage 4.5 canonical migration is intentionally first: it snapshots the
+# external network before any BPC-owned runtime reconciliation.
+if [[ -f "${BPC_ROOT}/current/deploy/bpc-state-migrate.py" ]]; then
+  python3 "${BPC_ROOT}/current/deploy/bpc-state-migrate.py" --state-dir "${BPC_STATE_DIR}"
+fi
 
 # Migration hooks are executed by older updaters after they switch
 # /opt/bpc/current. Reconcile commands here as well so a release can expose new
@@ -281,10 +288,10 @@ fi
 # The interrupted case is identified by an enabled systemd unit plus the
 # generated runtime/config state, even when control/enabled was never reached.
 control_should_reconcile="false"
-if [[ -f "${ru_dir}/control/enabled" ]]; then
+if [[ -f "${control_dir}/enabled" ]]; then
   control_should_reconcile="true"
 elif systemctl --quiet is-enabled bpc-control.service 2>/dev/null && \
-  [[ -s "${ru_dir}/control/runtime.env" && -s "${ru_dir}/control/config.json" ]]; then
+  [[ -s "${control_dir}/runtime.env" && -s "${control_dir}/config.json" ]]; then
   control_should_reconcile="true"
 fi
 

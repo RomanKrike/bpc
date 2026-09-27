@@ -3,36 +3,21 @@ set -euo pipefail
 
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
-RU_DIR="${BPC_STATE_DIR}/ru-node"
-AGENTS_DIR="${RU_DIR}/agents"
-CONTROL_DIR="${RU_DIR}/control"
+CONTROL_DIR="${BPC_STATE_DIR}/control"
+AGENTS_DIR="${CONTROL_DIR}/agents"
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bpc-agent create NAME [--legacy-tunnel TUNNEL] [--ttl SECONDS] [--output FILE]
+  bpc-agent create NAME [--ttl SECONDS] [--output FILE]
   bpc-agent publish-update [--version VERSION] [--file FILE]
-  bpc-agent routes NAME [CIDR ... | --clear]
   bpc-agent list
-  bpc-agent revoke NAME
 
-Commands:
-  create NAME       Build a prepared Windows bootstrap executable
-  publish-update    Publish and sign the Windows agent served by the control plane
-  routes NAME       Show or replace selective routes assigned to a device
-  list              List prepared and enrolled devices
-  revoke NAME       Revoke registered devices with this device name
+Device route policy is managed with:
+  bpc access list|grant|revoke
 
-Create options:
-  --legacy-tunnel TUNNEL
-                    Optional compatibility tunnel for the 0.9.x external
-                    WireGuard backend. Omit for the self-contained agent path.
-  --ttl SECONDS     HTTPS bootstrap download lifetime (default: 900)
-  --output FILE     Optional additional copy of the prepared executable
-
-Publish options:
-  --version VERSION Stable semantic version (defaults to current BPC VERSION)
-  --file FILE       Agent executable (defaults to current release binary)
+Device revocation is managed with:
+  bpc device revoke DEVICE
 USAGE
 }
 
@@ -46,11 +31,6 @@ require_root() {
 validate_name() {
   local value="$1"
   [[ "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
-}
-
-validate_tunnel() {
-  local value="$1"
-  [[ -z "${value}" || "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]]
 }
 
 require_control() {
@@ -67,16 +47,11 @@ require_control() {
 create_agent() {
   local name="${1:-}"
   shift || true
-  local legacy_tunnel=""
   local ttl="900"
   local extra_output=""
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --legacy-tunnel)
-        legacy_tunnel="${2:-}"
-        shift 2
-        ;;
       --ttl)
         ttl="${2:-}"
         shift 2
@@ -101,10 +76,6 @@ create_agent() {
     echo "Agent NAME must match [A-Za-z0-9][A-Za-z0-9._-]{0,63}" >&2
     exit 2
   fi
-  if ! validate_tunnel "${legacy_tunnel}"; then
-    echo "--legacy-tunnel must use letters, digits, dot, underscore or dash" >&2
-    exit 2
-  fi
   if ! [[ "${ttl}" =~ ^[0-9]+$ ]] || (( ttl < 60 || ttl > 86400 )); then
     echo "--ttl must be between 60 and 86400 seconds" >&2
     exit 2
@@ -115,14 +86,9 @@ create_agent() {
   source "${CONTROL_DIR}/runtime.env"
 
   local generic="${BPC_ROOT}/current/bin/bpc-agent-windows-amd64.exe"
-  if [[ ! -s "${generic}" ]]; then
-    echo "Windows agent binary is missing: ${generic}" >&2
-    exit 3
-  fi
   local wintun="${BPC_ROOT}/current/bin/wintun-windows-amd64.dll"
-  if [[ ! -s "${wintun}" ]]; then
-    echo "Wintun runtime is missing: ${wintun}" >&2
-    echo "Update BPC to a release containing the self-contained Windows runtime." >&2
+  if [[ ! -s "${generic}" || ! -s "${wintun}" ]]; then
+    echo "Windows Agent runtime is incomplete in the current release" >&2
     exit 3
   fi
   if [[ ! -s "${CONTROL_DIR}/update-signing-public.pem" ]]; then
@@ -130,19 +96,13 @@ create_agent() {
     exit 3
   fi
 
-  local download_token
+  local download_token expires update_public control_url json encoded
   download_token="$(openssl rand -hex 32)"
-  local expires
   expires="$(( $(date +%s) + ttl ))"
-
-  install -d -m 0700 "${CONTROL_DIR}/downloads" "${AGENTS_DIR}"
-
-  local update_public
   update_public="$(base64 -w0 < "${CONTROL_DIR}/update-signing-public.pem")"
-  local control_url="https://${CONTROL_HOST}:${CONTROL_PORT}"
+  control_url="https://${CONTROL_HOST}:${CONTROL_PORT}"
 
-  local json
-  json="$(python3 - "${name}" "${control_url}" "${update_public}" "${legacy_tunnel}" <<'PY'
+  json="$(python3 - "${name}" "${control_url}" "${update_public}" <<'PY'
 import json
 import sys
 
@@ -151,17 +111,14 @@ print(json.dumps({
     "device": sys.argv[1],
     "control_url": sys.argv[2],
     "update_public_key": sys.argv[3],
-    "legacy_tunnel": sys.argv[4],
 }, sort_keys=True, separators=(",", ":")))
 PY
 )"
-
-  local encoded
   encoded="$(printf '%s' "${json}" | base64 -w0)"
+
   local device_dir="${AGENTS_DIR}/${name}"
   local prepared="${device_dir}/bpc-agent-${name}.exe"
-  install -d -m 0700 "${device_dir}"
-
+  install -d -m 0700 "${CONTROL_DIR}/downloads" "${AGENTS_DIR}" "${device_dir}"
   local tmp
   tmp="$(mktemp "${device_dir}/.agent.XXXXXX")"
   cp "${generic}" "${tmp}"
@@ -186,11 +143,7 @@ import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
-value = {
-    "device": sys.argv[2],
-    "filename": sys.argv[3],
-    "expires": int(sys.argv[4]),
-}
+value = {"device": sys.argv[2], "filename": sys.argv[3], "expires": int(sys.argv[4])}
 tmp = path.with_suffix(".tmp")
 tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
 os.chmod(tmp, 0o600)
@@ -205,7 +158,6 @@ PY
 Device: ${name}
 Control: ${control_url}
 Bootstrap download expires: ${expires}
-Legacy tunnel: ${legacy_tunnel:-none}
 Prepared executable: ${prepared}
 Download URL: ${download_url}
 INFO
@@ -217,44 +169,21 @@ Prepared BPC Windows agent created.
 Device: ${name}
 Control: ${control_url}
 Bootstrap download lifetime: ${ttl}s
-Legacy tunnel: ${legacy_tunnel:-none}
 File: ${prepared}
 Download URL:
   ${download_url}
-
-The HTTPS download link remains valid until the bootstrap TTL expires. It carries
-no user password, access token, refresh credential, device private key, WGShim
-key or WireGuard private key.
-
-On first install BP Connect asks for the BPC username and password, generates
-the Device Ed25519 and WireGuard private keys locally, and sends only public
-keys plus proof-of-possession to the trusted HTTPS Controller.
 DONE
 }
 
 publish_update() {
   local version=""
   local file=""
-
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --version)
-        version="${2:-}"
-        shift 2
-        ;;
-      --file)
-        file="${2:-}"
-        shift 2
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        echo "Unknown option: $1" >&2
-        usage >&2
-        exit 2
-        ;;
+      --version) version="${2:-}"; shift 2 ;;
+      --file) file="${2:-}"; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
   done
 
@@ -272,26 +201,20 @@ publish_update() {
   if [[ -z "${file}" ]]; then
     file="${BPC_ROOT}/current/bin/bpc-agent-windows-amd64.exe"
   fi
-  if [[ ! -s "${file}" ]]; then
-    echo "Agent executable is missing: ${file}" >&2
-    exit 3
-  fi
-  if [[ ! -s "${CONTROL_DIR}/update-signing-key.pem" ]]; then
-    echo "Update signing private key is missing" >&2
+  if [[ ! -s "${file}" || ! -s "${CONTROL_DIR}/update-signing-key.pem" ]]; then
+    echo "Agent executable or update signing key is missing" >&2
     exit 3
   fi
 
   install -d -m 0700 "${CONTROL_DIR}/update"
   install -m 0600 "${file}" "${CONTROL_DIR}/update/bpc-agent.exe"
-  local sha
+  local sha url signing_input signature_file signature
   sha="$(sha256sum "${CONTROL_DIR}/update/bpc-agent.exe" | awk '{print $1}')"
-  local url="https://${CONTROL_HOST}:${CONTROL_PORT}/v1/update/agent.exe"
-
-  local signing_input="${CONTROL_DIR}/update/.manifest-signing.txt"
-  local signature_file="${CONTROL_DIR}/update/.manifest-signature.bin"
+  url="https://${CONTROL_HOST}:${CONTROL_PORT}/v1/update/agent.exe"
+  signing_input="${CONTROL_DIR}/update/.manifest-signing.txt"
+  signature_file="${CONTROL_DIR}/update/.manifest-signature.bin"
   printf '%s\n%s\n%s\n' "${version}" "${sha}" "${url}" > "${signing_input}"
-  openssl pkeyutl -sign -rawin     -inkey "${CONTROL_DIR}/update-signing-key.pem"     -in "${signing_input}"     -out "${signature_file}"
-  local signature
+  openssl pkeyutl -sign -rawin -inkey "${CONTROL_DIR}/update-signing-key.pem"     -in "${signing_input}" -out "${signature_file}"
   signature="$(base64 -w0 < "${signature_file}")"
   rm -f "${signing_input}" "${signature_file}"
 
@@ -314,21 +237,13 @@ os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
 
-  cat <<DONE
-BPC Agent update published.
-
-Version: ${version}
-SHA256: ${sha}
-URL: ${url}
-Manifest: ${CONTROL_DIR}/update/manifest.json
-DONE
+  echo "BPC Agent update published: ${version} ${sha}"
 }
 
 list_agents() {
   echo "Prepared packages:"
   if [[ -d "${AGENTS_DIR}" ]]; then
-    local dir
-    local found="false"
+    local dir found="false"
     for dir in "${AGENTS_DIR}"/*; do
       [[ -d "${dir}" ]] || continue
       found="true"
@@ -339,9 +254,7 @@ list_agents() {
       fi
       echo
     done
-    if [[ "${found}" != "true" ]]; then
-      echo "  none"
-    fi
+    [[ "${found}" == "true" ]] || echo "  none"
   else
     echo "  none"
   fi
@@ -362,11 +275,11 @@ for path in files:
     except Exception:
         continue
     print(
-        f"  {value.get('device', '?')}: id={value.get('device_id', '?')} "
+        f"  {value.get('name', value.get('device', '?'))}: "
+        f"id={value.get('id', value.get('device_id', '?'))} "
         f"revoked={bool(value.get('revoked', False))} "
         f"version={value.get('last_version', '?')} "
-        f"last_seen={value.get('last_seen', '?')} "
-        f"routes={','.join(map(str, value.get('managed_routes', []))) or '-'}"
+        f"last_seen={value.get('last_seen', '?')}"
     )
 PY
   else
@@ -374,191 +287,22 @@ PY
   fi
 }
 
-manage_routes() {
-  local name="${1:-}"
-  shift || true
-  if ! validate_name "${name}"; then
-    echo "A valid device NAME is required" >&2
-    exit 2
-  fi
-  require_control
-
-  local mode="show"
-  if [[ $# -gt 0 ]]; then
-    if [[ "${1}" == "--clear" ]]; then
-      if [[ $# -ne 1 ]]; then
-        echo "--clear cannot be combined with CIDRs" >&2
-        exit 2
-      fi
-      mode="clear"
-      shift
-    else
-      mode="set"
-    fi
-  fi
-
-  python3 - "${CONTROL_DIR}" "${name}" "${mode}" "$@" <<'PY'
-import ipaddress
-import json
-import os
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-name = sys.argv[2]
-mode = sys.argv[3]
-raw_routes = sys.argv[4:]
-
-routes: list[str] = []
-config = json.loads((root / "config.json").read_text(encoding="utf-8"))
-overlay = ipaddress.ip_network(str(config["wireguard_subnet"]), strict=False)
-if mode == "set":
-    seen: set[str] = set()
-    for raw in raw_routes:
-        try:
-            network = ipaddress.ip_network(raw, strict=False)
-        except ValueError as exc:
-            raise SystemExit(f"Invalid CIDR {raw!r}: {exc}")
-        if network.version != 4:
-            raise SystemExit(f"Only IPv4 managed routes are supported: {raw}")
-        if network.prefixlen == 0:
-            raise SystemExit("0.0.0.0/0 is not allowed for managed Agent routes")
-        if network.overlaps(overlay):
-            raise SystemExit(
-                f"Managed route {network} overlaps the Agent overlay {overlay}"
-            )
-        canonical = str(network)
-        if canonical not in seen:
-            seen.add(canonical)
-            routes.append(canonical)
-
-matches: list[tuple[Path, dict]] = []
-for path in sorted((root / "devices").glob("*.json")):
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        continue
-    if value.get("device") != name or bool(value.get("revoked", False)):
-        continue
-    matches.append((path, value))
-
-if not matches:
-    raise SystemExit(f"No active enrolled device named {name!r}")
-
-if mode == "show":
-    for _, value in matches:
-        current = value.get("managed_routes", [])
-        if not isinstance(current, list):
-            current = []
-        print(f"{value.get('device', name)}: " + (", ".join(map(str, current)) or "(overlay only)"))
-    raise SystemExit(0)
-
-if mode == "clear":
-    routes = []
-
-for path, value in matches:
-    value["managed_routes"] = routes
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-
-print(f"Updated {len(matches)} device(s): " + (", ".join(routes) or "(overlay only)"))
-print("Agents will apply the new selective routes on their next config sync (up to 30 seconds).")
-PY
-}
-
-revoke_agent() {
-  local name="${1:-}"
-  if ! validate_name "${name}"; then
-    echo "A valid device NAME is required" >&2
-    exit 2
-  fi
-  require_control
-  python3 - "${CONTROL_DIR}" "${name}" <<'PY'
-import hashlib
-import json
-import os
-import subprocess
-import sys
-from pathlib import Path
-
-root = Path(sys.argv[1])
-name = sys.argv[2]
-count = 0
-for path in (root / "devices").glob("*.json"):
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        continue
-    if value.get("device") != name or bool(value.get("revoked", False)):
-        continue
-    value["revoked"] = True
-    token = str(value.get("device_token", ""))
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-    if token:
-        token_hash = hashlib.sha256(token.encode("ascii")).hexdigest()
-        (root / "tokens" / f"{token_hash}.json").unlink(missing_ok=True)
-    device_id = str(value.get("device_id", ""))
-    if device_id:
-        (root.parent / "agent" / "wgshim-keys" / f"{device_id}.key").unlink(missing_ok=True)
-    wg_public = str(value.get("wireguard_public_key", "")).strip()
-    if wg_public:
-        try:
-            config = json.loads((root / "config.json").read_text(encoding="utf-8"))
-            interface = str(config.get("wireguard_interface", "")).strip()
-            if interface:
-                subprocess.run(
-                    ["wg", "set", interface, "peer", wg_public, "remove"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-        except (OSError, ValueError, json.JSONDecodeError):
-            pass
-    count += 1
-print(f"Revoked devices: {count}")
-if count == 0:
-    raise SystemExit(4)
-PY
+deprecated_command() {
+  cat >&2 <<'MSG'
+WARNING:
+This pre-canonical BPC Agent administration command is disabled.
+Use "bpc access ..." for route policy and "bpc device revoke ..." for revocation.
+MSG
+  exit 2
 }
 
 require_root
 command="${1:-}"
 case "${command}" in
-  create)
-    shift
-    create_agent "$@"
-    ;;
-  publish-update)
-    shift
-    publish_update "$@"
-    ;;
-  routes)
-    shift
-    manage_routes "$@"
-    ;;
-  list)
-    shift
-    if [[ $# -ne 0 ]]; then
-      usage >&2
-      exit 2
-    fi
-    list_agents
-    ;;
-  revoke)
-    shift
-    revoke_agent "$@"
-    ;;
-  -h|--help|help|"")
-    usage
-    ;;
-  *)
-    echo "Unknown command: ${command}" >&2
-    usage >&2
-    exit 2
-    ;;
+  create) shift; create_agent "$@" ;;
+  publish-update) shift; publish_update "$@" ;;
+  list) shift; [[ $# -eq 0 ]] || { usage >&2; exit 2; }; list_agents ;;
+  routes|revoke) deprecated_command ;;
+  -h|--help|help|"") usage ;;
+  *) echo "Unknown bpc-agent command: ${command}" >&2; usage >&2; exit 2 ;;
 esac

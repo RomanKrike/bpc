@@ -12,3 +12,5 @@ roles:
   gateway: true
   relay: true
   site_router: false
+
+advertised_routes: []

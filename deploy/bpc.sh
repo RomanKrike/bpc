@@ -6,11 +6,14 @@ BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 ENROLL="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
 IDENTITY="${BPC_ROOT}/current/deploy/bpc_identity.py"
 ACCESS="${BPC_ROOT}/current/deploy/bpc_access.py"
-CONTROL_DIR="${BPC_STATE_DIR}/ru-node/control"
+CLUSTER="${BPC_ROOT}/current/deploy/bpc_cluster.py"
+STATE_MIGRATE="${BPC_ROOT}/current/deploy/bpc-state-migrate.py"
+CONTROL_DIR="${BPC_STATE_DIR}/control"
 
 usage() {
   cat <<'USAGE'
 Usage:
+  bpc init [--name NAME] [--roles controller,gateway,relay] [--hostname DNS]
   bpc join <TOKEN>
   bpc status
   bpc leave [--force]
@@ -25,63 +28,54 @@ Usage:
   bpc access list [--user USER | --device DEVICE]
   bpc access grant (--user USER | --device DEVICE) CIDR [CIDR ...]
   bpc access revoke (--user USER | --device DEVICE) CIDR [CIDR ...]
+  bpc state migrate
 
 Compatibility:
-  Existing standalone commands such as bpc-status, bpc-update and bpc-node
-  remain available.
+  bpc-node gateway list is read-only. Legacy BP Gateway write commands are
+  deprecated and disabled.
 USAGE
 }
 
-require_enrollment_helper() {
-  if [[ ! -f "${ENROLL}" ]]; then
-    echo "BPC Node enrollment helper is missing: ${ENROLL}" >&2
-    exit 3
-  fi
-}
-
-require_identity_helper() {
-  if [[ ! -f "${IDENTITY}" ]]; then
-    echo "BPC identity helper is missing: ${IDENTITY}" >&2
-    exit 3
-  fi
-}
-
-require_access_helper() {
-  if [[ ! -f "${ACCESS}" ]]; then
-    echo "BPC Access helper is missing: ${ACCESS}" >&2
+require_file() {
+  local path="$1"
+  local label="$2"
+  if [[ ! -f "${path}" ]]; then
+    echo "${label} is missing: ${path}" >&2
     exit 3
   fi
 }
 
 scope="${1:-}"
 
-# All Node management commands touch root-owned state or systemd. Preserve the
-# target UX ("bpc join ...") by elevating once here rather than requiring the
-# user to remember which subcommands need sudo.
 if [[ ${EUID} -ne 0 && -n "${scope}" && "${scope}" != "-h" && "${scope}" != "--help" && "${scope}" != "help" ]]; then
   if command -v sudo >/dev/null 2>&1; then
     exec sudo "$0" "$@"
   fi
-  echo "BPC Node management requires root privileges and sudo is unavailable." >&2
+  echo "BPC management requires root privileges and sudo is unavailable." >&2
   exit 1
 fi
 
 case "${scope}" in
-  join)
-    require_enrollment_helper
+  init)
+    require_file "${CLUSTER}" "BPC cluster helper"
     shift
-    exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" join "$@"
+    exec python3 "${CLUSTER}" --state-dir "${BPC_STATE_DIR}" init "$@"
+    ;;
+  join)
+    require_file "${ENROLL}" "BPC Node enrollment helper"
+    shift
+    exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" join "$@"
     ;;
   status)
-    require_enrollment_helper
+    require_file "${ENROLL}" "BPC Node enrollment helper"
     shift
-    python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" status || true
+    python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" status || true
     exec "${BPC_ROOT}/current/deploy/bpc-node.sh" status
     ;;
   leave)
-    require_enrollment_helper
+    require_file "${ENROLL}" "BPC Node enrollment helper"
     shift
-    exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" leave "$@"
+    exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" leave "$@"
     ;;
   node)
     shift
@@ -91,14 +85,14 @@ case "${scope}" in
           usage >&2
           exit 2
         fi
-        require_enrollment_helper
+        require_file "${ENROLL}" "BPC Node enrollment helper"
         shift 2
-        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" token-create "$@"
+        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" token-create "$@"
         ;;
       list)
-        require_enrollment_helper
+        require_file "${ENROLL}" "BPC Node enrollment helper"
         shift
-        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" list "$@"
+        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" list "$@"
         ;;
       *)
         exec "${BPC_ROOT}/current/deploy/bpc-node.sh" "$@"
@@ -107,7 +101,7 @@ case "${scope}" in
     ;;
   user)
     shift
-    require_identity_helper
+    require_file "${IDENTITY}" "BPC identity helper"
     case "${1:-}" in
       add)
         shift
@@ -125,7 +119,7 @@ case "${scope}" in
     ;;
   device)
     shift
-    require_identity_helper
+    require_file "${IDENTITY}" "BPC identity helper"
     case "${1:-}" in
       list)
         shift
@@ -143,7 +137,7 @@ case "${scope}" in
     ;;
   access)
     shift
-    require_access_helper
+    require_file "${ACCESS}" "BPC Access helper"
     case "${1:-}" in
       list)
         shift
@@ -162,6 +156,14 @@ case "${scope}" in
         exit 2
         ;;
     esac
+    ;;
+  state)
+    if [[ "${2:-}" != "migrate" || $# -ne 2 ]]; then
+      usage >&2
+      exit 2
+    fi
+    require_file "${STATE_MIGRATE}" "BPC state migration helper"
+    exec python3 "${STATE_MIGRATE}" --state-dir "${BPC_STATE_DIR}"
     ;;
   -h|--help|help|"")
     usage

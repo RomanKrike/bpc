@@ -34,14 +34,33 @@ from bpc_identity import (
     revoke_device_credentials,
     verify_device_proof,
 )
-from bpc_identity import credential_index as identity_credential_index
-from bpc_identity import list_devices as identity_list_devices
-from bpc_identity import load_device as identity_load_device
+from bpc_identity import (
+    credential_index as identity_credential_index,
+)
+from bpc_identity import (
+    list_devices as identity_list_devices,
+)
+from bpc_identity import (
+    load_device as identity_load_device,
+)
 from bpc_node_enrollment import (
     EnrollmentError,
     enroll_node,
     leave_node,
     node_heartbeat,
+)
+
+from bpc_connect.compat.device import (
+    LegacyDeviceAuthError,
+    authorize_legacy_static_device,
+    compatibility_enrollment_fields,
+    compatibility_enrollment_response,
+    legacy_token_index_path,
+)
+from bpc_connect.compat.legacy import (
+    apply_compat_transport_hint,
+    compat_site_routes,
+    is_compat_site_router,
 )
 
 MAX_JSON_BODY = 64 * 1024
@@ -88,6 +107,30 @@ def valid_wireguard_key(value: str) -> bool:
     return len(raw) == 32 and any(raw)
 
 
+def require_owned_wireguard_interface(state_dir: Path) -> str:
+    config = read_json(state_dir / "config.json")
+    interface = str(config.get("wireguard_interface", "")).strip()
+    key_dir = str(config.get("wgshim_key_dir", "")).strip()
+    if not interface or not key_dir:
+        raise RuntimeError("BPC WireGuard ownership evidence is incomplete")
+    ownership_path = Path(key_dir).parent / "ownership.json"
+    try:
+        value = read_json(ownership_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"refusing WireGuard mutation: ownership is not proven for {interface}"
+        ) from exc
+    if (
+        value.get("owner") != "bpc"
+        or value.get("kind") != "wireguard-interface"
+        or str(value.get("name", "")) != interface
+    ):
+        raise RuntimeError(
+            f"refusing WireGuard mutation: ownership is not proven for {interface}"
+        )
+    return interface
+
+
 def run_wg(*args: str) -> None:
     completed = subprocess.run(
         ["wg", *args],
@@ -121,23 +164,24 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
     owners: dict[str, str] = {}
     networks: list[tuple[ipaddress.IPv4Network, str]] = []
     for device in devices:
-        if str(device.get("role", "")) != "gateway":
+        if not is_compat_site_router(device):
             continue
-        owner = str(device.get("device", device.get("device_id", "gateway")))
-        advertised = device.get("advertised_routes", [])
-        if not isinstance(advertised, list):
-            raise RuntimeError(f"BP Gateway {owner} has invalid advertised_routes")
-        for raw in advertised:
+        owner = str(device.get("device", device.get("device_id", "legacy-site-router")))
+        for raw in compat_site_routes(device):
             try:
                 network = ipaddress.ip_network(str(raw), strict=False)
             except ValueError as exc:
-                raise RuntimeError(f"BP Gateway {owner} has invalid route {raw!r}") from exc
+                raise RuntimeError(
+                    f"compatibility site-router {owner} has invalid route {raw!r}"
+                ) from exc
             if network.version != 4 or network.prefixlen == 0:
-                raise RuntimeError(f"BP Gateway {owner} has unsupported route {network}")
+                raise RuntimeError(
+                    f"compatibility site-router {owner} has unsupported route {network}"
+                )
             for existing, existing_owner in networks:
                 if network.overlaps(existing):
                     raise RuntimeError(
-                        f"BP Gateway route {network} owned by {owner} overlaps "
+                        f"compatibility site-router route {network} owned by {owner} overlaps "
                         f"{existing} owned by {existing_owner}"
                     )
             canonical = str(network)
@@ -147,8 +191,7 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
 
 
 def sync_wireguard_peers(state_dir: Path) -> None:
-    config = read_json(state_dir / "config.json")
-    interface = str(config["wireguard_interface"])
+    interface = require_owned_wireguard_interface(state_dir)
     devices = active_wireguard_devices(state_dir)
     gateway_routes(devices)
 
@@ -168,8 +211,8 @@ def sync_wireguard_peers(state_dir: Path) -> None:
         public_key = str(device["wireguard_public_key"]).strip()
         address = str(device["wireguard_address"]).strip()
         allowed = [address]
-        if str(device.get("role", "")) == "gateway":
-            allowed.extend(str(route) for route in device.get("advertised_routes", []))
+        if is_compat_site_router(device):
+            allowed.extend(compat_site_routes(device))
         run_wg(
             "set",
             interface,
@@ -181,8 +224,7 @@ def sync_wireguard_peers(state_dir: Path) -> None:
 
 
 def sync_gateway_routes(state_dir: Path) -> None:
-    config = read_json(state_dir / "config.json")
-    interface = str(config["wireguard_interface"])
+    interface = require_owned_wireguard_interface(state_dir)
     routes = sorted(gateway_routes(active_wireguard_devices(state_dir)))
     state_path = state_dir / "gateway-routes.json"
 
@@ -217,7 +259,9 @@ def sync_gateway_routes(state_dir: Path) -> None:
         )
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip()
-            raise RuntimeError(message or f"failed to install BP Gateway route {route}")
+            raise RuntimeError(
+                message or f"failed to install compatibility site-router route {route}"
+            )
 
     atomic_json(state_path, {"interface": interface, "routes": routes})
 
@@ -354,33 +398,22 @@ class ControlHandler(BaseHTTPRequestHandler):
         except IdentityError as exc:
             identity_error = exc
 
-        # Compatibility path for devices enrolled before Stage 3. New devices
-        # never receive a static device_token.
-        index_path = self._root() / "tokens" / f"{token_index(token)}.json"
-        if not index_path.is_file():
-            if identity_error is not None:
-                self._send_json(
-                    HTTPStatus(identity_error.status),
-                    {"error": str(identity_error)},
-                )
-            else:
-                self.send_error(HTTPStatus.UNAUTHORIZED)
-            return None
+        # Pre-Stage-3 static credentials are contained in the compatibility adapter.
         try:
-            index = read_json(index_path)
-            device_id = str(index["device_id"])
-            device_path = self._root() / "devices" / f"{device_id}.json"
-            device = read_json(device_path)
-        except (OSError, KeyError, ValueError, json.JSONDecodeError):
+            legacy = authorize_legacy_static_device(self._root(), token)
+        except LegacyDeviceAuthError:
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return None
-        if not secrets.compare_digest(str(device.get("device_token", "")), token):
+        if legacy is not None:
+            return legacy
+        if identity_error is not None:
+            self._send_json(
+                HTTPStatus(identity_error.status),
+                {"error": str(identity_error)},
+            )
+        else:
             self.send_error(HTTPStatus.UNAUTHORIZED)
-            return None
-        if not bool(device.get("enabled", True)) or bool(device.get("revoked", False)):
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return None
-        return device_path, device
+        return None
 
     def _global_config(self) -> dict[str, Any]:
         value = read_json(self._root() / "config.json")
@@ -425,9 +458,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             "update_channel": str(global_config.get("update_channel", "stable")),
             "wireguard": self._wireguard_profile_for_device(device),
         }
-        legacy = str(device.get("legacy_tunnel", "")).strip()
-        if legacy:
-            config["legacy_tunnel"] = legacy
+        apply_compat_transport_hint(device, config)
         return config
 
     def _wireguard_profile_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
@@ -482,10 +513,10 @@ class ControlHandler(BaseHTTPRequestHandler):
         raise RuntimeError("BPC Agent WireGuard address pool is exhausted")
 
     def _install_wireguard_peer(self, public_key: str, address: str) -> None:
-        config = self._global_config()
+        interface = require_owned_wireguard_interface(self._root())
         run_wg(
             "set",
-            str(config["wireguard_interface"]),
+            interface,
             "peer",
             public_key,
             "allowed-ips",
@@ -496,8 +527,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         if not public_key:
             return
         try:
-            config = self._global_config()
-            run_wg("set", str(config["wireguard_interface"]), "peer", public_key, "remove")
+            interface = require_owned_wireguard_interface(self._root())
+            run_wg("set", interface, "peer", public_key, "remove")
         except (OSError, KeyError, ValueError, RuntimeError):
             pass
 
@@ -670,8 +701,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                         "wireguard_public_key": wireguard_public_key,
                         "wireguard_address": wireguard_address,
                         "wgshim_psk": wgshim_psk,
-                        "managed_routes": [],
-                        "legacy_tunnel": "",
                         "created_at": now,
                         "created": now,
                         "last_seen": now,
@@ -836,7 +865,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self.send_error(HTTPStatus.UNAUTHORIZED)
                 return
             device_id = uuid.uuid4().hex
-            device_token = secrets.token_hex(32)
+            legacy_credential = secrets.token_hex(32)
             wgshim_psk = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
             now = int(time.time())
             try:
@@ -844,17 +873,18 @@ class ControlHandler(BaseHTTPRequestHandler):
                 global_config = self._global_config()
                 key_path = Path(str(global_config["wgshim_key_dir"])) / f"{device_id}.key"
                 device_path = self._root() / "devices" / f"{device_id}.json"
-                token_path = self._root() / "tokens" / f"{token_index(device_token)}.json"
+                token_path = legacy_token_index_path(self._root(), legacy_credential)
                 device = {
                     "device_id": device_id,
                     "device": device_name,
-                    "device_token": device_token,
                     "public_key": public_key,
                     "wireguard_public_key": wireguard_public_key,
                     "wireguard_address": wireguard_address,
                     "wgshim_psk": wgshim_psk,
-                    "managed_routes": [],
-                    "legacy_tunnel": str(enrollment.get("legacy_tunnel", "")),
+                    **compatibility_enrollment_fields(
+                        credential=legacy_credential,
+                        enrollment=enrollment,
+                    ),
                     "created": now,
                     "created_at": now,
                     "last_seen": now,
@@ -877,7 +907,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 self._remove_wireguard_peer(wireguard_public_key)
                 for rollback in (
                     self._root() / "devices" / f"{device_id}.json",
-                    self._root() / "tokens" / f"{token_index(device_token)}.json",
+                    legacy_token_index_path(self._root(), legacy_credential),
                 ):
                     rollback.unlink(missing_ok=True)
                 try:
@@ -894,7 +924,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK,
             {
                 "device_id": device_id,
-                "device_token": device_token,
+                **compatibility_enrollment_response(legacy_credential),
                 "config": config,
                 "wireguard": wireguard,
             },

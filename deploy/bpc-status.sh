@@ -266,7 +266,7 @@ if [[ -d "${BPC_STATE_DIR}/ru-node" ]]; then
     echo 'Subscription: disabled'
   fi
 
-  control_dir="${BPC_STATE_DIR}/ru-node/control"
+  control_dir="${BPC_STATE_DIR}/control"
   if [[ -f "${control_dir}/enabled" && -f "${control_dir}/runtime.env" ]]; then
     # shellcheck disable=SC1090,SC1091
     source "${control_dir}/runtime.env"

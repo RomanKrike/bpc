@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import socket
 import time
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from typing import Any
 import yaml
 
 from .errors import BPCConfigError
+from .state import StateLayout
 
 NODE_CONFIG_VERSION = 1
 CORE_CAPABILITIES = ("controller", "gateway", "relay", "site_router")
@@ -73,6 +75,7 @@ class Node:
 class NodeConfig:
     version: int
     node: Node
+    advertised_routes: tuple[str, ...] = ()
 
     def to_mapping(self) -> dict[str, Any]:
         return {
@@ -85,6 +88,7 @@ class NodeConfig:
                 "last_seen": self.node.last_seen,
             },
             "roles": dict(sorted(self.node.roles.values.items())),
+            "advertised_routes": list(self.advertised_routes),
         }
 
 
@@ -111,6 +115,29 @@ def _require_timestamp(mapping: Mapping[str, Any], key: str, context: str) -> in
     return value
 
 
+def canonical_advertised_routes(raw: Iterable[object] | None) -> tuple[str, ...]:
+    if raw is None:
+        return ()
+    if isinstance(raw, (str, bytes, Mapping)):
+        raise BPCConfigError("advertised_routes must be a list")
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        try:
+            network = ipaddress.ip_network(str(item).strip(), strict=False)
+        except ValueError as exc:
+            raise BPCConfigError(f"Invalid advertised route {item!r}: {exc}") from exc
+        if network.version != 4:
+            raise BPCConfigError("advertised_routes currently support IPv4 only")
+        if network.prefixlen == 0:
+            raise BPCConfigError("advertised_routes cannot contain a default route")
+        value = str(network)
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    return tuple(sorted(result))
+
+
 def parse_node_config(raw: Any) -> NodeConfig:
     root = _require_mapping(raw, "root")
     try:
@@ -129,6 +156,7 @@ def parse_node_config(raw: Any) -> NodeConfig:
     created_at = _require_timestamp(node_raw, "created_at", "node")
     last_seen = _require_timestamp(node_raw, "last_seen", "node")
     roles = Capabilities.from_mapping(root.get("roles"))
+    advertised_routes = canonical_advertised_routes(root.get("advertised_routes", []))
 
     return NodeConfig(
         version=version,
@@ -140,6 +168,7 @@ def parse_node_config(raw: Any) -> NodeConfig:
             last_seen=last_seen,
             roles=roles,
         ),
+        advertised_routes=advertised_routes,
     )
 
 
@@ -169,39 +198,6 @@ def save_node_config(path: str | Path, config: NodeConfig) -> None:
     os.replace(tmp, config_path)
 
 
-def _legacy_install_role(state_dir: Path) -> str:
-    path = state_dir / "install.env"
-    if not path.is_file():
-        return ""
-    try:
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("BPC_ROLE="):
-                return line.partition("=")[2].strip()
-    except OSError:
-        return ""
-    return ""
-
-
-def infer_legacy_capabilities(state_dir: str | Path) -> dict[str, bool]:
-    root = Path(state_dir)
-    ru = root / "ru-node"
-    has_ru_node = (
-        (ru / "config.json").is_file()
-        or (ru / "client.env").is_file()
-        or _legacy_install_role(root) == "ru-node"
-    )
-    has_controller = (ru / "control" / "enabled").is_file()
-    has_agent_relay = (ru / "agent" / "enabled").is_file()
-    has_wgshim_relay = (ru / "wgshim" / "enabled").is_file()
-
-    return {
-        "controller": has_controller,
-        "gateway": has_ru_node,
-        "relay": has_agent_relay or has_wgshim_relay,
-        "site_router": False,
-    }
-
-
 def default_node_name() -> str:
     override = os.environ.get("BPC_NODE_NAME", "").strip()
     if override:
@@ -214,6 +210,7 @@ def new_node_config(
     *,
     name: str | None = None,
     roles: Mapping[str, Any] | None = None,
+    advertised_routes: Iterable[object] | None = None,
     now: int | None = None,
 ) -> NodeConfig:
     timestamp = int(time.time()) if now is None else int(now)
@@ -230,47 +227,55 @@ def new_node_config(
             last_seen=0,
             roles=Capabilities.from_mapping(roles),
         ),
+        advertised_routes=canonical_advertised_routes(advertised_routes),
     )
 
 
-def migrate_legacy_node(
+def reconcile_node_config(
     state_dir: str | Path,
     *,
     name: str | None = None,
+    capability_updates: Mapping[str, bool] | None = None,
+    advertised_routes: Iterable[object] | None = None,
     touch_last_seen: bool = False,
     now: int | None = None,
 ) -> tuple[NodeConfig, bool]:
-    root = Path(state_dir)
-    path = root / "node.yaml"
+    state = StateLayout.from_root(state_dir)
     timestamp = int(time.time()) if now is None else int(now)
-    inferred = infer_legacy_capabilities(root)
 
-    if path.is_file():
-        current = load_node_config(path)
-        values = dict(current.node.roles.values)
-        for capability, enabled in inferred.items():
-            if enabled:
-                values[capability] = True
-        node_name = current.node.name
-        if name is not None and name.strip():
-            node_name = name.strip()
+    if state.node_config.is_file():
+        current = load_node_config(state.node_config)
+        roles = current.node.roles
+        if capability_updates:
+            roles = roles.with_updates(**dict(capability_updates))
+        routes = (
+            current.advertised_routes
+            if advertised_routes is None
+            else canonical_advertised_routes(advertised_routes)
+        )
         updated = NodeConfig(
             version=current.version,
             node=Node(
                 id=current.node.id,
-                name=node_name,
+                name=(name.strip() if name and name.strip() else current.node.name),
                 public_key=current.node.public_key,
                 created_at=current.node.created_at,
                 last_seen=timestamp if touch_last_seen else current.node.last_seen,
-                roles=Capabilities.from_mapping(values),
+                roles=roles,
             ),
+            advertised_routes=routes,
         )
         changed = updated != current
         if changed:
-            save_node_config(path, updated)
+            save_node_config(state.node_config, updated)
         return updated, changed
 
-    created = new_node_config(name=name, roles=inferred, now=timestamp)
+    created = new_node_config(
+        name=name,
+        roles=capability_updates,
+        advertised_routes=advertised_routes,
+        now=timestamp,
+    )
     if touch_last_seen:
         created = NodeConfig(
             version=created.version,
@@ -282,17 +287,14 @@ def migrate_legacy_node(
                 last_seen=timestamp,
                 roles=created.node.roles,
             ),
+            advertised_routes=created.advertised_routes,
         )
-    save_node_config(path, created)
+    save_node_config(state.node_config, created)
     return created, True
 
 
-def set_capabilities(
-    path: str | Path,
-    updates: Mapping[str, bool],
-) -> NodeConfig:
+def set_capabilities(path: str | Path, updates: Mapping[str, bool]) -> NodeConfig:
     current = load_node_config(path)
-    roles = current.node.roles.with_updates(**dict(updates))
     updated = NodeConfig(
         version=current.version,
         node=Node(
@@ -301,8 +303,38 @@ def set_capabilities(
             public_key=current.node.public_key,
             created_at=current.node.created_at,
             last_seen=current.node.last_seen,
-            roles=roles,
+            roles=current.node.roles.with_updates(**dict(updates)),
         ),
+        advertised_routes=current.advertised_routes,
+    )
+    save_node_config(path, updated)
+    return updated
+
+
+def set_advertised_routes(path: str | Path, routes: Iterable[object]) -> NodeConfig:
+    current = load_node_config(path)
+    updated = NodeConfig(
+        version=current.version,
+        node=current.node,
+        advertised_routes=canonical_advertised_routes(routes),
+    )
+    save_node_config(path, updated)
+    return updated
+
+
+def set_node_identity(path: str | Path, public_key: str) -> NodeConfig:
+    current = load_node_config(path)
+    updated = NodeConfig(
+        version=current.version,
+        node=Node(
+            id=current.node.id,
+            name=current.node.name,
+            public_key=public_key.strip(),
+            created_at=current.node.created_at,
+            last_seen=current.node.last_seen,
+            roles=current.node.roles,
+        ),
+        advertised_routes=current.advertised_routes,
     )
     save_node_config(path, updated)
     return updated

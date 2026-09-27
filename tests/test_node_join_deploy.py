@@ -12,25 +12,28 @@ MIGRATE = (ROOT / "deploy" / "bpc-migrate.sh").read_text(encoding="utf-8")
 HEALTH = (ROOT / "deploy" / "bpc-healthcheck.sh").read_text(encoding="utf-8")
 
 
-def test_no_argument_installer_is_core_only_and_legacy_bootstrap_remains() -> None:
+def test_no_argument_installer_is_core_only_and_init_is_first_class() -> None:
     assert 'ROLE=""' in INSTALL
     assert 'elif [[ "${ROLE}" == "ru-node" ]]' in INSTALL
-    assert "BPC core runtime installed. Join this host with: bpc join <TOKEN>" in INSTALL
+    assert "Initialize the first Controller with: bpc init" in INSTALL
+    assert "Or join an existing cluster with: bpc join <TOKEN>" in INSTALL
     assert "Existing RU-node configuration found; keeping credentials and configuration." in INSTALL
 
 
-def test_installer_preserves_previous_install_profile_on_repeat() -> None:
-    assert 'previous_role="$(sed -n' in INSTALL
-    assert 'install_role="${previous_role}"' in INSTALL
+def test_installer_no_longer_persists_legacy_profile_for_clean_installs() -> None:
+    assert 'install_role="${ROLE:-canonical}"' in INSTALL
+    assert 'echo "BPC_ROLE=ru-node"' in INSTALL
     assert "BPC_NODE_CONFIG=${BPC_STATE_DIR}/node.yaml" in INSTALL
 
 
-def test_unified_cli_exposes_stage2_node_commands() -> None:
+def test_unified_cli_exposes_node_and_cluster_commands() -> None:
+    assert "bpc init" in BPC
     assert "bpc join <TOKEN>" in BPC
     assert "bpc status" in BPC
     assert "bpc leave [--force]" in BPC
     assert "bpc node token create" in BPC
     assert "bpc node list" in BPC
+    assert 'CONTROL_DIR="${BPC_STATE_DIR}/control"' in BPC
 
 
 def test_controller_exposes_separate_node_enrollment_endpoints() -> None:
@@ -41,10 +44,11 @@ def test_controller_exposes_separate_node_enrollment_endpoints() -> None:
     assert 'self.path == "/v1/heartbeat"' in CONTROL
 
 
-def test_control_service_stages_self_contained_runtime_inside_state_dir() -> None:
+def test_control_service_stages_self_contained_runtime_inside_canonical_state() -> None:
     enable_control = (ROOT / "deploy" / "bpc-enable-control.sh").read_text(
         encoding="utf-8"
     )
+    assert 'CONTROL_DIR="${BPC_STATE_DIR}/control"' in enable_control
     release_server = 'release_control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"'
     release_enrollment = (
         'release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"'

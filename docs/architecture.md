@@ -1,39 +1,31 @@
 # BPC Connect architecture
 
-## Stage 1: unified BPC Node
+## Canonical server model
 
-BPC server infrastructure is modeled as one **Node**. Controller, gateway, relay
-and site-router are capabilities of that Node, not mutually exclusive node
-types.
+BPC server infrastructure is one **Node**. Controller, gateway, relay and
+site-router are capabilities of the same Node, not separate node types.
 
 ```text
 Node
 ├── controller
 ├── gateway
 ├── relay
-└── site-router
+└── site_router
 ```
 
-A single machine can therefore expose any combination of capabilities. The
-current RU deployment is expected to converge on:
+A machine can expose any combination of capabilities. The current primary RU
+deployment is expected to be:
 
 ```text
 ru-01 = controller + gateway + relay
 ```
 
-Stage 1 intentionally does **not** redesign transports, introduce users,
-distributed storage, PostgreSQL/etcd/Kubernetes, or implement MikroTik/site
-routing. Existing transport services and client APIs remain the data plane.
+The canonical Node metadata is `/etc/bpc-connect/node.yaml`. Capability checks
+are centralized in `bpc_connect.node.Capabilities`; core code must not branch
+on historical install profiles or Device record roles.
 
-## Node identity and versioned configuration
-
-The canonical local metadata file is:
-
-```text
-/etc/bpc-connect/node.yaml
-```
-
-Schema version 1:
+Schema version 1 includes transport-independent identity plus Node-owned route
+advertisement:
 
 ```yaml
 version: 1
@@ -50,172 +42,236 @@ roles:
   gateway: true
   relay: true
   site_router: false
+
+advertised_routes: []
 ```
 
-The Node model contains the stable Node id/name, identity public-key slot,
-creation/last-seen timestamps and a capability map.
+`public_key` is the Node identity key, not an Xray, WireGuard, WGShim or
+Device key.
 
-Capability checks are centralized in `bpc_connect.node.Capabilities`.
-Callers use `has(...)` / `Node.has_capability(...)` rather than introducing
-new scattered node-type comparisons. The map accepts valid future capability
-names in addition to the four core capabilities so the schema can grow without
-turning every capability into another node type.
+## Canonical state layout
 
-The `public_key` field is deliberately independent from Xray, WireGuard,
-WGShim and Agent keys. Stage 1 does not rotate transport credentials or invent
-a second identity by reusing a transport key. Existing installations therefore
-migrate with an empty identity public-key slot until transport-independent Node
-identity provisioning is implemented in a later stage.
+Stage 4.5 makes the state layout explicit:
 
-## Capability semantics in the current implementation
+```text
+/etc/bpc-connect/
+├── node.yaml
+├── identity/
+├── cluster/
+├── control/
+├── runtime/
+├── transports/
+├── compat/
+└── backups/
+```
 
-| Capability | Stage 1 meaning |
-| --- | --- |
-| `controller` | The local BPC Agent control-plane service is enabled. |
-| `gateway` | The node provides the existing RU egress/gateway function. |
-| `relay` | The node runs a BPC relay path such as the Agent multi-client relay or WGShim relay. |
-| `site_router` | Reserved/modelled for a future site-router implementation; no MikroTik/site-routing work is part of Stage 1. |
+New core code resolves these paths through `bpc_connect.state.StateLayout`.
+In particular, Controller state is canonical at
+`/etc/bpc-connect/control/`.
 
-A capability is metadata describing what a Node is allowed/configured to do.
-The existing service-specific state remains authoritative for transport
-credentials and runtime parameters in Stage 1.
+Existing transport implementations are not rewritten in Stage 4.5. Historical
+transport state under `/etc/bpc-connect/ru-node/` can remain in place while
+those transports are bridged through `bpc_connect.compat.runtime`. New domain
+state must not be created there.
 
-## Migration and backward compatibility
+## Compatibility boundary
 
-Older releases use `/etc/bpc-connect/install.env` with
-`BPC_ROLE=ru-node` and service state below `/etc/bpc-connect/ru-node/`.
-That value is now treated as a **legacy install profile**, not as the Node's
-type.
+Historical vocabulary is isolated under `bpc_connect.compat`.
 
-The migration helper creates `node.yaml` idempotently and infers only
-capabilities that are already evidenced by legacy state:
+It currently contains adapters for:
 
-| Existing state | Capability inferred |
-| --- | --- |
-| RU-node config/client state or `BPC_ROLE=ru-node` | `gateway` |
-| `ru-node/control/enabled` | `controller` |
-| `ru-node/agent/enabled` | `relay` |
-| `ru-node/wgshim/enabled` | `relay` |
+- legacy `BPC_ROLE=ru-node` capability inference;
+- historical `ru-node/` transport/runtime locations;
+- pre-Stage-3 static Device credentials;
+- pre-Stage-4 Device `managed_routes`;
+- legacy Device `legacy_tunnel` hints;
+- old BP Gateway Device records with `role: gateway` and
+  `advertised_routes`.
 
-Migration is additive. It never removes an explicitly configured capability,
-including future extension capabilities. It does not regenerate credentials,
-move transport state or alter client configuration.
+Core Controller, Node, Access and CLI code call compatibility adapters rather
+than reading those fields directly.
 
-Existing standalone commands remain valid. The unified command namespace adds:
+Compatibility is intentionally asymmetric:
+
+```text
+legacy state -> read/import adapter -> canonical model
+
+canonical model -X-> new legacy writes
+```
+
+The old commands that created or mutated BP Gateway Device records are disabled.
+`bpc-node gateway list` remains read-only so existing records can be inspected.
+
+## First Controller initialization
+
+A clean installation installs the BPC runtime without assigning a historical
+node type. The first cluster Controller is initialized explicitly:
 
 ```bash
-sudo bpc node status
-sudo bpc node info
+bpc init \
+  --name ru-01 \
+  --roles controller,gateway,relay \
+  --hostname sub.example.com
 ```
 
-The legacy `bpc-node gateway ...` commands also remain available. Their
-`role: "gateway"` field currently belongs to BP Gateway **device records** in
-the Agent control-plane store; it is not the server Node classification. This
-legacy device-record vocabulary is retained in Stage 1 to avoid breaking
-existing clients and route provisioning.
+`bpc init`:
 
-## Control plane and data plane
+1. verifies that trusted Controller TLS can be provisioned or reused;
+2. runs the Stage 4.5 canonical migration;
+3. creates/reconciles `node.yaml`;
+4. creates the Node Ed25519 identity if needed;
+5. creates `cluster/cluster.json`;
+6. reconciles the requested transport capabilities through the compatibility
+   runtime adapter;
+7. starts/reconciles the canonical Controller state and service.
 
-The unified Node model is an orchestration/metadata layer above the existing
-runtime. Stage 1 keeps transport implementations unchanged.
+The operation is idempotent for an already initialized state directory.
 
-### Existing RU data plane
+## Node Join
+
+Additional Nodes join an existing Controller through the Stage 2 one-time join
+flow:
+
+```bash
+bpc node token create --roles gateway,relay --name ge-02 --expires 15m
+bpc join BPC-<controller-envelope>.<one-time-secret>
+```
+
+Node Join is separate from BP Connect User/Device enrollment. A joined Node
+creates its private Ed25519 identity locally and sends only the public key. The
+Controller assigns the Node ID, credential and capabilities, and the Node
+reports periodic authenticated heartbeats.
+
+Controller-owned Node enrollment records live below the canonical
+`/etc/bpc-connect/control/` tree.
+
+## User, Device and Access model
+
+Stage 3 introduced User and Device identity. Stage 4 introduced Access.
 
 ```text
-Work laptop / BP Connect client
-    |
-    v
-BPC transport selection
-    |
-    +-- VLESS + REALITY
-    +-- AmneziaWG 2.0
-    +-- WireGuard
-    +-- WGShim / Agent relay
-    +-- other existing fallbacks
-    |
-    v
-RU Node gateway
-    |
-    v
-Russian Internet / selected private routes
+User
+ └── Device
+      └── Access allow/deny CIDR
 ```
 
-The corporate VPN remains installed only on the work laptop. BPC changes the
-underlay, not the corporate overlay.
+New Devices do not receive historical `managed_routes`, `legacy_tunnel` or
+static `device_token` fields. Old records remain readable only through the
+compatibility layer.
 
-### RU transport isolation
+Client AllowedIPs are an interface/UX mechanism. The server-side
+`BPC-ACCESS` firewall chain is the security boundary.
+
+## Site routing
+
+A routed site is represented by a Node with the `site_router` capability.
+Route advertisement belongs to Node state through `advertised_routes`.
+
+Stage 4.5 deliberately does **not** implement the new site-router data plane or
+MikroTik integration. Existing BP Gateway runtime scripts remain only as
+compatibility assets for installations created before the canonical model.
+
+Future site-router work should build on:
 
 ```text
-TCP/443    Xray VLESS/REALITY
-UDP/443    AmneziaWG 2.0, awg0, 10.251.0.0/24
-UDP/51820  native WireGuard, bpcwg0, 10.252.0.0/24
+Node(site_router)
+        |
+        +-- advertised_routes
+        |
+        v
+Controller routing policy
 ```
 
-Optional transports continue to use independent protocol stacks, interfaces,
-credentials and state directories. A failure in one transport must not require
-deleting or rotating another transport.
+and must not reintroduce a separate Gateway entity.
 
-## Safety invariant
+## Network ownership and mutation safety
 
-The work gateway remains **fail closed**. There is no automatic `DIRECT`
-member in the BPC failover group and no direct fallback rule for protected
-traffic. Stage 1 does not weaken or replace those routing and transport safety
-properties.
-
-## Stage 1 boundaries
-
-Implemented in this stage:
-
-1. a single versioned Node model;
-2. extensible centralized capability logic;
-3. additive migration from legacy RU-node state;
-4. multi-capability Nodes;
-5. `bpc node status` and `bpc node info`;
-6. compatibility wiring into install, update, status, control and relay enablement;
-7. unit tests and architecture documentation.
-
-Explicitly deferred:
-
-- user/account/access models;
-- distributed database or multi-controller consensus;
-- join-token/node-certificate provisioning;
-- transport-independent Node key provisioning;
-- site-router/MikroTik implementation;
-- removal/renaming of legacy `ru-node` directories and BP Gateway device
-  record fields.
-
-
-## Stage 2: Node enrollment
-
-Stage 2 adds a transport-independent enrollment layer to the unified Node
-model. The existing Agent Device enrollment API remains separate.
+Stage 4.5 introduces an explicit ownership rule for network mutation:
 
 ```text
-Controller
-  |
-  | one-time join token
-  v
-fresh BPC runtime
-  |
-  | local Ed25519 identity (private key stays local)
-  | HTTPS public-key enrollment
-  v
-Controller-assigned Node ID + credential + capabilities
-  |
-  v
-role reconciliation -> heartbeat -> cluster state
+OWNED_BY_BPC -> may reconcile
+LEGACY_BPC   -> may adopt/reconcile after evidence
+EXTERNAL     -> never mutate
+UNKNOWN      -> fail closed
 ```
 
-Controller Node records are stored under the existing control-plane state but
-use dedicated `node-*` directories. Join-token secrets and Node credentials
-are never stored as plaintext indexes. Active public-key fingerprints are
-unique.
+BPC Agent WireGuard provisioning writes ownership metadata next to the BPC
+Agent runtime. Controller peer mutation and Access firewall reconciliation
+require that evidence before changing the interface.
 
-The Stage 2 daemon is orchestration only. Gateway and relay capabilities call
-the existing runtime/provisioning paths and do not alter Xray, WireGuard,
-WGShim or Agent packet formats.
+An existing interface or `/etc/wireguard/*.conf` with the expected name is
+**not** sufficient proof of BPC ownership.
 
-Fresh remote promotion to an additional `controller` capability is not a
-distributed-controller implementation: an already provisioned Controller
-service can be reconciled, while certificate distribution and replicated
-Controller state remain deferred. `site_router` also remains deferred.
+The migration itself never changes interfaces, routes, policy rules, WireGuard
+peers or firewall state. Before copying BPC state it snapshots:
+
+- `ip -details link`;
+- all route tables;
+- policy rules;
+- redacted `wg show all dump`;
+- `iptables-save`;
+- `nft list ruleset`;
+- systemd units.
+
+The report explicitly lists detected external WireGuard interfaces and records
+`External objects modified: NONE`.
+
+## Stage 4.5 migration
+
+`bpc state migrate` copies BPC-owned Controller state from the historical
+location to the canonical location without deleting the source.
+
+Before activation it creates:
+
+```text
+/etc/bpc-connect/backups/pre-4.5-<timestamp>/
+├── inventory/
+└── legacy-control/
+```
+
+The legacy source, backup copy and staged canonical copy are hashed and compared.
+If state changes during the copy, or a different canonical Controller tree
+already exists, migration stops rather than choosing one side.
+
+A successful migration writes:
+
+```text
+/etc/bpc-connect/control/.bpc-state.json
+/etc/bpc-connect/compat/stage-4.5.json
+```
+
+The marker makes subsequent runs idempotent.
+
+## Data plane
+
+Stage 4.5 is an architecture cleanup, not a transport rewrite. Existing
+transports remain independent:
+
+```text
+BP Connect / VPN client
+        |
+        +-- VLESS + REALITY
+        +-- AmneziaWG
+        +-- native WireGuard
+        +-- WGShim
+        +-- Mihomo transports
+        +-- OpenVPN / IKEv2 / SSH fallback
+        |
+        v
+BPC Node gateway / relay
+```
+
+Transport credentials remain outside `node.yaml` and are not regenerated by
+canonical migration.
+
+## Invariants
+
+- One server-side entity: Node.
+- Capabilities are composable; they are not node types.
+- User, Device, Node and Access identities remain distinct.
+- New core state uses canonical paths.
+- Legacy schema knowledge stays inside compatibility adapters.
+- Unknown or external network objects are not mutated.
+- Migration is backup-first and idempotent.
+- Existing transport cryptography and packet formats are unchanged.
+- The work underlay remains fail closed.

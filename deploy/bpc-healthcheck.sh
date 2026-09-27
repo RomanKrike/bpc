@@ -2,13 +2,21 @@
 set -euo pipefail
 
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
-ROLE="${BPC_ROLE:-}"
 
-if [[ -f "${BPC_STATE_DIR}/install.env" ]]; then
-  # shellcheck disable=SC1090,SC1091
-  source "${BPC_STATE_DIR}/install.env"
-  ROLE="${BPC_ROLE:-${ROLE}}"
-fi
+node_has_capability() {
+  local capability="$1"
+  local node_config="${BPC_STATE_DIR}/node.yaml"
+  [[ -s "${node_config}" ]] || return 1
+  python3 - "${node_config}" "${capability}" <<'PY'
+import sys
+import yaml
+from pathlib import Path
+
+raw = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8"))
+roles = raw.get("roles", {}) if isinstance(raw, dict) else {}
+raise SystemExit(0 if isinstance(roles, dict) and roles.get(sys.argv[2]) is True else 1)
+PY
+}
 
 fail_health() {
   echo "Health check FAILED: $*" >&2
@@ -383,7 +391,7 @@ check_joined_node() {
 }
 
 check_control() {
-  local control_dir="${BPC_STATE_DIR}/ru-node/control"
+  local control_dir="${BPC_STATE_DIR}/control"
   local runtime_env="${control_dir}/runtime.env"
 
   [[ -f "${control_dir}/enabled" ]] || return 0
@@ -414,42 +422,45 @@ check_control() {
   fi
 }
 
-case "${ROLE}" in
-  ru-node)
-    config="${BPC_STATE_DIR}/ru-node/config.json"
-    if [[ ! -x /usr/local/bin/xray ]]; then
-      fail_health "xray binary is missing"
-      exit 1
-    fi
-    if [[ ! -s "${config}" ]]; then
-      fail_health "RU-node Xray configuration is missing"
-      exit 1
-    fi
-    if ! /usr/local/bin/xray run -test -config "${config}" >/dev/null 2>&1; then
-      fail_health "Xray configuration validation failed: ${config}"
-      exit 1
-    fi
-    if ! systemctl --quiet is-active xray; then
-      fail_health "xray.service is not active"
-      exit 1
-    fi
-    check_awg
-    check_wg
-    check_mihomo_transports
-    check_openvpn
-    check_ikev2
-    check_ssh_rescue
-    check_wgshim
-    check_agent_dataplane
-    check_subscription
-    check_control
-    ;;
-  *)
-    if [[ -s "${BPC_STATE_DIR}/enrollment.json" ]]; then
-      check_joined_node
-    else
-      fail_health "Unknown or missing BPC_ROLE: ${ROLE:-<empty>}"
-      exit 1
-    fi
-    ;;
-esac
+gateway_config="${BPC_STATE_DIR}/ru-node/config.json"
+if node_has_capability gateway || [[ -s "${gateway_config}" ]]; then
+  if [[ ! -x /usr/local/bin/xray ]]; then
+    fail_health "xray binary is missing"
+    exit 1
+  fi
+  if [[ ! -s "${gateway_config}" ]]; then
+    fail_health "gateway transport configuration is missing"
+    exit 1
+  fi
+  if ! /usr/local/bin/xray run -test -config "${gateway_config}" >/dev/null 2>&1; then
+    fail_health "Xray configuration validation failed: ${gateway_config}"
+    exit 1
+  fi
+  if ! systemctl --quiet is-active xray; then
+    fail_health "xray.service is not active"
+    exit 1
+  fi
+fi
+
+check_awg
+check_wg
+check_mihomo_transports
+check_openvpn
+check_ikev2
+check_ssh_rescue
+check_wgshim
+check_agent_dataplane
+check_subscription
+check_control
+
+if node_has_capability controller && [[ ! -f "${BPC_STATE_DIR}/control/enabled" ]]; then
+  fail_health "controller capability is enabled but canonical Controller state is not active"
+  exit 1
+fi
+
+if [[ -s "${BPC_STATE_DIR}/enrollment.json" ]]; then
+  check_joined_node
+elif [[ ! -s "${BPC_STATE_DIR}/node.yaml" && ! -s "${gateway_config}" ]]; then
+  fail_health "canonical Node state is missing"
+  exit 1
+fi

@@ -22,7 +22,16 @@ from argon2.exceptions import VerificationError
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/ru-node/control")
+MODULE_DIR = Path(__file__).resolve().parent
+if (MODULE_DIR / "src" / "bpc_connect").is_dir():
+    SOURCE_ROOT = MODULE_DIR / "src"
+else:
+    SOURCE_ROOT = MODULE_DIR.parent / "src"
+sys.path.insert(0, str(SOURCE_ROOT))
+
+from bpc_connect.compat.device import remove_compat_static_credential  # noqa: E402
+
+DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 ACCESS_TTL = 10 * 60
 REFRESH_TTL = 30 * 24 * 60 * 60
 USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -634,9 +643,7 @@ def deactivate_device(
     atomic_json(_device_path(root, canonical_id), device)
     revoke_device_credentials(root, canonical_id, timestamp)
 
-    legacy_token = str(device.get("device_token", "")).strip()
-    if legacy_token:
-        (root / "tokens" / f"{credential_index(legacy_token)}.json").unlink(missing_ok=True)
+    remove_compat_static_credential(root, device)
     _remove_device_dataplane(root, device)
     return device
 

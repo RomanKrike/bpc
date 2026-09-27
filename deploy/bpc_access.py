@@ -12,7 +12,16 @@ import time
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/ru-node/control")
+MODULE_DIR = Path(__file__).resolve().parent
+if (MODULE_DIR / "src" / "bpc_connect").is_dir():
+    SOURCE_ROOT = MODULE_DIR / "src"
+else:
+    SOURCE_ROOT = MODULE_DIR.parent / "src"
+sys.path.insert(0, str(SOURCE_ROOT))
+
+from bpc_connect.compat.legacy import compat_route_grants, is_compat_site_router  # noqa: E402
+
+DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 CHAIN_NAME = "BPC-ACCESS"
 
 
@@ -197,12 +206,9 @@ def effective_networks(root: Path, device: dict[str, Any]) -> list[ipaddress.IPv
         allows.extend(_canonical_networks(list(record["allow"])))
         denies.extend(_canonical_networks(list(record["deny"])))
 
-    # Stage 2/early Stage 3 compatibility: existing gateway grant/ungrant writes
-    # managed_routes on the Device. They remain an explicit allow source, but
-    # Access deny rules still override them server-side.
-    managed = device.get("managed_routes", [])
-    if isinstance(managed, list):
-        allows.extend(_canonical_networks(managed))
+    # Historical Device route grants are read only through the compatibility
+    # adapter. Access deny rules still override them.
+    allows.extend(_canonical_networks(compat_route_grants(device)))
 
     return _subtract_denies(
         list(ipaddress.collapse_addresses(allows)),
@@ -239,7 +245,7 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
             device = read_json(path)
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        if str(device.get("role", "")) == "gateway":
+        if is_compat_site_router(device):
             continue
         if not bool(device.get("enabled", True)):
             continue
@@ -260,17 +266,55 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
     return devices
 
 
+def _require_owned_wireguard_interface(root: Path, config: dict[str, Any]) -> str:
+    interface = str(config.get("wireguard_interface", "")).strip()
+    key_dir = str(config.get("wgshim_key_dir", "")).strip()
+    if not interface or not key_dir:
+        raise AccessError("BPC WireGuard ownership evidence is incomplete")
+    ownership_path = Path(key_dir).parent / "ownership.json"
+    try:
+        value = read_json(ownership_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise AccessError(
+            f"refusing firewall mutation: BPC ownership is not proven for {interface}"
+        ) from exc
+    if (
+        value.get("owner") != "bpc"
+        or value.get("kind") != "wireguard-interface"
+        or str(value.get("name", "")) != interface
+    ):
+        raise AccessError(
+            f"refusing firewall mutation: BPC ownership is not proven for {interface}"
+        )
+    return interface
+
+
 def sync_access_firewall(root: Path) -> None:
     try:
         config = read_json(root / "config.json")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise AccessError("BPC control config is unavailable") from exc
-    interface = str(config.get("wireguard_interface", "")).strip()
-    if not interface:
-        raise AccessError("wireguard_interface is missing from BPC control config")
+    interface = _require_owned_wireguard_interface(root, config)
+
+    state_path = root / "access-firewall.json"
+    previous: dict[str, Any] = {}
+    if state_path.is_file():
+        try:
+            previous = read_json(state_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise AccessError("invalid BPC Access firewall ownership state") from exc
 
     chain_check = _run(["iptables", "-nL", CHAIN_NAME], check=False)
-    if chain_check.returncode != 0:
+    chain_exists = chain_check.returncode == 0
+    if chain_exists:
+        if (
+            previous.get("chain") != CHAIN_NAME
+            or not str(previous.get("interface", "")).strip()
+        ):
+            raise AccessError(
+                f"refusing firewall mutation: ownership is not proven for chain {CHAIN_NAME}"
+            )
+    else:
         _run(["iptables", "-N", CHAIN_NAME])
     _run(["iptables", "-F", CHAIN_NAME])
 
@@ -298,13 +342,7 @@ def sync_access_firewall(root: Path) -> None:
         # traffic is not caught by this rule.
         _run(["iptables", "-A", CHAIN_NAME, "-s", source, "-j", "DROP"])
 
-    previous_interface = ""
-    state_path = root / "access-firewall.json"
-    if state_path.is_file():
-        try:
-            previous_interface = str(read_json(state_path).get("interface", "")).strip()
-        except (OSError, ValueError, json.JSONDecodeError):
-            previous_interface = ""
+    previous_interface = str(previous.get("interface", "")).strip()
     if previous_interface and previous_interface != interface:
         while _run(
             ["iptables", "-C", "FORWARD", "-i", previous_interface, "-j", CHAIN_NAME],
