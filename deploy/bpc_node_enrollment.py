@@ -302,12 +302,19 @@ def _join_record(control_dir: Path, token: str) -> tuple[Path, dict[str, Any], s
     return path, record, index
 
 
+def join_token_metadata(control_dir: Path, token: str) -> dict[str, Any]:
+    _, record, _ = _join_record(control_dir, token)
+    return dict(record)
+
+
 def enroll_node(
     control_dir: Path,
     *,
     token: str,
     public_key: str,
     presented_name: str,
+    assigned_node_id: str | None = None,
+    extra_operations: list[dict[str, Any]] | None = None,
     now: int | None = None,
 ) -> dict[str, Any]:
     timestamp = int(time.time()) if now is None else int(now)
@@ -360,7 +367,9 @@ def enroll_node(
         str(token_name) if token_name else presented_name,
         fallback="bpc-node",
     )
-    node_id = uuid.uuid4().hex
+    node_id = assigned_node_id or uuid.uuid4().hex
+    if not re.fullmatch(r"[0-9a-f]{32}", node_id):
+        raise EnrollmentError("assigned Node ID is invalid")
     credential = secrets.token_hex(32)
     credential_index = token_index(credential)
     role_map = {role: True for role in roles}
@@ -389,64 +398,72 @@ def enroll_node(
     if bpc_control_state.cluster_enabled(control_dir):
         try:
             token_hash = hashlib.sha256(token_path.read_bytes()).hexdigest()
+            operations: list[dict[str, Any]] = [
+                {
+                    "op": "put",
+                    "path": node_path,
+                    "data": json.dumps(
+                        node, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8"),
+                    "if_absent": True,
+                },
+                {
+                    "op": "put",
+                    "path": public_index,
+                    "data": json.dumps(
+                        {"node_id": node_id},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                    "if_absent": True,
+                },
+                {
+                    "op": "put",
+                    "path": credential_path,
+                    "data": json.dumps(
+                        {"node_id": node_id},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                    "if_absent": True,
+                },
+                {
+                    "op": "put",
+                    "path": used_path,
+                    "data": json.dumps(
+                        {
+                            "reason": "used",
+                            "used_at": timestamp,
+                            "node_id": node_id,
+                        },
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                    "if_absent": True,
+                },
+                {
+                    "op": "delete",
+                    "path": token_path,
+                    "require_present": True,
+                    "expected_sha256": token_hash,
+                },
+            ]
+            if extra_operations:
+                operations.extend(extra_operations)
             bpc_control_state.mutation(
                 control_dir,
                 "EnrollNode",
-                [
-                    {
-                        "op": "put",
-                        "path": node_path,
-                        "data": json.dumps(
-                            node, sort_keys=True, separators=(",", ":")
-                        ).encode("utf-8"),
-                        "if_absent": True,
-                    },
-                    {
-                        "op": "put",
-                        "path": public_index,
-                        "data": json.dumps(
-                            {"node_id": node_id},
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8"),
-                        "if_absent": True,
-                    },
-                    {
-                        "op": "put",
-                        "path": credential_path,
-                        "data": json.dumps(
-                            {"node_id": node_id},
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8"),
-                        "if_absent": True,
-                    },
-                    {
-                        "op": "put",
-                        "path": used_path,
-                        "data": json.dumps(
-                            {
-                                "reason": "used",
-                                "used_at": timestamp,
-                                "node_id": node_id,
-                            },
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        ).encode("utf-8"),
-                        "if_absent": True,
-                    },
-                    {
-                        "op": "delete",
-                        "path": token_path,
-                        "require_present": True,
-                        "expected_sha256": token_hash,
-                    },
-                ],
+                operations,
                 issued_at=timestamp,
             )
         except bpc_control_state.ControlStateError as exc:
             _raise_control_state(exc)
     else:
+        if extra_operations:
+            raise EnrollmentError(
+                "Controller enrollment requires distributed control plane",
+                412,
+            )
         try:
             atomic_json(node_path, node)
             atomic_json(public_index, {"node_id": node_id})
