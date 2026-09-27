@@ -284,7 +284,6 @@ def test_cluster_join_token_contains_multiple_controller_endpoints(tmp_path: Pat
     state = tmp_path
     control = state / "control"
     (state / "cluster" / "controllers").mkdir(parents=True)
-    (state / "cluster" / "controller.json").write_text("{}", encoding="utf-8")
     for index, host in enumerate(("a.example", "b.example"), start=1):
         (state / "cluster" / "controllers" / f"{index:032x}.json").write_text(
             json.dumps(

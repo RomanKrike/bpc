@@ -144,16 +144,16 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 			existing := canonical.Get([]byte(op.Path))
 			if op.IfAbsent && existing != nil {
 				conflict = "path already exists: " + op.Path
-				return nil
+				break
 			}
 			if op.RequirePresent && existing == nil {
 				conflict = "path does not exist: " + op.Path
-				return nil
+				break
 			}
 			if op.ExpectedSHA256 != "" {
 				if existing == nil || sha256Hex(existing) != strings.ToLower(op.ExpectedSHA256) {
 					conflict = "precondition failed: " + op.Path
-					return nil
+					break
 				}
 			}
 		}
