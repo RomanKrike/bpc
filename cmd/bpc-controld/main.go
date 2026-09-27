@@ -61,7 +61,8 @@ type removeMemberRequest struct {
 func main() {
 	var (
 		nodeID      = flag.String("node-id", "", "canonical BPC Node ID")
-		raftAddress = flag.String("raft-address", "", "Controller Raft listen/advertise address")
+		raftBind    = flag.String("raft-bind-address", "", "Controller Raft listen address")
+		raftAddress = flag.String("raft-address", "", "Controller Raft advertised address")
 		clusterAPI  = flag.String("cluster-api-address", "", "mTLS Controller API listen address")
 		localAPI    = flag.String("local-api-address", "127.0.0.1:9446", "loopback control API")
 		stateRoot   = flag.String("state-root", "/etc/bpc-connect", "BPC canonical state root")
@@ -89,7 +90,8 @@ func main() {
 
 	material := controlplane.TLSMaterial{CertificateFile: *certFile, KeyFile: *keyFile, CAFile: *caFile}
 	node, err := controlplane.NewNode(controlplane.NodeConfig{
-		NodeID: *nodeID, RaftAddress: *raftAddress, StateRoot: *stateRoot, DataDir: *dataDir,
+		NodeID: *nodeID, RaftBindAddress: *raftBind, RaftAddress: *raftAddress,
+		StateRoot: *stateRoot, DataDir: *dataDir,
 		TLS: material, Bootstrap: *bootstrap,
 	})
 	if err != nil {
@@ -151,7 +153,10 @@ func main() {
 		}
 	}
 
-	log.Printf("bpc-controld node=%s raft=%s cluster_api=%s local_api=%s", *nodeID, *raftAddress, *clusterAPI, *localAPI)
+	log.Printf(
+		"bpc-controld node=%s raft_bind=%s raft=%s cluster_api=%s local_api=%s",
+		*nodeID, *raftBind, *raftAddress, *clusterAPI, *localAPI,
+	)
 	select {}
 }
 
