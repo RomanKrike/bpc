@@ -119,6 +119,32 @@ def test_stage45_migration_refuses_to_overwrite_different_canonical_state(
     ) == '{"config_version":4}'
 
 
+def test_interrupted_migration_with_control_marker_resumes_idempotently(
+    tmp_path: Path,
+) -> None:
+    seed_legacy_bpc_state(tmp_path)
+    canonical = tmp_path / "control"
+    canonical.mkdir()
+    (canonical / "config.json").write_text('{"config_version":4}', encoding="utf-8")
+    (canonical / "enabled").touch()
+    (canonical / ".bpc-state.json").write_text(
+        '{"schema":1,"owner":"bpc","component":"control"}',
+        encoding="utf-8",
+    )
+
+    report = migrate_canonical_state(
+        tmp_path,
+        runner=fake_inventory_runner,
+        now=3_500,
+    )
+
+    assert report.external_objects_modified == ()
+    assert (tmp_path / "compat" / "stage-4.5.json").is_file()
+    assert (canonical / "config.json").read_text(encoding="utf-8") == (
+        '{"config_version":4}'
+    )
+
+
 def test_unknown_or_external_ownership_is_fail_closed() -> None:
     with pytest.raises(PermissionError, match="ownership=EXTERNAL"):
         require_mutable(OwnershipEvidence(Ownership.EXTERNAL, "pre-existing wg0"))
