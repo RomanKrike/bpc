@@ -296,8 +296,25 @@ def sync_access_firewall(root: Path) -> None:
         raise AccessError("BPC control config is unavailable") from exc
     interface = _require_owned_wireguard_interface(root, config)
 
+    state_path = root / "access-firewall.json"
+    previous: dict[str, Any] = {}
+    if state_path.is_file():
+        try:
+            previous = read_json(state_path)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            raise AccessError("invalid BPC Access firewall ownership state") from exc
+
     chain_check = _run(["iptables", "-nL", CHAIN_NAME], check=False)
-    if chain_check.returncode != 0:
+    chain_exists = chain_check.returncode == 0
+    if chain_exists:
+        if (
+            previous.get("chain") != CHAIN_NAME
+            or not str(previous.get("interface", "")).strip()
+        ):
+            raise AccessError(
+                f"refusing firewall mutation: ownership is not proven for chain {CHAIN_NAME}"
+            )
+    else:
         _run(["iptables", "-N", CHAIN_NAME])
     _run(["iptables", "-F", CHAIN_NAME])
 
@@ -325,13 +342,7 @@ def sync_access_firewall(root: Path) -> None:
         # traffic is not caught by this rule.
         _run(["iptables", "-A", CHAIN_NAME, "-s", source, "-j", "DROP"])
 
-    previous_interface = ""
-    state_path = root / "access-firewall.json"
-    if state_path.is_file():
-        try:
-            previous_interface = str(read_json(state_path).get("interface", "")).strip()
-        except (OSError, ValueError, json.JSONDecodeError):
-            previous_interface = ""
+    previous_interface = str(previous.get("interface", "")).strip()
     if previous_interface and previous_interface != interface:
         while _run(
             ["iptables", "-C", "FORWARD", "-i", previous_interface, "-j", CHAIN_NAME],
