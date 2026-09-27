@@ -111,11 +111,9 @@ def test_controller_enrollment_keeps_private_key_local(tmp_path: Path) -> None:
         (joining_state / "cluster" / "pki" / "controller.crt").read_bytes()
     )
     assert cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value == node_id
-    assert (
-        f"bpc://cluster-test/controller/{node_id}"
-        in [uri.value for uri in cert.extensions.get_extension_for_class(
-            x509.SubjectAlternativeName
-        ).value.get_values_for_type(x509.UniformResourceIdentifier)]
+    san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    assert f"bpc://cluster-test/controller/{node_id}" in san.get_values_for_type(
+        x509.UniformResourceIdentifier
     )
     assert not (joining_state / "cluster" / "controller.json").exists()
 
