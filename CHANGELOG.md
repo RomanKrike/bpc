@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.17.1
+
+### Fixed
+- Repair missing canonical Ed25519 Node identity when upgrading a legacy Controller that already has `node.yaml` but no `identity/node.key` or public key.
+- Re-run the identity repair even when the Stage 4.5 migration marker already exists, so affected 0.17.0 installations self-heal on update.
+- Fail closed instead of silently rotating identity when `node.yaml` already contains a public key but the private key is missing or does not match.
+
 ## 0.17.0
 
 ### Added
