@@ -28,6 +28,8 @@ var replicatedPrefixes = []string{
 	"control/identity/access/",
 	"control/identity/refresh/",
 	"control/devices/",
+	"control/device-addresses/",
+	"control/device-public-keys/",
 	"control/access/",
 	"control/node-join/",
 	"control/node-join-used/",
@@ -41,6 +43,7 @@ var replicatedPrefixes = []string{
 
 var replicatedExact = map[string]struct{}{
 	"cluster/cluster.json": {},
+	"control/config.json":  {},
 }
 
 type Operation struct {
