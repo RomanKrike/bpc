@@ -6,7 +6,7 @@ import os
 import re
 import secrets
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -55,7 +55,9 @@ def normalize_advertise_host(value: str) -> str:
         address = ipaddress.ip_address(host)
     except ValueError:
         if not HOST_RE.fullmatch(host):
-            raise ControllerEnrollmentError("invalid controller advertise hostname")
+            raise ControllerEnrollmentError(
+                "invalid controller advertise hostname"
+            ) from None
         return host.lower()
     if address.version != 4:
         raise ControllerEnrollmentError("controller advertise host currently supports IPv4 only")
@@ -171,7 +173,7 @@ def build_controller_enrollment(
         raise ControllerEnrollmentError("Controller CSR key must be Ed25519")
 
     timestamp = int(time.time()) if now is None else int(now)
-    valid_from = datetime.fromtimestamp(timestamp, tz=timezone.utc) - timedelta(minutes=5)
+    valid_from = datetime.fromtimestamp(timestamp, tz=UTC) - timedelta(minutes=5)
     valid_until = valid_from + timedelta(days=825)
     certificate = (
         x509.CertificateBuilder()
