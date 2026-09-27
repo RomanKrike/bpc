@@ -56,7 +56,10 @@ def test_control_service_stages_self_contained_runtime_inside_canonical_state() 
     assert release_server in enable_control
     assert release_enrollment in enable_control
     assert 'release_access="${BPC_ROOT}/current/deploy/bpc_access.py"' in enable_control
-    assert 'release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"' in enable_control
+    assert (
+        'release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"'
+        in enable_control
+    )
     assert 'release_package="${BPC_ROOT}/current/src/bpc_connect"' in enable_control
     assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in enable_control
     assert 'chown -R root:root "${runtime_tmp}"' in enable_control
