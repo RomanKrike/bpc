@@ -331,3 +331,35 @@ def install_controller_enrollment(state_dir: Path, payload: dict[str, Any]) -> N
             ),
             0o600,
         )
+
+
+def activate_controller_marker(
+    state_dir: Path,
+    *,
+    node_id: str,
+    payload: dict[str, Any],
+    software_version: str,
+) -> None:
+    raft_address = str(payload.get("raft_address", "")).strip()
+    api_address = str(payload.get("cluster_api_address", "")).strip()
+    if not raft_address or not api_address:
+        raise ControllerEnrollmentError("Controller endpoints are missing")
+    value = {
+        "version": 1,
+        "node_id": node_id,
+        "raft_address": raft_address,
+        "cluster_api_address": api_address,
+        "local_api_address": "127.0.0.1:9446",
+        "certificate_file": str(state_dir / "cluster" / "pki" / "controller.crt"),
+        "key_file": str(state_dir / "cluster" / "pki" / "controller.key"),
+        "ca_file": str(state_dir / "cluster" / "pki" / "cluster-ca.crt"),
+        "local_api_token_file": str(state_dir / "cluster" / "local-api.token"),
+        "software_version": software_version[:64],
+        "protocol_version": int(payload.get("protocol_version", 1)),
+        "state_schema_version": int(payload.get("state_schema_version", 1)),
+    }
+    _atomic_bytes(
+        state_dir / "cluster" / "controller.json",
+        (json.dumps(value, sort_keys=True, indent=2) + "\n").encode("utf-8"),
+        0o600,
+    )
