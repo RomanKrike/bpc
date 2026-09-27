@@ -139,10 +139,9 @@ func (s *Store) Get(key []byte) ([]byte, error) {
 	var result []byte
 	err := s.db.View(func(tx *bolt.Tx) error {
 		value := tx.Bucket(bucketStable).Get(key)
-		if value == nil {
-			return errors.New("not found")
+		if value != nil {
+			result = append([]byte(nil), value...)
 		}
-		result = append([]byte(nil), value...)
 		return nil
 	})
 	return result, err
@@ -154,6 +153,9 @@ func (s *Store) GetUint64(key []byte) (uint64, error) {
 	value, err := s.Get(key)
 	if err != nil {
 		return 0, err
+	}
+	if len(value) == 0 {
+		return 0, nil
 	}
 	if len(value) != 8 {
 		return 0, fmt.Errorf("stable uint64 %q has invalid length %d", string(key), len(value))
