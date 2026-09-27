@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -70,11 +71,13 @@ func main() {
 		caFile      = flag.String("ca-file", "", "BPC cluster CA")
 		bootstrap   = flag.Bool("bootstrap", false, "bootstrap the first Controller")
 		version     = flag.String("software-version", "source", "BPC software version")
+		localToken  = flag.String("local-api-token-file", "", "root-only local API bearer token file")
 	)
 	flag.Parse()
 	for name, value := range map[string]string{
 		"node-id": *nodeID, "raft-address": *raftAddress, "cluster-api-address": *clusterAPI,
 		"cert-file": *certFile, "key-file": *keyFile, "ca-file": *caFile,
+		"local-api-token-file": *localToken,
 	} {
 		if strings.TrimSpace(value) == "" {
 			log.Fatalf("--%s is required", name)
@@ -97,8 +100,14 @@ func main() {
 	service := &server{node: node, stateRoot: filepath.Clean(*stateRoot), tls: material, version: *version}
 	mux := http.NewServeMux()
 	service.routes(mux)
+	localSecret, err := readLocalToken(*localToken)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	localServer := &http.Server{Addr: *localAPI, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	localServer := &http.Server{
+		Addr: *localAPI, Handler: localAuth(mux, localSecret), ReadHeaderTimeout: 5 * time.Second,
+	}
 	go func() {
 		if err := localServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("local API failed: %v", err)
@@ -441,4 +450,32 @@ func randomID() string {
 		panic(err)
 	}
 	return hex.EncodeToString(raw[:])
+}
+
+
+func readLocalToken(path string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	token := strings.TrimSpace(string(raw))
+	if len(token) != 64 {
+		return "", errors.New("local API token must be 64 hexadecimal characters")
+	}
+	if _, err := hex.DecodeString(token); err != nil {
+		return "", errors.New("local API token is not hexadecimal")
+	}
+	return token, nil
+}
+
+func localAuth(next http.Handler, token string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		presented := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		if len(presented) != len(token) ||
+			subtle.ConstantTimeCompare([]byte(presented), []byte(token)) != 1 {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "local authentication required"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
