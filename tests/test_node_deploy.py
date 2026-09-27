@@ -12,6 +12,7 @@ NODE_SH = (ROOT / "deploy" / "bpc-node.sh").read_text(encoding="utf-8")
 BPC_SH = (ROOT / "deploy" / "bpc.sh").read_text(encoding="utf-8")
 HEALTH = (ROOT / "deploy" / "bpc-healthcheck.sh").read_text(encoding="utf-8")
 CONTROL = (ROOT / "deploy" / "bpc-enable-control.sh").read_text(encoding="utf-8")
+CLUSTER = (ROOT / "deploy" / "bpc_cluster.py").read_text(encoding="utf-8")
 DATAPLANE = (ROOT / "deploy" / "bpc-enable-agent-dataplane.sh").read_text(
     encoding="utf-8"
 )
@@ -45,6 +46,8 @@ def test_install_and_update_reconcile_bpc_command() -> None:
     assert '"bpc-enable-cluster:bpc-enable-cluster.sh"' in UPDATE
     assert '"bpc-enable-control-replica:bpc-enable-control-replica.sh"' in INSTALL
     assert '"bpc-enable-control-replica:bpc-enable-control-replica.sh"' in UPDATE
+    assert '"bpc-enable-cluster:bpc-enable-cluster.sh"' in MIGRATE
+    assert '"bpc-enable-control-replica:bpc-enable-control-replica.sh"' in MIGRATE
     assert "BPC_NODE_CONFIG=" in INSTALL
 
 
@@ -81,3 +84,8 @@ def test_node_config_does_not_embed_transport_credentials() -> None:
     assert "preshared" not in serialized
     assert "wgshim_psk" not in serialized
     assert "uuid" not in serialized
+
+
+def test_cluster_init_roles_are_parsed_as_role_values() -> None:
+    assert 'init.add_argument("--roles", action="append")' in CLUSTER
+    assert 'normalize_roles(args.roles or ["controller,gateway,relay"])' in CLUSTER

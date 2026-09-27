@@ -118,7 +118,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         raise ClusterInitError("run bpc init as root")
 
-    roles = normalize_roles(args.roles)
+    roles = normalize_roles(args.roles or ["controller,gateway,relay"])
     if "controller" not in roles:
         raise ClusterInitError("the first BPC Node must include the controller capability")
 
@@ -227,7 +227,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init")
     init.add_argument("--name")
-    init.add_argument("--roles", default="controller,gateway,relay")
+    init.add_argument("--roles", action="append")
     init.add_argument("--hostname")
     init.add_argument("--reality-server-name")
     init.add_argument("--gateway-port", type=int)
