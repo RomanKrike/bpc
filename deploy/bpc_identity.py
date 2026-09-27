@@ -29,9 +29,9 @@ else:
     SOURCE_ROOT = MODULE_DIR.parent / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
-from bpc_connect.compat.device import remove_compat_static_credential  # noqa: E402
-
 import bpc_control_state  # noqa: E402
+
+from bpc_connect.compat.device import remove_compat_static_credential  # noqa: E402
 
 DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 ACCESS_TTL = 10 * 60
