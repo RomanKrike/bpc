@@ -6,6 +6,13 @@ from Stage 1 and does not replace the existing data-plane transports.
 
 ## End-to-end flow
 
+Initialize the first Controller with the canonical bootstrap if the cluster does
+not exist yet:
+
+```bash
+bpc init --name ru-01 --roles controller,gateway,relay --hostname sub.example.com
+```
+
 On an existing Controller, create a one-time token:
 
 ```bash
@@ -80,8 +87,8 @@ Controller state.
 ## Controller state
 
 Node enrollment is intentionally separate from the existing BP Connect
-User/Device Agent enrollment. Stage 2 adds these Controller directories below
-the existing control-plane state:
+User/Device Agent enrollment. Stage 2 adds these directories below the canonical Controller state at
+`/etc/bpc-connect/control/`:
 
 ```text
 node-join/          unused token metadata, indexed by SHA-256(secret)
@@ -104,8 +111,9 @@ Capabilities remain metadata on one Node rather than separate Node types.
   started. Automatic promotion of a completely fresh remote Node into a second
   Controller would require certificate distribution and replicated Controller
   state, which belongs to a later distributed-control-plane stage.
-- `site_router`: remains modeled but is not implemented in Stage 2; MikroTik
-  and site routing are explicitly deferred.
+- `site_router`: is a Node capability. Stage 4.5 moves route advertisement
+  into canonical Node state; the new site-router data plane and MikroTik
+  integration remain deferred.
 
 A typical Stage 2 fresh-server token therefore assigns `gateway,relay`.
 
@@ -115,12 +123,8 @@ The no-argument installer is safe to run again. It preserves the current
 release/state pointer, existing transport credentials, Node identity and
 enrollment files.
 
-The old explicit bootstrap remains supported:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
-  | sudo bash -s -- --role ru-node --reality-server-name www.bing.com
-```
+The old explicit `--role ru-node` bootstrap remains compatibility-only. It is
+not a Node type and is not the preferred path for clean installations.
 
 Running `bpc join` again on an already enrolled Node returns the existing Node
 identity and does not overwrite enrollment or transport configuration.
