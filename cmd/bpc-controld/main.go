@@ -341,7 +341,7 @@ func (s *server) addMember(w http.ResponseWriter, r *http.Request) {
 	}, 10*time.Second)
 	if err != nil || !result.OK {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error": fmt.Sprintf("membership changed but activation record failed: %v %+v", err, result),
+			"error":            fmt.Sprintf("membership changed but activation record failed: %v %+v", err, result),
 			"pending_revision": pending.Revision,
 		})
 		return
