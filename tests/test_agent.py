@@ -135,8 +135,8 @@ def test_agent_runs_as_native_windows_service() -> None:
     assert "startWindowsService" in AGENT
 
 
-def test_legacy_wireguard_is_optional_migration_compatibility() -> None:
-    assert "--legacy-tunnel" in SERVER
+def test_legacy_wireguard_is_read_only_client_migration_compatibility() -> None:
+    assert "--legacy-tunnel" not in SERVER
     assert "LegacyTunnel" in AGENT
     assert "captureLegacyWireGuardProfile" in AGENT
     assert "runEmbeddedWireGuard" in AGENT
@@ -328,11 +328,11 @@ def test_agent_overlay_allows_server_health_ping() -> None:
     assert "--icmp-type echo-request -j ACCEPT" in down_block
 
 
-def test_agent_managed_routes_remain_legacy_access_compatibility() -> None:
-    assert "bpc-agent routes NAME [CIDR ... | --clear]" in SERVER
-    assert '\"managed_routes\": []' in CONTROL
+def test_agent_route_policy_is_access_owned_not_device_managed_routes() -> None:
+    assert "bpc-agent routes NAME [CIDR ... | --clear]" not in SERVER
+    assert "pre-canonical BPC Agent administration command is disabled" in SERVER
+    assert '\"managed_routes\": []' not in CONTROL
     assert "effective_routes(self._root(), device)" in CONTROL
-    assert "0.0.0.0/0 is not allowed for managed Agent routes" in SERVER
     assert "profile.AllowedIPs" in TUNNEL
     assert '! -d \"${AGENT_WG_SUBNET}\" -j MASQUERADE' in DATAPLANE
 
@@ -400,16 +400,13 @@ def test_agent_ui_shows_selected_udp_endpoint_and_port_rtt() -> None:
     assert "rtt_ms" in AGENT
 
 
-def test_bp_gateway_routes_home_subnets_through_overlay() -> None:
-    assert "advertised_routes" in CONTROL
+def test_bp_gateway_is_compatibility_only_and_new_writes_are_disabled() -> None:
     assert "gateway_routes" in CONTROL
     assert "sync_gateway_routes" in CONTROL
     assert '"ip", "route", "replace"' in CONTROL
-    assert '"allowed-ips"' in CONTROL
-    assert "gateway create NAME --route CIDR" in NODE
-    assert "gateway grant NAME DEVICE" in NODE
-    assert "managed_routes" in NODE
-    assert "wireguard_server_public_key" in NODE
+    assert "Legacy BP Gateway write workflow is deprecated and disabled." in NODE
+    assert "gateway create NAME --route CIDR" not in NODE
+    assert "gateway grant NAME DEVICE" not in NODE
     assert "bp-gateway-wgshim.service" in GATEWAY_TEMPLATE
     assert "net.ipv4.ip_forward=1" in GATEWAY_TEMPLATE
     assert "MASQUERADE" in GATEWAY_TEMPLATE
