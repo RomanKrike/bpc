@@ -88,10 +88,6 @@ func NewNode(config NodeConfig) (*Node, error) {
 		return nil, err
 	}
 	fsm := NewStateMachine(store, config.StateRoot)
-	if err := fsm.ReconcileProjection(); err != nil {
-		_ = store.Close()
-		return nil, fmt.Errorf("reconcile canonical state: %w", err)
-	}
 
 	snapshots, err := raft.NewFileSnapshotStore(config.DataDir, config.SnapshotRetain, os.Stderr)
 	if err != nil {
@@ -121,10 +117,16 @@ func NewNode(config NodeConfig) (*Node, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	if !existing && !config.Bootstrap {
-		// New joining controllers start without local Raft state and receive it
-		// after the leader adds this Node to membership.
+	if existing {
+		if err := fsm.ReconcileProjection(); err != nil {
+			_ = transport.Close()
+			_ = store.Close()
+			return nil, fmt.Errorf("reconcile canonical state: %w", err)
+		}
 	}
+	// A fresh bootstrap Controller must keep its Stage 4.5 canonical files until
+	// BootstrapMutation commits them. A fresh joining Controller must keep its
+	// seed cluster trust files until Raft snapshot/log catch-up replaces them.
 
 	instance, err := raft.NewRaft(raftConfig, fsm, store, store, snapshots, transport)
 	if err != nil {
