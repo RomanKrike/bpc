@@ -60,12 +60,30 @@ def is_replicated_path(control_root: Path, path: Path) -> bool:
     )
 
 
-def _post(path: str, value: dict[str, Any]) -> dict[str, Any]:
+def _local_token(control_root: Path) -> str:
+    path = state_root(control_root) / "cluster" / "local-api.token"
+    try:
+        token = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ControlStateError(f"local control token unavailable: {exc}") from exc
+    if len(token) != 64:
+        raise ControlStateError("invalid local control token", 500)
+    try:
+        int(token, 16)
+    except ValueError as exc:
+        raise ControlStateError("invalid local control token", 500) from exc
+    return token
+
+
+def _post(control_root: Path, path: str, value: dict[str, Any]) -> dict[str, Any]:
     request = urllib.request.Request(
         LOCAL_API + path,
         data=json.dumps(value, separators=(",", ":")).encode(),
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {_local_token(control_root)}",
+        },
     )
     try:
         with urllib.request.urlopen(request, timeout=12) as response:
@@ -107,6 +125,7 @@ def mutation(
             item["data"] = base64.b64encode(data).decode("ascii")
         encoded.append(item)
     return _post(
+        control_root,
         "/v1/mutate",
         {
             "version": 1,
@@ -121,4 +140,4 @@ def mutation(
 def strong_read(control_root: Path) -> dict[str, Any]:
     if not cluster_enabled(control_root):
         return {"commit_index": 0, "revision": 0, "local_fallback": True}
-    return _post("/v1/barrier", {})
+    return _post(control_root, "/v1/barrier", {})
