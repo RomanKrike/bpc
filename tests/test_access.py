@@ -92,7 +92,20 @@ def test_sync_access_firewall_enforces_routes_on_node(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    access.atomic_json(tmp_path / "config.json", {"wireguard_interface": "bpcag0"})
+    key_dir = tmp_path / "agent" / "wgshim-keys"
+    access.atomic_json(
+        tmp_path / "config.json",
+        {"wireguard_interface": "bpcag0", "wgshim_key_dir": str(key_dir)},
+    )
+    access.atomic_json(
+        key_dir.parent / "ownership.json",
+        {
+            "owner": "bpc",
+            "kind": "wireguard-interface",
+            "name": "bpcag0",
+            "config": "/etc/wireguard/bpcag0.conf",
+        },
+    )
     access.atomic_json(tmp_path / "devices" / "d1.json", device())
     access.set_access(tmp_path, "user", "u1", "allow", ["192.168.88.0/24"], now=100)
 
