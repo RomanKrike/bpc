@@ -88,7 +88,17 @@ func main() {
 		log.Fatal("local API must bind loopback only")
 	}
 
-	material := controlplane.TLSMaterial{CertificateFile: *certFile, KeyFile: *keyFile, CAFile: *caFile}
+	clusterID, err := readClusterID(*stateRoot)
+	if err != nil {
+		log.Fatal(err)
+	}
+	material := controlplane.TLSMaterial{
+		CertificateFile: *certFile,
+		KeyFile:         *keyFile,
+		CAFile:          *caFile,
+		MembershipDir:   filepath.Join(*stateRoot, "cluster", "controllers"),
+		ClusterID:       clusterID,
+	}
 	node, err := controlplane.NewNode(controlplane.NodeConfig{
 		NodeID: *nodeID, RaftBindAddress: *raftBind, RaftAddress: *raftAddress,
 		StateRoot: *stateRoot, DataDir: *dataDir,
@@ -455,6 +465,24 @@ func randomID() string {
 		panic(err)
 	}
 	return hex.EncodeToString(raw[:])
+}
+
+func readClusterID(stateRoot string) (string, error) {
+	raw, err := os.ReadFile(filepath.Join(stateRoot, "cluster", "cluster.json"))
+	if err != nil {
+		return "", err
+	}
+	var value struct {
+		ClusterID string `json:"cluster_id"`
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", err
+	}
+	value.ClusterID = strings.TrimSpace(value.ClusterID)
+	if value.ClusterID == "" {
+		return "", errors.New("cluster_id is missing")
+	}
+	return value.ClusterID, nil
 }
 
 func readLocalToken(path string) (string, error) {
