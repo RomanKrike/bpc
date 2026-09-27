@@ -287,26 +287,68 @@ func (s *server) addMember(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "node_id, raft_address and api_address are required"})
 		return
 	}
-	if err := s.node.AddMember(request.NodeID, request.RaftAddress, request.Voter, 15*time.Second); err != nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+	fingerprint := strings.ToLower(strings.TrimSpace(request.CertificateSHA256))
+	if len(fingerprint) != 64 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "certificate_sha256 is required"})
 		return
 	}
+	if _, err := hex.DecodeString(fingerprint); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "certificate_sha256 is invalid"})
+		return
+	}
+
 	now := time.Now().Unix()
+	record := controllerRecord{
+		NodeID: request.NodeID, RaftAddress: request.RaftAddress, APIAddress: request.APIAddress,
+		State: "pending", SoftwareVersion: request.SoftwareVersion, ProtocolVersion: 1,
+		StateSchema: controlplane.ControlSchemaVersion, CertificateSHA256: fingerprint, UpdatedAt: now,
+	}
+	recordRaw, _ := json.Marshal(record)
+	pending, err := s.node.Submit(controlplane.Mutation{
+		Version: controlplane.CommandVersion, ID: randomID(), Kind: "PrepareController",
+		IssuedAt: now,
+		Operations: []controlplane.Operation{{
+			Op: "put", Path: "cluster/controllers/" + request.NodeID + ".json", Data: recordRaw,
+		}},
+	}, 10*time.Second)
+	if err != nil || !pending.OK {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": fmt.Sprintf("failed to prepare controller membership: %v %+v", err, pending),
+		})
+		return
+	}
+
+	if err := s.node.AddMember(request.NodeID, request.RaftAddress, request.Voter, 15*time.Second); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": err.Error(), "pending_revision": pending.Revision,
+		})
+		return
+	}
+
 	state := "nonvoter"
 	if request.Voter {
 		state = "voter"
 	}
-	record := controllerRecord{NodeID: request.NodeID, RaftAddress: request.RaftAddress, APIAddress: request.APIAddress, State: state,
-		SoftwareVersion: request.SoftwareVersion, ProtocolVersion: 1, StateSchema: controlplane.ControlSchemaVersion,
-		CertificateSHA256: request.CertificateSHA256, UpdatedAt: now}
-	recordRaw, _ := json.Marshal(record)
-	result, err := s.node.Submit(controlplane.Mutation{Version: controlplane.CommandVersion, ID: randomID(), Kind: "AddController", IssuedAt: now,
-		Operations: []controlplane.Operation{{Op: "put", Path: "cluster/controllers/" + request.NodeID + ".json", Data: recordRaw}}}, 10*time.Second)
+	record.State = state
+	record.UpdatedAt = time.Now().Unix()
+	recordRaw, _ = json.Marshal(record)
+	result, err := s.node.Submit(controlplane.Mutation{
+		Version: controlplane.CommandVersion, ID: randomID(), Kind: "ActivateController",
+		IssuedAt: record.UpdatedAt,
+		Operations: []controlplane.Operation{{
+			Op: "put", Path: "cluster/controllers/" + request.NodeID + ".json", Data: recordRaw,
+		}},
+	}, 10*time.Second)
 	if err != nil || !result.OK {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": fmt.Sprintf("membership changed but canonical record failed: %v %+v", err, result)})
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error": fmt.Sprintf("membership changed but activation record failed: %v %+v", err, result),
+			"pending_revision": pending.Revision,
+		})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "revision": result.Revision, "state": state})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "revision": result.Revision, "state": state,
+	})
 }
 
 func (s *server) removeMember(w http.ResponseWriter, r *http.Request) {
