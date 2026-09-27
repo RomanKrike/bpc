@@ -29,6 +29,8 @@ else:
     SOURCE_ROOT = ROOT / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
+import bpc_control_state  # noqa: E402
+
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
     reconcile_transport_roles,
@@ -44,8 +46,6 @@ from bpc_connect.node import (  # noqa: E402
     save_node_config,
 )
 from bpc_connect.state import StateLayout  # noqa: E402
-
-import bpc_control_state  # noqa: E402
 
 DEFAULT_STATE_DIR = Path("/etc/bpc-connect")
 DEFAULT_CONTROL_DIR = StateLayout.from_root(DEFAULT_STATE_DIR).control_dir
