@@ -36,9 +36,17 @@ def service_state(name: str) -> str:
 def capability_runtime_state(state_dir: Path, capability: str) -> str:
     markers = capability_runtime_markers(state_dir, capability)
     if capability == "controller":
-        return service_state("bpc-control.service") if any(p.is_file() for p in markers) else "configured"
+        return (
+            service_state("bpc-control.service")
+            if any(p.is_file() for p in markers)
+            else "configured"
+        )
     if capability == "gateway":
-        return service_state("xray.service") if any(p.is_file() for p in markers) else "configured"
+        return (
+            service_state("xray.service")
+            if any(p.is_file() for p in markers)
+            else "configured"
+        )
     if capability == "relay":
         if not any(p.is_file() for p in markers):
             return "configured"
