@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from bpc_connect.compat.migration import format_report, migrate_canonical_state  # noqa: E402
-from bpc_connect.identity import NodeIdentityError, ensure_node_identity  # noqa: E402
+from bpc_connect.identity import ensure_node_identity  # noqa: E402
 from bpc_connect.state import StateLayout  # noqa: E402
 
 
@@ -22,7 +22,7 @@ def main() -> int:
         report = migrate_canonical_state(args.state_dir)
         state = StateLayout.from_root(args.state_dir)
         identity = ensure_node_identity(state.root) if state.node_config.is_file() else None
-    except (NodeIdentityError, RuntimeError, OSError, ValueError) as exc:
+    except (RuntimeError, OSError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
