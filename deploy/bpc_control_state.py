@@ -141,3 +141,25 @@ def strong_read(control_root: Path) -> dict[str, Any]:
     if not cluster_enabled(control_root):
         return {"commit_index": 0, "revision": 0, "local_fallback": True}
     return _post(control_root, "/v1/barrier", {})
+
+
+def add_controller_member(
+    control_root: Path,
+    record: dict[str, Any],
+    *,
+    voter: bool = True,
+) -> dict[str, Any]:
+    if not cluster_enabled(control_root):
+        raise ControlStateError("distributed control plane is not enabled", 412)
+    return _post(
+        control_root,
+        "/v1/members/add",
+        {
+            "node_id": str(record.get("node_id", "")),
+            "raft_address": str(record.get("raft_address", "")),
+            "api_address": str(record.get("api_address", "")),
+            "voter": bool(voter),
+            "software_version": str(record.get("software_version", "")),
+            "certificate_sha256": str(record.get("certificate_sha256", "")),
+        },
+    )
