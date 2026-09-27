@@ -79,6 +79,16 @@ def write_control_config(root: Path, key_dir: Path) -> None:
             "update_channel": "stable",
         },
     )
+    identity.atomic_json(
+        key_dir.parent / "ownership.json",
+        {
+            "version": 1,
+            "owner": "bpc",
+            "kind": "wireguard-interface",
+            "name": "bpcag0",
+            "config": "/etc/wireguard/bpcag0.conf",
+        },
+    )
 
 
 def test_user_device_http_flow_login_register_refresh_revoke(
