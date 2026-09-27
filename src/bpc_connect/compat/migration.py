@@ -6,9 +6,9 @@ import os
 import shutil
 import subprocess
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Callable, Sequence
 
 from bpc_connect.compat.legacy import legacy_control_dir, legacy_node_dir
 from bpc_connect.ownership import Ownership
@@ -91,9 +91,12 @@ def _known_bpc_wireguard_interfaces(root: Path) -> set[str]:
         try:
             for line in runtime.read_text(encoding="utf-8").splitlines():
                 key, sep, value = line.partition("=")
-                if sep and key in {"AGENT_WG_INTERFACE", "WG_INTERFACE", "WGSHIM_INTERFACE"}:
-                    if value.strip():
-                        result.add(value.strip())
+                if (
+                    sep
+                    and key in {"AGENT_WG_INTERFACE", "WG_INTERFACE", "WGSHIM_INTERFACE"}
+                    and value.strip()
+                ):
+                    result.add(value.strip())
         except OSError:
             continue
     return result
@@ -263,12 +266,11 @@ def migrate_canonical_state(
     )
 
     legacy_control = legacy_control_dir(state.root)
-    if legacy_control.is_dir():
-        # This path is a historical BPC-owned state root. Copy only; never delete
-        # the source in Stage 4.5 so rollback/audit remains possible.
-        source_ownership = Ownership.LEGACY_BPC
-    else:
-        source_ownership = Ownership.UNKNOWN
+    # This path is a historical BPC-owned state root. Copy only; never delete
+    # the source in Stage 4.5 so rollback/audit remains possible.
+    source_ownership = (
+        Ownership.LEGACY_BPC if legacy_control.is_dir() else Ownership.UNKNOWN
+    )
 
     modified: list[str] = []
     migrated: list[str] = []
