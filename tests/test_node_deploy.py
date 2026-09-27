@@ -41,6 +41,10 @@ def test_install_and_update_reconcile_bpc_command() -> None:
     assert '"bpc:bpc.sh"' in INSTALL
     assert '"bpc:bpc.sh"' in UPDATE
     assert '"bpc:bpc.sh"' in MIGRATE
+    assert '"bpc-enable-cluster:bpc-enable-cluster.sh"' in INSTALL
+    assert '"bpc-enable-cluster:bpc-enable-cluster.sh"' in UPDATE
+    assert '"bpc-enable-control-replica:bpc-enable-control-replica.sh"' in INSTALL
+    assert '"bpc-enable-control-replica:bpc-enable-control-replica.sh"' in UPDATE
     assert "BPC_NODE_CONFIG=" in INSTALL
 
 

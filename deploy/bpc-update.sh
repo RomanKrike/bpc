@@ -35,6 +35,8 @@ reconcile_command_links() {
     "bpc-agent:bpc-agent.sh" \
     "bpc-node:bpc-node.sh" \
     "bpc-enable-control:bpc-enable-control.sh" \
+    "bpc-enable-cluster:bpc-enable-cluster.sh" \
+    "bpc-enable-control-replica:bpc-enable-control-replica.sh" \
     "bpc-enable-agent-dataplane:bpc-enable-agent-dataplane.sh" \
     "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
     "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
