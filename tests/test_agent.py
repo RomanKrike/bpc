@@ -54,7 +54,9 @@ def test_prepared_executable_contains_no_identity_secret() -> None:
     assert "openssl rand -hex 32" in SERVER  # HTTPS download capability only.
     assert "Bootstrap download lifetime" in SERVER
     assert "update-signing-public.pem" in SERVER
-    bootstrap_block = SERVER.split("local json", 1)[1].split("local encoded", 1)[0]
+    bootstrap_block = SERVER.split("create_agent() {", 1)[1].split(
+        "publish_update() {", 1
+    )[0]
     assert "wgshim_psk" not in bootstrap_block
     assert "enroll_token" not in bootstrap_block
     assert '"version": 3' in bootstrap_block
@@ -237,7 +239,10 @@ def test_prepared_agent_has_expiring_https_download_link() -> None:
     assert 'Download URL:' in SERVER
     assert '${control_url}/v1/bootstrap/${download_token}/${download_name}' in SERVER
     assert '"version": 3' in SERVER
-    assert '"enroll_token"' not in SERVER.split("local json", 1)[1].split("local encoded", 1)[0]
+    bootstrap_block = SERVER.split("create_agent() {", 1)[1].split(
+        "publish_update() {", 1
+    )[0]
+    assert '"enroll_token"' not in bootstrap_block
     assert 'downloads / f"{token}.exe"' in CONTROL
     assert '"${CONTROL_DIR}/downloads"' in ENABLE_CONTROL
 
@@ -440,7 +445,7 @@ def test_bp_gateway_defaults_to_adaptive_udp_tcp_transport() -> None:
     assert "--udp-flows ${UDP_FLOWS}" in GATEWAY_TEMPLATE
     assert "--tcp-server ${TCP_RELAY}" in GATEWAY_TEMPLATE
     assert "--tcp-flows ${TCP_FLOWS}" in GATEWAY_TEMPLATE
-    assert '"TCP_RELAY"' in NODE
+    assert '"TCP_RELAY"' not in NODE
     assert '"BP_GATEWAY_TRANSPORT": "auto"' in GATEWAY_UPGRADE
     assert "journalctl -u bp-gateway-wgshim.service" in GATEWAY_UPGRADE
 
