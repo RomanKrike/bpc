@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+import bpc_control_state
 from bpc_access import AccessError, effective_routes, sync_access_firewall
 from bpc_controller_enrollment import (
     ControllerEnrollmentError,
@@ -49,6 +50,7 @@ from bpc_identity import (
 )
 from bpc_node_enrollment import (
     EnrollmentError,
+    authorize_node,
     enroll_node,
     join_token_metadata,
     leave_node,
@@ -320,6 +322,9 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/v1/nodes/heartbeat":
             self._node_heartbeat()
+            return
+        if self.path == "/v1/nodes/controller-ready":
+            self._node_controller_ready()
             return
         if self.path == "/v1/nodes/leave":
             self._node_leave()
@@ -1033,6 +1038,50 @@ class ControlHandler(BaseHTTPRequestHandler):
                 payload=body,
             )
         except EnrollmentError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(HTTPStatus.OK, response)
+
+    def _node_controller_ready(self) -> None:
+        credential = self._bearer()
+        if credential is None:
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return
+        body = self._read_body_json()
+        if body is None:
+            return
+        try:
+            _, node = authorize_node(self._root(), credential)
+            node_id = str(node.get("node_id", "")).strip()
+            if str(body.get("node_id", node_id)).strip() != node_id:
+                raise EnrollmentError("Controller Node identity mismatch", 403)
+            roles = node.get("roles", {})
+            if not isinstance(roles, dict) or not bool(roles.get("controller")):
+                raise EnrollmentError("Node does not have controller capability", 403)
+
+            record_path = (
+                self._root().parent
+                / "cluster"
+                / "controllers"
+                / f"{node_id}.json"
+            )
+            record = read_json(record_path)
+            if str(record.get("node_id", "")) != node_id:
+                raise EnrollmentError("Controller membership record mismatch", 409)
+            if str(record.get("state", "")) not in {"pending", "nonvoter", "voter"}:
+                raise EnrollmentError("Controller membership is not pending", 409)
+            response = bpc_control_state.add_controller_member(
+                self._root(),
+                record,
+                voter=True,
+            )
+        except EnrollmentError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except bpc_control_state.ControlStateError as exc:
             self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
             return
         except (OSError, ValueError, json.JSONDecodeError):
