@@ -1,95 +1,166 @@
 # Install and update lifecycle
 
-BPC nodes are installed from versioned GitHub Release bundles rather than directly from a mutable checkout.
+BPC Nodes are installed from versioned GitHub Release bundles rather than from a
+mutable checkout.
 
 ## Filesystem layout
 
+Application code is immutable:
+
 ```text
 /opt/bpc/
-  releases/
-    <version>/
-  current -> /opt/bpc/releases/<active-version>
-
-/etc/bpc-connect/
-  node.yaml
-  install.env
-  ru-node/
-    config.json
-    client.env
-    gateway-transport.yaml
-    awg/
-      client.conf
-      clash-verge.yaml
-    wg/
-      client.conf
-      clash-verge.yaml
-
-/var/backups/bpc/
-  state-<timestamp>-<version>.tar.gz
+├── releases/
+│   └── <version>/
+└── current -> /opt/bpc/releases/<active-version>
 ```
 
-Application releases are immutable directories under `/opt/bpc/releases`. Runtime credentials and generated configuration live outside the release tree under `/etc/bpc-connect`, so an application update does not regenerate transport credentials. `node.yaml` is the versioned unified Node metadata; `ru-node/` remains the compatibility/runtime location for existing transports.
+Canonical state is outside the release tree:
 
-## Fresh RU-node installation
+```text
+/etc/bpc-connect/
+├── node.yaml
+├── identity/
+├── cluster/
+├── control/
+├── runtime/
+├── transports/
+├── compat/
+└── backups/
+```
 
-Use `www.bing.com` as the tested REALITY target for the pinned Xray runtime:
+Existing transport installations may still have state under
+`/etc/bpc-connect/ru-node/`. Stage 4.5 treats that tree as compatibility
+runtime/input; new Controller and domain state is not written there.
+
+Release updates therefore do not regenerate transport credentials.
+
+## Install the runtime
+
+On a clean Debian/Ubuntu server:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh | sudo bash
+```
+
+This installs the current release and command wrappers without assigning a
+historical server type.
+
+### Initialize the first Controller
+
+For the first Node in a cluster:
+
+```bash
+bpc init \
+  --name ru-01 \
+  --roles controller,gateway,relay \
+  --hostname sub.example.com
+```
+
+The hostname is used for trusted Controller HTTPS when an existing certificate
+is not already available.
+
+### Join another Node
+
+Create a one-time token on the Controller, then join the new host:
+
+```bash
+bpc node token create --roles gateway,relay --name ge-02 --expires 15m
+bpc join BPC-<controller-envelope>.<one-time-secret>
+```
+
+## Legacy explicit bootstrap
+
+The historical installer profile remains available only for compatibility with
+existing deployments and recovery procedures:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
   | sudo bash -s -- --role ru-node --reality-server-name www.bing.com
 ```
 
-You may provision AWG and native WireGuard in the same install:
+`BPC_ROLE=ru-node` is not a canonical Node type. Clean installations should
+use `bpc init` or `bpc join`.
+
+## Stage 4.5 canonical migration
+
+Updates run the canonical migration before BPC-owned runtime reconciliation.
+
+You can run it explicitly:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh \
-  | sudo bash -s -- \
-      --role ru-node \
-      --node-name ru-01 \
-      --reality-server-name www.bing.com \
-      --public-host 203.0.113.10 \
-      --port 443 \
-      --with-awg \
-      --awg-port 443 \
-      --with-wg \
-      --wg-port 51820
+bpc state migrate
 ```
 
-Before generating Xray credentials, `bootstrap-ru-node.sh` runs `bpc-check-reality-target.sh`. The preflight verifies DNS resolution and a TLS 1.3 handshake, then rejects Certificate handshake messages above the pinned REALITY parser limit. The known-bad `www.microsoft.com` target is explicitly rejected for Xray 26.3.27 because its Certificate record can exceed 8192 bytes; see [XTLS/Xray-core#6356](https://github.com/XTLS/Xray-core/issues/6356).
-
-The installer performs these steps:
-
-1. installs minimal download/extraction prerequisites;
-2. downloads `bpc-connect-deploy.tar.gz` from the latest GitHub Release;
-3. downloads `SHA256SUMS` and verifies the deployment bundle;
-4. extracts the version into `/opt/bpc/releases/<version>`;
-5. atomically points `/opt/bpc/current` at that release;
-6. provisions the legacy RU gateway install profile on first install, including REALITY target preflight;
-7. creates/reconciles `/etc/bpc-connect/node.yaml` and its capabilities;
-8. reconciles the available BPC commands under `/usr/local/sbin`;
-9. optionally provisions the selected secondary transports.
-
-Installed commands include:
+Before changing BPC state it snapshots current network/runtime inventory under:
 
 ```text
-bpc
-bpc-status
-bpc-update
-bpc-enable-awg
-bpc-enable-wg
+/etc/bpc-connect/backups/pre-4.5-<timestamp>/
 ```
+
+The inventory includes links, all routes, policy rules, redacted WireGuard
+state, iptables, nftables and systemd units.
+
+The migration may copy historical BPC Controller state from:
+
+```text
+/etc/bpc-connect/ru-node/control/
+```
+
+to:
+
+```text
+/etc/bpc-connect/control/
+```
+
+It does not delete the source. The source, backup and staged destination are
+verified before the canonical copy is activated.
+
+If a non-empty canonical Controller tree already differs from the historical
+tree, migration fails instead of overwriting either side.
+
+A successful migration writes ownership/idempotency markers:
+
+```text
+/etc/bpc-connect/control/.bpc-state.json
+/etc/bpc-connect/compat/stage-4.5.json
+```
+
+Subsequent migration runs return the recorded report without making a second
+copy.
+
+## Network ownership safety
+
+Migration does not mutate network objects.
+
+Runtime reconciliation follows the ownership policy:
+
+- `OWNED_BY_BPC`: BPC may reconcile it;
+- `LEGACY_BPC`: BPC may adopt it when historical BPC evidence exists;
+- `EXTERNAL`: BPC must not mutate it;
+- `UNKNOWN`: BPC fails closed.
+
+For the BPC Agent WireGuard interface, a matching interface name alone is not
+ownership evidence. Stage 4.5 writes explicit ownership metadata and requires
+it before Controller peer or Access firewall mutation.
+
+This protects unrelated interfaces such as a pre-existing `wg0`, their routes
+and firewall rules.
 
 ## Status
 
+Use canonical Node status:
+
 ```bash
-sudo bpc node status
-sudo bpc node info
-sudo bpc-status
+bpc status
+bpc node status
+bpc node info
 ```
 
-`bpc node status` reports the unified Node identity, enabled capabilities and matching runtime-service state. `bpc node info` prints the versioned Node metadata without exposing transport credentials. The legacy detailed `bpc-status` command remains supported.
+The legacy detailed `bpc-status` command remains available for transport
+diagnostics.
 
-The status command intentionally does not print UUIDs, private keys, PSKs, or other client credentials. Optional transports report `disabled`, `active` or a failed health state without exposing secrets.
+Status commands do not print private keys, PSKs, passwords or secret
+subscription tokens.
 
 ## Update
 
@@ -99,28 +170,60 @@ sudo bpc-update
 
 The updater:
 
-1. repairs command symlinks for the active release before checking the remote version;
+1. repairs command links for the currently active release;
 2. downloads and verifies the latest release bundle;
-3. exits without changing the release if the active version is already current;
-4. creates a backup of `/etc/bpc-connect` when switching versions;
-5. installs the new release into a new immutable release directory;
-6. switches `/opt/bpc/current` to the new version and reconciles command links;
-7. validates all currently enabled managed transports;
-8. restarts Xray and runs the health check again.
+3. exits without changing state when already current;
+4. backs up `/etc/bpc-connect` before switching versions;
+5. installs the new immutable release;
+6. switches `/opt/bpc/current`;
+7. runs Stage 4.5 canonical migration before BPC runtime reconciliation;
+8. reconciles only BPC-owned/legacy-BPC runtime;
+9. validates enabled transports and health checks.
 
-During migration, BPC creates `node.yaml` if it is missing and derives capabilities from the existing RU-node markers. Reconciliation is additive: an explicitly configured or future capability is not removed. Existing client/transport credentials are not regenerated.
+If release validation fails, the existing updater restores the previous release
+pointer and BPC state backup and attempts to restore the prior BPC runtime.
 
-Optional transports are not enabled implicitly by an update. Existing AWG/WireGuard state remains under `/etc/bpc-connect` and is health-checked only when its `enabled` marker exists.
+Stage 4.5 does not intentionally remove external interfaces, routes, rules,
+WireGuard peers or firewall state during update.
 
-If either health check fails, the updater restores the previous release pointer and BPC state backup, repairs command links for the restored release, then attempts to restore the prior runtime.
+## Legacy BP Gateway workflow
+
+The pre-canonical commands that created a BP Gateway as a Device record are no
+longer write-capable:
+
+```text
+bpc-node gateway create
+bpc-node gateway grant
+bpc-node gateway ungrant
+bpc-node gateway remove
+```
+
+They fail with a migration message. Existing records can be inspected with:
+
+```bash
+bpc-node gateway list
+```
+
+Future routed-site provisioning uses `Node(site_router)` and Node-owned
+`advertised_routes`; its new data plane is outside Stage 4.5.
 
 ## Release pipeline
 
-`CI` runs on pull requests and `main`. It validates Python 3.11-3.13, Ruff, pytest, ShellCheck, Mihomo config generation, Python package build, and deployment bundle creation.
+CI on pull requests and `main` validates:
 
-The `Release` workflow runs only after a successful `CI` run on `main`. The stable version from `pyproject.toml` becomes the GitHub Release tag (`v<version>`). If that release already exists, the workflow does not republish it.
+- Python 3.11, 3.12 and 3.13;
+- Ruff;
+- pytest;
+- Go tests, vet and cross-builds;
+- ShellCheck;
+- config rendering;
+- Python package build;
+- deployment bundle generation.
 
-A release contains at least:
+The Release workflow runs after successful CI on `main`. The version from
+`pyproject.toml` becomes `v<version>`.
+
+Release assets include:
 
 ```text
 bpc-connect-<version>-deploy.tar.gz
@@ -129,8 +232,7 @@ SHA256SUMS
 Python wheel / source distribution
 ```
 
-The stable asset name `bpc-connect-deploy.tar.gz` allows installed nodes to resolve the latest release without parsing the GitHub API.
-
 ## Versioning
 
-BPC uses semantic versions. To publish a new release, change the version in `pyproject.toml` in a tested pull request and merge it to `main`. A successful main-branch CI run then publishes that version automatically.
+BPC uses semantic versions. A release version change belongs in a tested pull
+request. After merge, successful main-branch CI publishes the matching release.
