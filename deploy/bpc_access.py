@@ -21,6 +21,8 @@ sys.path.insert(0, str(SOURCE_ROOT))
 
 from bpc_connect.compat.legacy import compat_route_grants, is_compat_site_router  # noqa: E402
 
+import bpc_control_state  # noqa: E402
+
 DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 CHAIN_NAME = "BPC-ACCESS"
 
@@ -143,6 +145,11 @@ def set_access(
     if not canonical:
         raise AccessError("at least one CIDR is required")
 
+    if bpc_control_state.cluster_enabled(root):
+        try:
+            bpc_control_state.strong_read(root)
+        except bpc_control_state.ControlStateError as exc:
+            raise AccessError(str(exc)) from exc
     record = load_access(root, subject_type, subject_id)
     allow = list(record["allow"])
     deny = list(record["deny"])
@@ -159,7 +166,27 @@ def set_access(
     record["allow"] = sorted(set(allow))
     record["deny"] = sorted(set(deny))
     record["updated_at"] = int(time.time()) if now is None else int(now)
-    atomic_json(_record_path(root, subject_type, subject_id), record)
+    record_path = _record_path(root, subject_type, subject_id)
+    if bpc_control_state.cluster_enabled(root):
+        try:
+            bpc_control_state.mutation(
+                root,
+                "SetAccess",
+                [
+                    {
+                        "op": "put",
+                        "path": record_path,
+                        "data": json.dumps(
+                            record, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8"),
+                    }
+                ],
+                issued_at=record["updated_at"],
+            )
+        except bpc_control_state.ControlStateError as exc:
+            raise AccessError(str(exc)) from exc
+    else:
+        atomic_json(record_path, record)
     return record
 
 
@@ -187,6 +214,11 @@ def _subtract_denies(
 
 
 def effective_networks(root: Path, device: dict[str, Any]) -> list[ipaddress.IPv4Network]:
+    if bpc_control_state.cluster_enabled(root):
+        try:
+            bpc_control_state.strong_read(root)
+        except bpc_control_state.ControlStateError as exc:
+            raise AccessError(str(exc)) from exc
     if not bool(device.get("enabled", True)):
         return []
     if bool(device.get("revoked", False)) or device.get("revoked_at") not in (None, "", 0):
