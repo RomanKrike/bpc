@@ -322,11 +322,7 @@ def create_join_token(
     normalized_roles = normalize_roles(roles)
     normalized_name = normalize_node_name(name) if name else None
     secret = secrets.token_hex(32)
-    controllers = (
-        controller_public_urls(control_dir.parent)
-        if bpc_control_state.cluster_enabled(control_dir)
-        else []
-    )
+    controllers = controller_public_urls(control_dir.parent)
     token = make_join_token(controller_url, secret, controllers)
     index = token_index(secret)
     metadata = {

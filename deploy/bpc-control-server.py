@@ -1187,7 +1187,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                 config["controllers"] = controller_public_urls(self._root().parent)
 
             roles = response.get("roles", {})
-            if isinstance(roles, dict) and bool(roles.get("gateway")):
+            if (
+                isinstance(roles, dict)
+                and bool(roles.get("gateway"))
+                and bpc_control_state.cluster_enabled(self._root())
+            ):
                 barrier = bpc_control_state.strong_read(self._root())
                 snapshot, verification_key = build_security_snapshot(
                     self._root(),
