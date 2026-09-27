@@ -267,9 +267,11 @@ def sync_wireguard_peers(state_dir: Path) -> None:
     # records the control plane actually owns.
     for device in records:
         public_key = str(device["wireguard_public_key"]).strip()
-        if bool(device.get("revoked", False)) or not bool(device.get("enabled", True)):
-            if public_key in current_peers:
-                run_wg("set", interface, "peer", public_key, "remove")
+        if (
+            bool(device.get("revoked", False))
+            or not bool(device.get("enabled", True))
+        ) and public_key in current_peers:
+            run_wg("set", interface, "peer", public_key, "remove")
 
     for device in devices:
         public_key = str(device["wireguard_public_key"]).strip()
