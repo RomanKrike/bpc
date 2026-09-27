@@ -15,7 +15,7 @@ class StateLayout:
     root: Path
 
     @classmethod
-    def from_root(cls, root: str | Path) -> "StateLayout":
+    def from_root(cls, root: str | Path) -> StateLayout:
         return cls(Path(root))
 
     @property
