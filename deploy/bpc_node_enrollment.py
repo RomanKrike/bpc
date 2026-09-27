@@ -30,6 +30,12 @@ else:
 sys.path.insert(0, str(SOURCE_ROOT))
 
 import bpc_control_state  # noqa: E402
+from bpc_controller_enrollment import (  # noqa: E402
+    ControllerEnrollmentError,
+    activate_controller_marker,
+    ensure_controller_csr,
+    install_controller_enrollment,
+)
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
@@ -978,6 +984,15 @@ def cmd_join(args: argparse.Namespace) -> int:
 
     controller_url, _ = parse_join_token(args.token)
     public_key = generate_node_identity(args.state_dir)
+    try:
+        controller_csr = ensure_controller_csr(args.state_dir)
+    except ControllerEnrollmentError as exc:
+        raise EnrollmentError(str(exc)) from exc
+    software_version = (
+        (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        if (ROOT / "VERSION").is_file()
+        else "source"
+    )
     response = request_json(
         controller_url,
         "/v1/nodes/join",
@@ -985,6 +1000,9 @@ def cmd_join(args: argparse.Namespace) -> int:
             "token": args.token,
             "public_key": public_key,
             "name": socket.gethostname()[:64] or "bpc-node",
+            "version": software_version,
+            "controller_csr": controller_csr,
+            "controller_advertise_host": args.controller_advertise_host or "",
         },
     )
     roles = response.get("roles", {})
@@ -1016,6 +1034,51 @@ def cmd_join(args: argparse.Namespace) -> int:
     role_config = config.get("role_config", {})
     if not isinstance(role_config, dict):
         role_config = {}
+
+    if bool(roles.get("controller")):
+        controller_payload = response.get("controller")
+        if not isinstance(controller_payload, dict):
+            raise EnrollmentError(
+                "Controller enrollment material is missing from join response"
+            )
+        try:
+            install_controller_enrollment(args.state_dir, controller_payload)
+        except ControllerEnrollmentError as exc:
+            raise EnrollmentError(str(exc)) from exc
+
+        advertise_host = str(controller_payload.get("advertise_host", "")).strip()
+        cluster_helper = ROOT / "deploy" / "bpc-enable-cluster.sh"
+        completed = subprocess.run(
+            [
+                str(cluster_helper),
+                "--advertise-host",
+                advertise_host,
+                "--defer-marker",
+            ],
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise EnrollmentError(
+                f"distributed Controller bootstrap failed ({completed.returncode})"
+            )
+
+        request_json(
+            controller_url,
+            "/v1/nodes/controller-ready",
+            {"node_id": enrollment["node_id"]},
+            credential=str(enrollment["credential"]),
+            timeout=40,
+        )
+        try:
+            activate_controller_marker(
+                args.state_dir,
+                node_id=str(enrollment["node_id"]),
+                payload=controller_payload,
+                software_version=software_version,
+            )
+        except ControllerEnrollmentError as exc:
+            raise EnrollmentError(str(exc)) from exc
+
     results = reconcile_roles(args.state_dir, roles, role_config)
     install_runtime_service(args.state_dir)
     try:
@@ -1158,6 +1221,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     join = sub.add_parser("join")
     join.add_argument("token")
+    join.add_argument("--controller-advertise-host")
 
     sub.add_parser("status")
     sub.add_parser("runtime-install")
