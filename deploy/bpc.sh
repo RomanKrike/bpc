@@ -7,6 +7,7 @@ ENROLL="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
 IDENTITY="${BPC_ROOT}/current/deploy/bpc_identity.py"
 ACCESS="${BPC_ROOT}/current/deploy/bpc_access.py"
 CLUSTER="${BPC_ROOT}/current/deploy/bpc_cluster.py"
+CLUSTER_OPS="${BPC_ROOT}/current/deploy/bpc_cluster_ops.py"
 STATE_MIGRATE="${BPC_ROOT}/current/deploy/bpc-state-migrate.py"
 CONTROL_DIR="${BPC_STATE_DIR}/control"
 
@@ -21,6 +22,11 @@ Usage:
   bpc node status
   bpc node token create --roles ROLE[,ROLE...] [--name NAME] [--expires 15m]
   bpc node list
+  bpc cluster status
+  bpc cluster members
+  bpc cluster remove NODE [--force]
+  bpc cluster backup [--output FILE]
+  bpc cluster restore BACKUP --confirm CLUSTER_ID [--force]
   bpc user add USER [--password-stdin]
   bpc user disable USER
   bpc device list
@@ -94,10 +100,24 @@ case "${scope}" in
         shift
         exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" list "$@"
         ;;
+      status)
+        shift
+        "${BPC_ROOT}/current/deploy/bpc-node.sh" status
+        if [[ -f "${BPC_STATE_DIR}/cluster/controller.json" ]]; then
+          require_file "${CLUSTER_OPS}" "BPC cluster operations helper"
+          echo
+          exec python3 "${CLUSTER_OPS}" --state-dir "${BPC_STATE_DIR}" status
+        fi
+        ;;
       *)
         exec "${BPC_ROOT}/current/deploy/bpc-node.sh" "$@"
         ;;
     esac
+    ;;
+  cluster)
+    require_file "${CLUSTER_OPS}" "BPC cluster operations helper"
+    shift
+    exec python3 "${CLUSTER_OPS}" --state-dir "${BPC_STATE_DIR}" "$@"
     ;;
   user)
     shift

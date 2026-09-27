@@ -29,6 +29,8 @@ else:
     SOURCE_ROOT = MODULE_DIR.parent / "src"
 sys.path.insert(0, str(SOURCE_ROOT))
 
+import bpc_control_state  # noqa: E402
+
 from bpc_connect.compat.device import remove_compat_static_credential  # noqa: E402
 
 DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
@@ -56,13 +58,68 @@ class IdentityError(RuntimeError):
         self.status = status
 
 
+def _control_root_for_path(path: Path) -> Path | None:
+    for candidate in (path, *path.parents):
+        if candidate.name == "control":
+            return candidate
+    return None
+
+
+def _raise_control_state(exc: bpc_control_state.ControlStateError) -> None:
+    raise IdentityError(str(exc), exc.status) from exc
+
+
 def atomic_json(path: Path, value: dict[str, Any], mode: int = 0o600) -> None:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    control_root = _control_root_for_path(path)
+    if (
+        control_root is not None
+        and bpc_control_state.cluster_enabled(control_root)
+        and bpc_control_state.is_replicated_path(control_root, path)
+    ):
+        try:
+            bpc_control_state.mutation(
+                control_root,
+                "PutCanonicalRecord",
+                [{"op": "put", "path": path, "data": payload.encode("utf-8")}],
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+        return
+
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":"))
     tmp.write_text(payload, encoding="utf-8")
     os.chmod(tmp, mode)
     os.replace(tmp, path)
+
+
+def delete_canonical(path: Path, *, kind: str = "DeleteCanonicalRecord") -> None:
+    control_root = _control_root_for_path(path)
+    if (
+        control_root is not None
+        and bpc_control_state.cluster_enabled(control_root)
+        and bpc_control_state.is_replicated_path(control_root, path)
+    ):
+        try:
+            bpc_control_state.mutation(
+                control_root,
+                kind,
+                [{"op": "delete", "path": path}],
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+        return
+    path.unlink(missing_ok=True)
+
+
+def strong_read(root: Path) -> None:
+    if not bpc_control_state.cluster_enabled(root):
+        return
+    try:
+        bpc_control_state.strong_read(root)
+    except bpc_control_state.ControlStateError as exc:
+        _raise_control_state(exc)
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -128,6 +185,30 @@ def _refresh(root: Path) -> Path:
     return root / "identity" / "refresh"
 
 
+def _revocations(root: Path) -> Path:
+    return root / "revocations"
+
+
+def write_revocation(
+    root: Path,
+    kind: str,
+    subject_id: str,
+    timestamp: int,
+    reason: str,
+) -> None:
+    value = {
+        "version": 1,
+        "kind": kind,
+        "subject_id": subject_id,
+        "revoked_at": int(timestamp),
+        "reason": reason,
+    }
+    atomic_json(
+        _revocations(root) / f"{kind}-{subject_id}.json",
+        value,
+    )
+
+
 def ensure_identity_dirs(root: Path) -> None:
     paths = (_users(root), _usernames(root), _access(root), _refresh(root), root / "devices")
     for path in paths:
@@ -138,6 +219,7 @@ def ensure_identity_dirs(root: Path) -> None:
 
 def create_user(root: Path, username: str, password: str, now: int | None = None) -> dict[str, Any]:
     ensure_identity_dirs(root)
+    strong_read(root)
     normalized = normalize_username(username)
     if not 8 <= len(password) <= 1024:
         raise IdentityError("password must contain between 8 and 1024 characters")
@@ -154,8 +236,39 @@ def create_user(root: Path, username: str, password: str, now: int | None = None
         "enabled": True,
         "created_at": timestamp,
     }
-    atomic_json(_users(root) / f"{user_id}.json", user)
-    atomic_json(index_path, {"user_id": user_id})
+    user_path = _users(root) / f"{user_id}.json"
+    if bpc_control_state.cluster_enabled(root):
+        try:
+            bpc_control_state.mutation(
+                root,
+                "CreateUser",
+                [
+                    {
+                        "op": "put",
+                        "path": user_path,
+                        "data": json.dumps(
+                            user, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                    {
+                        "op": "put",
+                        "path": index_path,
+                        "data": json.dumps(
+                            {"user_id": user_id},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                ],
+                issued_at=timestamp,
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+    else:
+        atomic_json(user_path, user)
+        atomic_json(index_path, {"user_id": user_id})
     return user
 
 
@@ -186,6 +299,7 @@ def load_user_by_username(root: Path, username: str) -> dict[str, Any] | None:
 
 
 def authenticate_local_user(root: Path, username: str, password: str) -> dict[str, Any]:
+    strong_read(root)
     user = load_user_by_username(root, username)
     encoded = str(user.get("password_hash", "")) if user else DUMMY_PASSWORD_HASH
     ok = False
@@ -298,6 +412,7 @@ def authorize_access_credential(
     required_scope: str | None = None,
     now: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any]]:
+    strong_read(root)
     credential = _validate_opaque_token(token, "access credential")
     path = _access(root) / f"{credential_index(credential)}.json"
     if not path.is_file():
@@ -308,7 +423,7 @@ def authorize_access_credential(
         raise IdentityError("invalid access credential", 401) from exc
     timestamp = int(time.time()) if now is None else int(now)
     if int(record.get("expires_at", 0)) <= timestamp:
-        path.unlink(missing_ok=True)
+        delete_canonical(path, kind="ExpireAccessCredential")
         raise IdentityError("access credential expired", 401)
     if required_scope and str(record.get("scope", "")) != required_scope:
         raise IdentityError("access credential scope is not permitted", 403)
@@ -419,12 +534,16 @@ def refresh_device_session(
     proof: str,
     now: int | None = None,
 ) -> dict[str, Any]:
+    strong_read(root)
     credential = _validate_opaque_token(refresh_token, "refresh credential")
     path = _refresh(root) / f"{credential_index(credential)}.json"
     if not path.is_file():
         raise IdentityError("invalid refresh credential", 401)
     try:
-        record = read_json(path)
+        original_raw = path.read_bytes()
+        record = json.loads(original_raw)
+        if not isinstance(record, dict):
+            raise ValueError("refresh record is not an object")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise IdentityError("invalid refresh credential", 401) from exc
     timestamp = int(time.time()) if now is None else int(now)
@@ -449,30 +568,88 @@ def refresh_device_session(
         refresh_message(credential),
     )
 
-    record["revoked_at"] = timestamp
-    record["rotated_at"] = timestamp
-    atomic_json(path, record)
+    device_id = str(device.get("id", device.get("device_id", "")))
+    active_family = family_id or uuid.uuid4().hex
+    access_token = secrets.token_hex(32)
+    new_refresh = secrets.token_hex(32)
+    access_expires_at = timestamp + ACCESS_TTL
+    refresh_expires_at = timestamp + REFRESH_TTL
+    old_record = dict(record)
+    old_record["revoked_at"] = timestamp
+    old_record["rotated_at"] = timestamp
+    access_record = {
+        "version": 1,
+        "user_id": str(user["id"]),
+        "device_id": device_id,
+        "scope": "device",
+        "created_at": timestamp,
+        "expires_at": access_expires_at,
+    }
+    refresh_record = {
+        "version": 1,
+        "user_id": str(user["id"]),
+        "device_id": device_id,
+        "family_id": active_family,
+        "created_at": timestamp,
+        "expires_at": refresh_expires_at,
+        "revoked_at": None,
+    }
 
-    access_token, access_expires_at = issue_access_credential(
-        root,
-        user_id=str(user["id"]),
-        device_id=str(device["id"] if "id" in device else device["device_id"]),
-        scope="device",
-        now=timestamp,
-    )
-    new_refresh, refresh_expires_at = issue_refresh_credential(
-        root,
-        user_id=str(user["id"]),
-        device_id=str(device["id"] if "id" in device else device["device_id"]),
-        family_id=family_id or uuid.uuid4().hex,
-        now=timestamp,
-    )
+    if bpc_control_state.cluster_enabled(root):
+        try:
+            bpc_control_state.mutation(
+                root,
+                "RotateRefreshCredential",
+                [
+                    {
+                        "op": "put",
+                        "path": path,
+                        "data": json.dumps(
+                            old_record, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8"),
+                        "expected_sha256": hashlib.sha256(original_raw).hexdigest(),
+                    },
+                    {
+                        "op": "put",
+                        "path": _access(root)
+                        / f"{credential_index(access_token)}.json",
+                        "data": json.dumps(
+                            access_record, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                    {
+                        "op": "put",
+                        "path": _refresh(root)
+                        / f"{credential_index(new_refresh)}.json",
+                        "data": json.dumps(
+                            refresh_record, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8"),
+                        "if_absent": True,
+                    },
+                ],
+                issued_at=timestamp,
+            )
+        except bpc_control_state.ControlStateError as exc:
+            if exc.status == 409:
+                try:
+                    strong_read(root)
+                    _revoke_refresh_family(root, active_family, timestamp)
+                except IdentityError:
+                    pass
+                raise IdentityError("refresh credential replay detected", 401) from exc
+            _raise_control_state(exc)
+    else:
+        atomic_json(path, old_record)
+        _write_credential(_access(root), access_token, access_record)
+        _write_credential(_refresh(root), new_refresh, refresh_record)
+
     return {
         "access_token": access_token,
         "access_expires_at": access_expires_at,
         "refresh_token": new_refresh,
         "refresh_expires_at": refresh_expires_at,
-        "device_id": str(device.get("id", device.get("device_id", ""))),
+        "device_id": device_id,
     }
 
 
@@ -484,7 +661,7 @@ def revoke_device_credentials(root: Path, device_id: str, now: int | None = None
         except (OSError, ValueError, json.JSONDecodeError):
             continue
         if str(record.get("device_id") or "") == device_id:
-            path.unlink(missing_ok=True)
+            delete_canonical(path)
     for path in _refresh(root).glob("*.json"):
         try:
             record = read_json(path)
@@ -505,7 +682,7 @@ def revoke_user_access(root: Path, user_id: str, now: int | None = None) -> None
         except (OSError, ValueError, json.JSONDecodeError):
             continue
         if str(record.get("user_id", "")) == user_id:
-            path.unlink(missing_ok=True)
+            delete_canonical(path)
     for path in _refresh(root).glob("*.json"):
         try:
             record = read_json(path)
@@ -532,7 +709,7 @@ def logout_session(
         now=timestamp,
     )
     access_path = _access(root) / f"{credential_index(access_token)}.json"
-    access_path.unlink(missing_ok=True)
+    delete_canonical(access_path, kind="LogoutAccessCredential")
 
     if refresh_token:
         credential = _validate_opaque_token(refresh_token, "refresh credential")
@@ -633,6 +810,7 @@ def deactivate_device(
     revoked: bool,
     now: int | None = None,
 ) -> dict[str, Any]:
+    strong_read(root)
     timestamp = int(time.time()) if now is None else int(now)
     device = load_device(root, device_id)
     canonical_id = str(device.get("id", device.get("device_id", device_id)))
@@ -641,6 +819,14 @@ def deactivate_device(
         device["revoked"] = True
         device["revoked_at"] = timestamp
     atomic_json(_device_path(root, canonical_id), device)
+    if revoked:
+        write_revocation(
+            root,
+            "device",
+            canonical_id,
+            timestamp,
+            "device_revoked",
+        )
     revoke_device_credentials(root, canonical_id, timestamp)
 
     remove_compat_static_credential(root, device)
@@ -649,12 +835,20 @@ def deactivate_device(
 
 
 def disable_user(root: Path, username: str, now: int | None = None) -> dict[str, Any]:
+    strong_read(root)
     user = load_user_by_username(root, username)
     if user is None:
         raise IdentityError("user not found", 404)
     timestamp = int(time.time()) if now is None else int(now)
     user["enabled"] = False
     atomic_json(_users(root) / f"{user['id']}.json", user)
+    write_revocation(
+        root,
+        "user",
+        str(user["id"]),
+        timestamp,
+        "user_disabled",
+    )
     revoke_user_access(root, str(user["id"]), timestamp)
     for device in list_devices(root, str(user["id"])):
         if device_is_active(device):

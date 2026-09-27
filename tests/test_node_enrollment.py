@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import sys
 from pathlib import Path
@@ -277,3 +278,119 @@ def test_staged_node_runtime_is_self_contained(tmp_path: Path) -> None:
     )
     assert completed.returncode == 0, completed.stderr
     assert "BPC Node enrollment" in completed.stdout
+
+
+def test_cluster_join_token_contains_multiple_controller_endpoints(tmp_path: Path) -> None:
+    state = tmp_path
+    control = state / "control"
+    (state / "cluster" / "controllers").mkdir(parents=True)
+    for index, host in enumerate(("a.example", "b.example"), start=1):
+        (state / "cluster" / "controllers" / f"{index:032x}.json").write_text(
+            json.dumps(
+                {
+                    "node_id": f"{index:032x}",
+                    "state": "voter",
+                    "public_url": f"https://{host}:8444",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    token = enrollment.create_join_token(
+        control,
+        controller_url="https://a.example:8444",
+        roles=["relay"],
+        now=5_000,
+    )
+    controllers, _ = enrollment.parse_join_token_endpoints(token)
+    assert controllers == [
+        "https://a.example:8444",
+        "https://b.example:8444",
+    ]
+
+
+def test_site_router_heartbeat_owns_canonical_routes(tmp_path: Path) -> None:
+    control = tmp_path / "control"
+    token = enrollment.create_join_token(
+        control,
+        controller_url="https://controller.example:8444",
+        roles=["site_router"],
+        now=6_000,
+    )
+    joined = enrollment.enroll_node(
+        control,
+        token=token,
+        public_key=base64.b64encode(os.urandom(44)).decode("ascii"),
+        presented_name="site-01",
+        now=6_001,
+    )
+
+    response = enrollment.node_heartbeat(
+        control,
+        credential=str(joined["credential"]),
+        payload={
+            "status": "online",
+            "version": "0.18.0",
+            "protocol_version": 1,
+            "state_schema_version": 1,
+            "advertised_routes": ["192.168.88.0/24"],
+        },
+        now=6_010,
+    )
+    assert response["compatibility"] == "compatible"
+    routes = list((control / "routes").glob("*.json"))
+    assert len(routes) == 1
+    record = json.loads(routes[0].read_text(encoding="utf-8"))
+    assert record["cidr"] == "192.168.88.0/24"
+    assert record["node_id"] == joined["node_id"]
+
+    enrollment.node_heartbeat(
+        control,
+        credential=str(joined["credential"]),
+        payload={
+            "status": "online",
+            "version": "0.18.0",
+            "protocol_version": 1,
+            "state_schema_version": 1,
+            "advertised_routes": ["10.10.0.0/16"],
+        },
+        now=6_020,
+    )
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in (control / "routes").glob("*.json")
+    ]
+    assert [item["cidr"] for item in records] == ["10.10.0.0/16"]
+
+
+def test_node_heartbeat_marks_incompatible_protocol(tmp_path: Path) -> None:
+    control = tmp_path / "control"
+    token = enrollment.create_join_token(
+        control,
+        controller_url="https://controller.example:8444",
+        roles=["relay"],
+        now=7_000,
+    )
+    joined = enrollment.enroll_node(
+        control,
+        token=token,
+        public_key=base64.b64encode(os.urandom(44)).decode("ascii"),
+        presented_name="relay-01",
+        now=7_001,
+    )
+    response = enrollment.node_heartbeat(
+        control,
+        credential=str(joined["credential"]),
+        payload={
+            "status": "online",
+            "version": "99.0.0",
+            "protocol_version": 99,
+            "state_schema_version": 99,
+        },
+        now=7_010,
+    )
+    assert response["compatibility"] == "incompatible"
+    node = enrollment.list_nodes(control, now=7_011)[0]
+    assert node["protocol_version"] == 99
+    assert node["state_schema_version"] == 99
+    assert node["compatibility"] == "incompatible"

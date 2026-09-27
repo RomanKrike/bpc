@@ -64,6 +64,31 @@ def existing_controller_ready(state_dir: Path) -> bool:
     ).is_file()
 
 
+def _env_value(path: Path, key: str) -> str:
+    if not path.is_file():
+        return ""
+    prefix = f"{key}="
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix) :].strip()
+    return ""
+
+
+def controller_advertise_host(state: StateLayout, explicit: str | None) -> str:
+    if explicit and explicit.strip():
+        return explicit.strip()
+    for path, key in (
+        (state.control_dir / "runtime.env", "CONTROL_HOST"),
+        (legacy_node_dir(state.root) / "subscription" / "runtime.env", "SUBSCRIPTION_HOST"),
+    ):
+        value = _env_value(path, key)
+        if value:
+            return value
+    raise ClusterInitError(
+        "Controller advertise hostname is unknown; pass --hostname <DNS-name>"
+    )
+
+
 def ensure_cluster_record(state: StateLayout, node_id: str, now: int) -> dict[str, Any]:
     path = state.cluster_dir / "cluster.json"
     if path.is_file():
@@ -82,6 +107,8 @@ def ensure_cluster_record(state: StateLayout, node_id: str, now: int) -> dict[st
         "cluster_id": uuid.uuid4().hex,
         "created_at": now,
         "controller_node_id": node_id,
+        "protocol_version": 1,
+        "state_schema_version": 1,
     }
     atomic_json(path, value)
     return value
@@ -141,21 +168,38 @@ def cmd_init(args: argparse.Namespace) -> int:
     except RuntimeCompatibilityError as exc:
         raise ClusterInitError(str(exc)) from exc
 
+    if not existing_subscription_ready(state.root) and not existing_controller_ready(state.root):
+        command = [
+            str(ROOT / "deploy" / "bpc-enable-subscription.sh"),
+            "--hostname",
+            args.hostname,
+        ]
+        run_checked(command)
+
+    advertise_host = controller_advertise_host(state, args.hostname)
+    run_checked(
+        [
+            str(ROOT / "deploy" / "bpc-enable-cluster.sh"),
+            "--advertise-host",
+            advertise_host,
+            "--bootstrap",
+        ]
+    )
+    runtime["distributed_controller"] = subprocess.run(
+        ["systemctl", "is-active", "bpc-controld.service"],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() or "inactive"
+
     if not existing_controller_ready(state.root):
-        if not existing_subscription_ready(state.root):
-            command = [
-                str(ROOT / "deploy" / "bpc-enable-subscription.sh"),
-                "--hostname",
-                args.hostname,
-            ]
-            run_checked(command)
         run_checked([str(ROOT / "deploy" / "bpc-enable-control.sh")])
     elif not (state.control_dir / "enabled").is_file():
         # Legacy Controller state was copied to canonical state by migration.
         run_checked([str(ROOT / "deploy" / "bpc-enable-control.sh")])
     else:
         subprocess.run(
-            ["systemctl", "start", "bpc-control.service"],
+            ["systemctl", "restart", "bpc-control.service"],
             check=False,
             capture_output=True,
         )

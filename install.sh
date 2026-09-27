@@ -246,6 +246,7 @@ for spec in \
   "bpc-agent:bpc-agent.sh" \
   "bpc-node:bpc-node.sh" \
     "bpc-enable-control:bpc-enable-control.sh" \
+    "bpc-enable-cluster:bpc-enable-cluster.sh" \
     "bpc-enable-agent-dataplane:bpc-enable-agent-dataplane.sh" \
   "bpc-enable-mihomo-transports:bpc-enable-mihomo-transports.sh" \
   "bpc-enable-openvpn:bpc-enable-openvpn.sh" \
@@ -350,6 +351,7 @@ Commands:
   bpc-enable-wgshim
   bpc-agent
   bpc-enable-control
+  bpc-enable-cluster
   bpc-enable-mihomo-transports
   bpc-enable-openvpn
   bpc-enable-ikev2

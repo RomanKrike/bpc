@@ -102,14 +102,33 @@ create_agent() {
   update_public="$(base64 -w0 < "${CONTROL_DIR}/update-signing-public.pem")"
   control_url="https://${CONTROL_HOST}:${CONTROL_PORT}"
 
-  json="$(python3 - "${name}" "${control_url}" "${update_public}" <<'PY'
+  json="$(python3 - "${name}" "${control_url}" "${update_public}" "${BPC_STATE_DIR}/cluster/controllers" <<'PY'
 import json
 import sys
+from pathlib import Path
+
+primary = sys.argv[2].rstrip("/")
+urls = [primary]
+seen = {primary}
+members = Path(sys.argv[4])
+if members.is_dir():
+    for path in sorted(members.glob("*.json")):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(record, dict) or record.get("state") == "revoked":
+            continue
+        value = str(record.get("public_url", "")).strip().rstrip("/")
+        if value.startswith("https://") and value not in seen:
+            seen.add(value)
+            urls.append(value)
 
 print(json.dumps({
     "version": 3,
     "device": sys.argv[1],
-    "control_url": sys.argv[2],
+    "control_url": primary,
+    "control_urls": urls,
     "update_public_key": sys.argv[3],
 }, sort_keys=True, separators=(",", ":")))
 PY
