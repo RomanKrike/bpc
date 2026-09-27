@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "deploy"))
 
@@ -153,6 +155,42 @@ def test_sync_access_firewall_enforces_routes_on_node(
         "-j",
         access.CHAIN_NAME,
     ] in commands
+
+
+def test_existing_access_chain_without_bpc_marker_is_not_flushed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    key_dir = tmp_path / "agent" / "wgshim-keys"
+    access.atomic_json(
+        tmp_path / "config.json",
+        {"wireguard_interface": "bpcag0", "wgshim_key_dir": str(key_dir)},
+    )
+    access.atomic_json(
+        key_dir.parent / "ownership.json",
+        {
+            "owner": "bpc",
+            "kind": "wireguard-interface",
+            "name": "bpcag0",
+            "config": "/etc/wireguard/bpcag0.conf",
+        },
+    )
+
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], *, check: bool = True):
+        del check
+        commands.append(command)
+        if command[:3] == ["iptables", "-nL", access.CHAIN_NAME]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(access, "_run", fake_run)
+
+    with pytest.raises(access.AccessError, match="ownership is not proven for chain"):
+        access.sync_access_firewall(tmp_path)
+
+    assert ["iptables", "-F", access.CHAIN_NAME] not in commands
 
 
 def test_grant_replaces_exact_deny_without_removing_broader_deny(tmp_path: Path) -> None:
