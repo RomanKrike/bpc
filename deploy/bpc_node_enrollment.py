@@ -31,8 +31,10 @@ sys.path.insert(0, str(SOURCE_ROOT))
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
-    default_role_config as compatibility_role_config,
     reconcile_transport_roles,
+)
+from bpc_connect.compat.runtime import (  # noqa: E402
+    default_role_config as compatibility_role_config,
 )
 from bpc_connect.node import (  # noqa: E402
     Capabilities,
