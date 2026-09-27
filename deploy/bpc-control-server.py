@@ -999,6 +999,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                         node_id=assigned_node_id,
                         advertise_host=str(
                             body.get("controller_advertise_host", "")
+                            or self.client_address[0]
                         ),
                         csr_pem=str(body.get("controller_csr", "")),
                         software_version=str(body.get("version", "")),
