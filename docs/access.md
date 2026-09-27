@@ -16,10 +16,11 @@ User / Device
  allow / deny CIDR
 ```
 
-Records live in the Controller state directory under `control/access/`. User
-and Device records are combined for a Device. Existing `managed_routes` from
-the pre-Access gateway workflow are treated as legacy explicit allows so
-upgrades do not silently break existing gateway grants.
+Records live under the canonical Controller state directory at
+`/etc/bpc-connect/control/access/`. User and Device records are combined for a
+Device. Historical Device `managed_routes` are read only through the Stage 4.5
+compatibility adapter and are treated as legacy explicit allows so upgrades do
+not silently break existing grants. New Device records do not write that field.
 
 Rules are default-deny:
 
@@ -59,7 +60,9 @@ profile (plus the Controller WireGuard address as an infrastructure /32). This
 keeps the client routing table aligned with what the User can reach.
 
 That is not the security boundary. The BPC Node also owns an iptables chain
-named `BPC-ACCESS` on the Agent WireGuard interface. For each active client
+named `BPC-ACCESS` on the Agent WireGuard interface. Stage 4.5 requires
+explicit BPC ownership evidence for that WireGuard interface before firewall
+reconciliation is allowed. For each active client
 source address it accepts effective allowed CIDRs and then drops every other
 forwarded destination. Existing/related reply traffic is accepted first.
 
