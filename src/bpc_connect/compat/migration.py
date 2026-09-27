@@ -185,26 +185,35 @@ def _tree_manifest(root: Path) -> dict[str, tuple[str, str]]:
     return result
 
 
+def _control_payload_manifest(root: Path) -> dict[str, tuple[str, str]]:
+    manifest = _tree_manifest(root)
+    # The ownership marker is canonical metadata, not part of the historical
+    # Controller payload. Ignoring it makes an interrupted migration resumable
+    # if the process stops between the control marker and global migration marker.
+    manifest.pop(".bpc-state.json", None)
+    return manifest
+
+
 def _copy_legacy_control(source: Path, target: Path, backup: Path) -> bool:
     if not source.is_dir():
         target.mkdir(parents=True, exist_ok=True, mode=0o700)
         return False
 
-    source_manifest = _tree_manifest(source)
+    source_manifest = _control_payload_manifest(source)
     backup_state = backup / "legacy-control"
     shutil.copytree(source, backup_state, symlinks=True)
-    if source_manifest != _tree_manifest(backup_state):
+    if source_manifest != _control_payload_manifest(backup_state):
         raise RuntimeError("legacy Controller backup verification failed")
 
     if target.exists():
-        current = _tree_manifest(target)
+        current = _control_payload_manifest(target)
         if current:
             if current != source_manifest:
                 raise RuntimeError(
                     "canonical Controller state already exists and differs from legacy state; "
                     "refusing to overwrite either copy"
                 )
-            if _tree_manifest(source) != source_manifest:
+            if _control_payload_manifest(source) != source_manifest:
                 raise RuntimeError(
                     "legacy Controller state changed during migration; retry when state is stable"
                 )
@@ -216,8 +225,8 @@ def _copy_legacy_control(source: Path, target: Path, backup: Path) -> bool:
         shutil.rmtree(staged)
     shutil.copytree(source, staged, symlinks=True)
     if (
-        _tree_manifest(source) != source_manifest
-        or _tree_manifest(staged) != source_manifest
+        _control_payload_manifest(source) != source_manifest
+        or _control_payload_manifest(staged) != source_manifest
     ):
         shutil.rmtree(staged, ignore_errors=True)
         raise RuntimeError(
