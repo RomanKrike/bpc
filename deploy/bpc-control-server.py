@@ -19,6 +19,37 @@ from pathlib import Path
 from typing import Any
 
 from bpc_access import AccessError, effective_routes, sync_access_firewall
+from bpc_identity import (
+    IdentityError,
+    authenticate_local_user,
+    authorize_access_credential,
+    deactivate_device,
+    device_is_active,
+    find_device_by_public_key,
+    issue_access_credential,
+    issue_device_session,
+    logout_session,
+    refresh_device_session,
+    registration_message,
+    revoke_device_credentials,
+    verify_device_proof,
+)
+from bpc_identity import (
+    credential_index as identity_credential_index,
+)
+from bpc_identity import (
+    list_devices as identity_list_devices,
+)
+from bpc_identity import (
+    load_device as identity_load_device,
+)
+from bpc_node_enrollment import (
+    EnrollmentError,
+    enroll_node,
+    leave_node,
+    node_heartbeat,
+)
+
 from bpc_connect.compat.device import (
     LegacyDeviceAuthError,
     authorize_legacy_static_device,
@@ -30,30 +61,6 @@ from bpc_connect.compat.legacy import (
     apply_compat_transport_hint,
     compat_site_routes,
     is_compat_site_router,
-)
-from bpc_identity import (
-    IdentityError,
-    authenticate_local_user,
-    authorize_access_credential,
-    credential_index as identity_credential_index,
-    deactivate_device,
-    device_is_active,
-    find_device_by_public_key,
-    issue_access_credential,
-    issue_device_session,
-    list_devices as identity_list_devices,
-    load_device as identity_load_device,
-    logout_session,
-    refresh_device_session,
-    registration_message,
-    revoke_device_credentials,
-    verify_device_proof,
-)
-from bpc_node_enrollment import (
-    EnrollmentError,
-    enroll_node,
-    leave_node,
-    node_heartbeat,
 )
 
 MAX_JSON_BODY = 64 * 1024
