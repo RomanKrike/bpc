@@ -49,8 +49,12 @@ def test_control_service_stages_self_contained_runtime_inside_canonical_state() 
         encoding="utf-8"
     )
     assert 'CONTROL_DIR="${BPC_STATE_DIR}/control"' in enable_control
-    assert 'release_control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"' in enable_control
-    assert 'release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"' in enable_control
+    release_server = 'release_control_server="${BPC_ROOT}/current/deploy/bpc-control-server.py"'
+    release_enrollment = (
+        'release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"'
+    )
+    assert release_server in enable_control
+    assert release_enrollment in enable_control
     assert 'release_access="${BPC_ROOT}/current/deploy/bpc_access.py"' in enable_control
     assert 'release_package="${BPC_ROOT}/current/src/bpc_connect"' in enable_control
     assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in enable_control
