@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.17.0
+
+### Added
+- Canonical BPC state layout for Node, identity, cluster, Controller, runtime, transports, compatibility metadata and migration backups.
+- `bpc init` for explicit first-Controller cluster initialization.
+- Backup-first Stage 4.5 state migration with preflight inventory of links, routes, policy rules, redacted WireGuard state, iptables/nftables and systemd.
+- Explicit network ownership model with fail-closed mutation guards for the BPC Agent WireGuard interface and Access firewall.
+- Node-owned `advertised_routes` for the future `site_router` capability.
+- Migration safety tests covering external WireGuard preservation, external route/firewall inventory, idempotency and canonical-state conflict refusal.
+
+### Changed
+- Controller state is canonical at `/etc/bpc-connect/control/`; historical `ru-node/control` state is copied through the compatibility migration without deleting the source.
+- Legacy `ru-node`, static Device credentials, Device `managed_routes`, `legacy_tunnel` and BP Gateway record semantics are isolated behind `bpc_connect.compat`.
+- New Device records no longer write `managed_routes`, `legacy_tunnel` or static `device_token` fields.
+- Clean runtime installation no longer persists a historical Node type; use `bpc init` for the first Controller or `bpc join` for an existing cluster.
+- Legacy BP Gateway mutation commands and pre-canonical Agent route/revoke writers are disabled; read-only compatibility remains for existing state.
+
+### Security
+- Existing or unknown WireGuard interfaces are not considered BPC-owned by name alone.
+- Controller peer changes and Access firewall reconciliation require BPC ownership evidence before mutating the Agent data plane.
+- Canonical migration does not intentionally alter external interfaces, routes, rules, WireGuard peers or firewall state.
+
 ## 0.16.2
 
 ### Added
