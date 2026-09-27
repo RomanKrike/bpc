@@ -8,11 +8,12 @@ CLUSTER_API_PORT="${BPC_CLUSTER_API_PORT:-9447}"
 LOCAL_API_PORT="${BPC_LOCAL_API_PORT:-9446}"
 ADVERTISE_HOST=""
 BOOTSTRAP="false"
+DEFER_MARKER="false"
 
 usage() {
   cat <<'USAGE'
 Usage:
-  bpc-enable-cluster --advertise-host HOST [--bootstrap]
+  bpc-enable-cluster --advertise-host HOST [--bootstrap] [--defer-marker]
                      [--raft-port PORT] [--cluster-api-port PORT]
                      [--local-api-port PORT]
 
@@ -29,6 +30,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bootstrap)
       BOOTSTRAP="true"
+      shift
+      ;;
+    --defer-marker)
+      DEFER_MARKER="true"
       shift
       ;;
     --raft-port)
@@ -208,7 +213,7 @@ RAFT_ADDRESS="${ADVERTISE_HOST}:${RAFT_PORT}"
 API_ADDRESS="${ADVERTISE_HOST}:${CLUSTER_API_PORT}"
 LOCAL_ADDRESS="127.0.0.1:${LOCAL_API_PORT}"
 
-if [[ ! -f "${MARKER}" ]]; then
+if [[ ! -f "${CONTROLLERS_DIR}/${NODE_ID}.json" ]]; then
   python3 - "${CONTROLLERS_DIR}/${NODE_ID}.json" "${NODE_ID}" "${RAFT_ADDRESS}" "${API_ADDRESS}" "${CERT_SHA256}" "${VERSION}" <<'PY'
 import json
 import os
@@ -304,7 +309,8 @@ if [[ "${healthy}" != "true" ]]; then
   exit 5
 fi
 
-python3 - "${MARKER}" "${NODE_ID}" "${RAFT_ADDRESS}" "${API_ADDRESS}" "${LOCAL_ADDRESS}" "${NODE_CERT}" "${NODE_KEY}" "${CA_CERT}" "${TOKEN_FILE}" "${VERSION}" <<'PY'
+if [[ "${DEFER_MARKER}" != "true" ]]; then
+  python3 - "${MARKER}" "${NODE_ID}" "${RAFT_ADDRESS}" "${API_ADDRESS}" "${LOCAL_ADDRESS}" "${NODE_CERT}" "${NODE_KEY}" "${CA_CERT}" "${TOKEN_FILE}" "${VERSION}" <<'PY'
 import json
 import os
 import sys
@@ -330,6 +336,9 @@ tmp.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n", encoding="utf
 os.chmod(tmp, 0o600)
 os.replace(tmp, path)
 PY
+else
+  rm -f "${MARKER}"
+fi
 
 echo "BPC distributed Controller is active."
 echo "  Node: ${NODE_ID}"
