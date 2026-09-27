@@ -222,7 +222,7 @@ def parse_join_token_endpoints(token: str) -> tuple[list[str], str]:
     if decoded.lstrip().startswith("{"):
         try:
             envelope = json.loads(decoded)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
             raise EnrollmentError("invalid join token", 401) from exc
         if not isinstance(envelope, dict) or int(envelope.get("version", 0)) != 2:
             raise EnrollmentError("invalid join token", 401)
@@ -911,7 +911,7 @@ def request_json(
 
         try:
             value = json.loads(raw)
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             last_error = EnrollmentError(
                 f"controller {target} returned invalid JSON"
             )

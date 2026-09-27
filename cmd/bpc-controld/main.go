@@ -465,8 +465,8 @@ func (s *server) addMember(w http.ResponseWriter, r *http.Request) {
 		15*time.Second,
 	); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error":              err.Error(),
-			"state":              "nonvoter",
+			"error":             err.Error(),
+			"state":             "nonvoter",
 			"nonvoter_revision": nonvoter.Revision,
 		})
 		return

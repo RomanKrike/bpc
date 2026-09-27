@@ -56,7 +56,6 @@ from bpc_identity import (
 from bpc_identity import (
     load_device as identity_load_device,
 )
-
 from bpc_node_enrollment import (
     EnrollmentError,
     authorize_node,
@@ -65,6 +64,7 @@ from bpc_node_enrollment import (
     leave_node,
     node_heartbeat,
 )
+
 from bpc_connect.compat.device import (
     LegacyDeviceAuthError,
     authorize_legacy_static_device,
