@@ -160,8 +160,11 @@ def add_controller_member(
             "node_id": str(record.get("node_id", "")),
             "raft_address": str(record.get("raft_address", "")),
             "api_address": str(record.get("api_address", "")),
+            "public_url": str(record.get("public_url", "")),
             "voter": bool(voter),
             "software_version": str(record.get("software_version", "")),
+            "protocol_version": int(record.get("protocol_version", 0)),
+            "state_schema_version": int(record.get("state_schema_version", 0)),
             "certificate_sha256": str(record.get("certificate_sha256", "")),
         },
     )

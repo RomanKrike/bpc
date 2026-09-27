@@ -24,30 +24,29 @@ from bpc_controller_enrollment import (
     ControllerEnrollmentError,
     build_controller_enrollment,
 )
+from bpc_gateway_snapshot import (
+    GatewaySnapshotError,
+    build_security_snapshot,
+    controller_public_urls,
+)
 from bpc_identity import (
     IdentityError,
     authenticate_local_user,
     authorize_access_credential,
+    credential_index as identity_credential_index,
     deactivate_device,
     delete_canonical as identity_delete_canonical,
     device_is_active,
     find_device_by_public_key,
     issue_access_credential,
     issue_device_session,
+    list_devices as identity_list_devices,
+    load_device as identity_load_device,
     logout_session,
     refresh_device_session,
     registration_message,
     revoke_device_credentials,
     verify_device_proof,
-)
-from bpc_identity import (
-    credential_index as identity_credential_index,
-)
-from bpc_identity import (
-    list_devices as identity_list_devices,
-)
-from bpc_identity import (
-    load_device as identity_load_device,
 )
 from bpc_node_enrollment import (
     EnrollmentError,
@@ -57,7 +56,6 @@ from bpc_node_enrollment import (
     leave_node,
     node_heartbeat,
 )
-
 from bpc_connect.compat.device import (
     LegacyDeviceAuthError,
     authorize_legacy_static_device,
@@ -75,10 +73,30 @@ MAX_JSON_BODY = 64 * 1024
 MAX_UPDATE_SIZE = 128 * 1024 * 1024
 
 
+def _control_root_for_path(path: Path) -> Path | None:
+    for candidate in (path, *path.parents):
+        if candidate.name == "control":
+            return candidate
+    return None
+
+
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    control_root = _control_root_for_path(path)
+    if (
+        control_root is not None
+        and bpc_control_state.cluster_enabled(control_root)
+        and bpc_control_state.is_replicated_path(control_root, path)
+    ):
+        bpc_control_state.mutation(
+            control_root,
+            "PutCanonicalRecord",
+            [{"op": "put", "path": path, "data": payload}],
+        )
+        return
+
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     with tmp.open("wb") as handle:
         handle.write(payload)
         handle.flush()
@@ -287,6 +305,9 @@ class ControlHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/v1/health":
+            self._health()
+            return
         if self.path == "/v1/config":
             self._serve_config()
             return
@@ -339,6 +360,25 @@ class ControlHandler(BaseHTTPRequestHandler):
             self._node_leave()
             return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _health(self) -> None:
+        try:
+            barrier = bpc_control_state.strong_read(self._root())
+        except bpc_control_state.ControlStateError as exc:
+            self._send_json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "error": str(exc)},
+            )
+            return
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "revision": int(barrier.get("revision", 0)),
+                "protocol_version": 1,
+                "state_schema_version": 1,
+            },
+        )
 
     def _root(self) -> Path:
         return Path(self.server.state_dir)  # type: ignore[attr-defined]
@@ -502,6 +542,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             "padding_min": int(global_config["padding_min"]),
             "padding_max": int(global_config["padding_max"]),
             "update_channel": str(global_config.get("update_channel", "stable")),
+            "controllers": controller_public_urls(self._root().parent),
             "wireguard": self._wireguard_profile_for_device(device),
         }
         apply_compat_transport_hint(device, config)
@@ -736,7 +777,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                     wireguard_address = self._allocate_wireguard_address()
                     global_config = self._global_config()
                     key_path = Path(str(global_config["wgshim_key_dir"])) / f"{device_id}.key"
-                    device_path = self._root() / "devices" / f"{device_id}.json"
                     device = {
                         "id": device_id,
                         "device_id": device_id,
@@ -1065,16 +1105,34 @@ class ControlHandler(BaseHTTPRequestHandler):
                 extra_operations: list[dict[str, Any]] = []
                 controller_payload: dict[str, Any] | None = None
                 if "controller" in roles:
+                    advertise_host = str(
+                        body.get("controller_advertise_host", "")
+                    ).strip()
+                    if not advertise_host:
+                        raise EnrollmentError(
+                            "controller_advertise_host is required for Controller join",
+                            400,
+                        )
+                    try:
+                        ipaddress.ip_address(advertise_host)
+                    except ValueError:
+                        pass
+                    else:
+                        raise EnrollmentError(
+                            "Controller public endpoint must be a DNS hostname",
+                            400,
+                        )
                     assigned_node_id = uuid.uuid4().hex
                     controller_payload, membership_operation = build_controller_enrollment(
                         self._root(),
                         node_id=assigned_node_id,
-                        advertise_host=str(
-                            body.get("controller_advertise_host", "")
-                            or self.client_address[0]
-                        ),
+                        advertise_host=advertise_host,
                         csr_pem=str(body.get("controller_csr", "")),
                         software_version=str(body.get("version", "")),
+                        protocol_version=int(body.get("protocol_version", 0) or 0),
+                        state_schema_version=int(
+                            body.get("state_schema_version", 0) or 0
+                        ),
                     )
                     extra_operations.append(membership_operation)
 
@@ -1086,6 +1144,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                     assigned_node_id=assigned_node_id,
                     extra_operations=extra_operations,
                 )
+                response_config = response.get("config")
+                if isinstance(response_config, dict):
+                    response_config["controllers"] = controller_public_urls(
+                        self._root().parent
+                    )
                 if controller_payload is not None:
                     response["controller"] = controller_payload
         except (EnrollmentError, ControllerEnrollmentError) as exc:
@@ -1110,8 +1173,27 @@ class ControlHandler(BaseHTTPRequestHandler):
                 credential=credential,
                 payload=body,
             )
+            config = response.get("config")
+            if isinstance(config, dict):
+                config["controllers"] = controller_public_urls(self._root().parent)
+
+            roles = response.get("roles", {})
+            if isinstance(roles, dict) and bool(roles.get("gateway")):
+                barrier = bpc_control_state.strong_read(self._root())
+                snapshot, verification_key = build_security_snapshot(
+                    self._root(),
+                    revision=int(barrier.get("revision", 0)),
+                )
+                response["security_snapshot"] = snapshot
+                response["security_snapshot_verification_key"] = verification_key
         except EnrollmentError as exc:
             self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except bpc_control_state.ControlStateError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except GatewaySnapshotError as exc:
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
         except (OSError, ValueError, json.JSONDecodeError):
             self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)

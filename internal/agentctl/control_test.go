@@ -1,6 +1,7 @@
 package agentctl
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
@@ -8,6 +9,8 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -211,5 +214,43 @@ func TestStateCredentialSelectionAndRefreshWindow(t *testing.T) {
 	}
 	if legacy.NeedsRefresh(now) {
 		t.Fatal("legacy state without refresh token must not refresh")
+	}
+}
+
+
+func TestControllerFailoverUsesNextEndpoint(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/config" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(
+			w,
+			`{"config_version":4,"controllers":[%q],"wgshim_server":"127.0.0.1:24445","wgshim_listen":"127.0.0.1:24081","wgshim_target":"127.0.0.1:51821","wgshim_psk":"%s","padding_min":0,"padding_max":0}`,
+			"https://controller-b.example:8444",
+			base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		)
+	}))
+	defer server.Close()
+
+	client, err := NewMultiClient(
+		[]string{"https://127.0.0.1:1", server.URL},
+		"token",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.HTTP = server.Client()
+
+	cfg, err := client.FetchConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ConfigVersion != 4 {
+		t.Fatalf("unexpected config: %#v", cfg)
+	}
+	if client.BaseURL != server.URL {
+		t.Fatalf("selected Controller=%q want %q", client.BaseURL, server.URL)
 	}
 }

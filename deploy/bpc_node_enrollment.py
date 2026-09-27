@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -36,6 +37,12 @@ from bpc_controller_enrollment import (  # noqa: E402
     ensure_controller_csr,
     install_controller_enrollment,
 )
+from bpc_gateway_snapshot import (  # noqa: E402
+    GatewaySnapshotError,
+    controller_public_urls,
+    install_security_snapshot,
+    load_valid_security_snapshot,
+)
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
@@ -57,6 +64,8 @@ DEFAULT_STATE_DIR = Path("/etc/bpc-connect")
 DEFAULT_CONTROL_DIR = StateLayout.from_root(DEFAULT_STATE_DIR).control_dir
 TOKEN_PREFIX = "BPC-"
 HEARTBEAT_INTERVAL = 30
+BPC_PROTOCOL_VERSION = 1
+STATE_SCHEMA_VERSION = 1
 MAX_CLOCK_SKEW = 300
 ROLE_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 NODE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -172,12 +181,32 @@ def normalize_controller_url(value: str) -> str:
     return url
 
 
-def make_join_token(controller_url: str, secret: str) -> str:
-    encoded = b64url_encode(normalize_controller_url(controller_url).encode("utf-8"))
+def make_join_token(
+    controller_url: str,
+    secret: str,
+    controller_urls: list[str] | tuple[str, ...] | None = None,
+) -> str:
+    primary = normalize_controller_url(controller_url)
+    pool: list[str] = []
+    seen: set[str] = set()
+    for raw in [primary, *(controller_urls or [])]:
+        url = normalize_controller_url(str(raw))
+        if url not in seen:
+            seen.add(url)
+            pool.append(url)
+    if len(pool) > 1:
+        envelope = json.dumps(
+            {"version": 2, "controllers": pool},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    else:
+        envelope = primary.encode("utf-8")
+    encoded = b64url_encode(envelope)
     return f"{TOKEN_PREFIX}{encoded}.{secret}"
 
 
-def parse_join_token(token: str) -> tuple[str, str]:
+def parse_join_token_endpoints(token: str) -> tuple[list[str], str]:
     value = token.strip()
     if not value.startswith(TOKEN_PREFIX) or "." not in value:
         raise EnrollmentError("invalid join token", 401)
@@ -186,10 +215,29 @@ def parse_join_token(token: str) -> tuple[str, str]:
         raise EnrollmentError("invalid join token", 401)
     try:
         int(secret, 16)
-        controller_url = b64url_decode(encoded).decode("utf-8")
+        decoded = b64url_decode(encoded).decode("utf-8")
     except (ValueError, UnicodeDecodeError, base64.binascii.Error) as exc:
         raise EnrollmentError("invalid join token", 401) from exc
-    return normalize_controller_url(controller_url), secret
+
+    if decoded.lstrip().startswith("{"):
+        try:
+            envelope = json.loads(decoded)
+        except json.JSONDecodeError as exc:
+            raise EnrollmentError("invalid join token", 401) from exc
+        if not isinstance(envelope, dict) or int(envelope.get("version", 0)) != 2:
+            raise EnrollmentError("invalid join token", 401)
+        raw_controllers = envelope.get("controllers", [])
+        if not isinstance(raw_controllers, list):
+            raise EnrollmentError("invalid join token", 401)
+        controllers = _controller_candidates("", [str(item) for item in raw_controllers])
+    else:
+        controllers = [normalize_controller_url(decoded)]
+    return controllers, secret
+
+
+def parse_join_token(token: str) -> tuple[str, str]:
+    controllers, secret = parse_join_token_endpoints(token)
+    return controllers[0], secret
 
 
 def parse_duration(value: str) -> int:
@@ -274,7 +322,12 @@ def create_join_token(
     normalized_roles = normalize_roles(roles)
     normalized_name = normalize_node_name(name) if name else None
     secret = secrets.token_hex(32)
-    token = make_join_token(controller_url, secret)
+    controllers = (
+        controller_public_urls(control_dir.parent)
+        if bpc_control_state.cluster_enabled(control_dir)
+        else []
+    )
+    token = make_join_token(controller_url, secret, controllers)
     index = token_index(secret)
     metadata = {
         "version": 1,
@@ -283,6 +336,7 @@ def create_join_token(
         "roles": normalized_roles,
         "name": normalized_name,
         "controller_url": normalize_controller_url(controller_url),
+        "controllers": _controller_candidates(controller_url, controllers),
         "role_config": role_config or {},
     }
     atomic_json(control_dir / "node-join" / f"{index}.json", metadata)
@@ -523,6 +577,50 @@ def authorize_node(control_dir: Path, credential: str) -> tuple[Path, dict[str, 
     return node_path, node
 
 
+def normalize_advertised_routes(values: object) -> list[str]:
+    if values in (None, ""):
+        return []
+    if not isinstance(values, list):
+        raise EnrollmentError("advertised_routes must be a list", 400)
+    routes: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        try:
+            network = ipaddress.ip_network(str(raw).strip(), strict=False)
+        except ValueError as exc:
+            raise EnrollmentError(f"invalid advertised route {raw!r}", 400) from exc
+        if network.version != 4 or network.prefixlen == 0:
+            raise EnrollmentError("advertised routes must be non-default IPv4 CIDRs", 400)
+        canonical = str(network)
+        if canonical not in seen:
+            seen.add(canonical)
+            routes.append(canonical)
+    return sorted(routes)
+
+
+def _route_path(control_dir: Path, node_id: str, cidr: str) -> Path:
+    index = hashlib.sha256(f"{node_id}\0{cidr}".encode("utf-8")).hexdigest()
+    return control_dir / "routes" / f"{index}.json"
+
+
+def _existing_node_routes(control_dir: Path, node_id: str) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    directory = control_dir / "routes"
+    if not directory.is_dir():
+        return result
+    for path in directory.glob("*.json"):
+        try:
+            record = read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if str(record.get("node_id", "")) != node_id:
+            continue
+        cidr = str(record.get("cidr", "")).strip()
+        if cidr:
+            result[cidr] = path
+    return result
+
+
 def node_heartbeat(
     control_dir: Path,
     *,
@@ -532,24 +630,101 @@ def node_heartbeat(
 ) -> dict[str, Any]:
     timestamp = int(time.time()) if now is None else int(now)
     node_path, node = authorize_node(control_dir, credential)
+    node_id = str(node["node_id"])
     node["last_seen"] = timestamp
     node["last_status"] = str(payload.get("status", "online"))[:64]
-    node["last_version"] = str(payload.get("version", ""))[:32]
+    node["last_version"] = str(payload.get("version", ""))[:64]
+    protocol_version = int(payload.get("protocol_version", 0) or 0)
+    schema_version = int(payload.get("state_schema_version", 0) or 0)
+    node["protocol_version"] = protocol_version
+    node["state_schema_version"] = schema_version
+    compatible = (
+        protocol_version == BPC_PROTOCOL_VERSION
+        and schema_version == STATE_SCHEMA_VERSION
+    )
+    node["compatibility"] = "compatible" if compatible else "incompatible"
+
     services = payload.get("services", {})
     if isinstance(services, dict):
         node["services"] = {
             str(key)[:64]: str(value)[:64] for key, value in services.items()
         }
-    atomic_json(node_path, node)
+
+    roles = node.get("roles", {})
+    if not isinstance(roles, dict):
+        roles = {}
+    advertised = (
+        normalize_advertised_routes(payload.get("advertised_routes", []))
+        if bool(roles.get("site_router"))
+        else []
+    )
+    existing_routes = _existing_node_routes(control_dir, node_id)
+
+    operations: list[dict[str, Any]] = [
+        {
+            "op": "put",
+            "path": node_path,
+            "data": json.dumps(
+                node, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8"),
+        }
+    ]
+    wanted = set(advertised)
+    for cidr in advertised:
+        path = _route_path(control_dir, node_id, cidr)
+        route = {
+            "version": 1,
+            "cidr": cidr,
+            "node_id": node_id,
+            "updated_at": timestamp,
+        }
+        operations.append(
+            {
+                "op": "put",
+                "path": path,
+                "data": json.dumps(
+                    route, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8"),
+            }
+        )
+    for cidr, path in existing_routes.items():
+        if cidr not in wanted:
+            operations.append({"op": "delete", "path": path})
+
+    if bpc_control_state.cluster_enabled(control_dir):
+        try:
+            bpc_control_state.mutation(
+                control_dir,
+                "NodeHeartbeat",
+                operations,
+                issued_at=timestamp,
+            )
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+    else:
+        atomic_json(node_path, node)
+        for operation in operations[1:]:
+            path = Path(operation["path"])
+            if operation["op"] == "delete":
+                path.unlink(missing_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                path.write_bytes(operation["data"])
+                os.chmod(path, 0o600)
+
     return {
         "ok": True,
         "server_time": timestamp,
-        "node_id": str(node["node_id"]),
+        "node_id": node_id,
         "name": str(node["name"]),
-        "roles": dict(node.get("roles", {})),
+        "roles": dict(roles),
+        "compatibility": node["compatibility"],
         "config": {
             "version": 1,
             "heartbeat_interval": HEARTBEAT_INTERVAL,
+            "protocol_version": BPC_PROTOCOL_VERSION,
+            "state_schema_version": STATE_SCHEMA_VERSION,
+            "controllers": controller_public_urls(control_dir.parent),
             "role_config": dict(node.get("role_config", {})),
         },
     }
@@ -570,12 +745,27 @@ def leave_node(control_dir: Path, *, credential: str, now: int | None = None) ->
         else None
     )
     if bpc_control_state.cluster_enabled(control_dir):
+        revocation_path = control_dir / "revocations" / f"node-{node['node_id']}.json"
+        revocation = {
+            "version": 1,
+            "kind": "node",
+            "subject_id": str(node["node_id"]),
+            "revoked_at": timestamp,
+            "reason": "node_left",
+        }
         operations: list[dict[str, Any]] = [
             {
                 "op": "put",
                 "path": node_path,
                 "data": json.dumps(
                     node, sort_keys=True, separators=(",", ":")
+                ).encode("utf-8"),
+            },
+            {
+                "op": "put",
+                "path": revocation_path,
+                "data": json.dumps(
+                    revocation, sort_keys=True, separators=(",", ":")
                 ).encode("utf-8"),
             },
             {"op": "delete", "path": credential_path},
@@ -652,6 +842,25 @@ def generate_node_identity(state_dir: Path) -> str:
     return public_key
 
 
+def _controller_candidates(
+    primary: str,
+    alternatives: list[str] | tuple[str, ...] | None = None,
+) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in [primary, *(alternatives or [])]:
+        try:
+            value = normalize_controller_url(str(raw))
+        except EnrollmentError:
+            continue
+        if value not in seen:
+            seen.add(value)
+            result.append(value)
+    if not result:
+        raise EnrollmentError("no valid Controller endpoints are available")
+    return result
+
+
 def request_json(
     controller_url: str,
     path: str,
@@ -659,38 +868,65 @@ def request_json(
     *,
     credential: str | None = None,
     timeout: int = 20,
+    controller_urls: list[str] | tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     if credential:
         headers["Authorization"] = f"Bearer {credential}"
-    request = urllib.request.Request(
-        normalize_controller_url(controller_url) + path,
-        data=data,
-        headers=headers,
-        method="POST",
-    )
     context = ssl.create_default_context()
-    try:
-        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
-            raw = response.read()
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")[:512]
+    last_error: EnrollmentError | None = None
+
+    for target in _controller_candidates(controller_url, controller_urls):
+        request = urllib.request.Request(
+            target + path,
+            data=data,
+            headers=headers,
+            method="POST",
+        )
         try:
-            parsed = json.loads(detail)
-            message = str(parsed.get("error", detail))
-        except json.JSONDecodeError:
-            message = detail or f"controller returned HTTP {exc.code}"
-        raise EnrollmentError(message, exc.code) from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise EnrollmentError(f"controller connection failed: {exc}") from exc
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise EnrollmentError("controller returned invalid JSON") from exc
-    if not isinstance(value, dict):
-        raise EnrollmentError("controller returned invalid response")
-    return value
+            with urllib.request.urlopen(
+                request,
+                timeout=timeout,
+                context=context,
+            ) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:512]
+            try:
+                parsed = json.loads(detail)
+                message = str(parsed.get("error", detail))
+            except json.JSONDecodeError:
+                message = detail or f"controller returned HTTP {exc.code}"
+            error = EnrollmentError(message, exc.code)
+            if exc.code not in {502, 503, 504}:
+                raise error from exc
+            last_error = error
+            continue
+        except (urllib.error.URLError, TimeoutError) as exc:
+            last_error = EnrollmentError(
+                f"controller connection failed via {target}: {exc}"
+            )
+            continue
+
+        try:
+            value = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            last_error = EnrollmentError(
+                f"controller {target} returned invalid JSON"
+            )
+            continue
+        if not isinstance(value, dict):
+            last_error = EnrollmentError(
+                f"controller {target} returned invalid response"
+            )
+            continue
+        value.setdefault("_controller_url", target)
+        return value
+
+    if last_error is not None:
+        raise last_error
+    raise EnrollmentError("all Controller endpoints failed")
 
 
 def write_local_enrollment(state_dir: Path, value: dict[str, Any]) -> None:
@@ -711,10 +947,12 @@ def apply_remote_node_config(
         {str(key): bool(value) for key, value in roles.items()}
     )
     path = state_dir / "node.yaml"
+    advertised_routes: tuple[str, ...] = ()
     if path.is_file():
         try:
             current = load_node_config(path)
             created_at = current.node.created_at or created_at
+            advertised_routes = current.advertised_routes
         except (OSError, ValueError):
             pass
     config = NodeConfig(
@@ -727,6 +965,7 @@ def apply_remote_node_config(
             last_seen=int(last_seen),
             roles=role_values,
         ),
+        advertised_routes=advertised_routes,
     )
     save_node_config(path, config)
 
@@ -749,6 +988,7 @@ def local_services(roles: dict[str, Any]) -> dict[str, str]:
         services["relay"] = service_state("bpc-agent-relay.service")
     if bool(roles.get("controller")):
         services["controller"] = service_state("bpc-control.service")
+        services["distributed-controller"] = service_state("bpc-controld.service")
     return services
 
 
@@ -865,30 +1105,79 @@ def enrolled_state(state_dir: Path) -> dict[str, Any] | None:
     return read_json(path)
 
 
+def _local_advertised_routes(state_dir: Path) -> list[str]:
+    path = state_dir / "node.yaml"
+    if not path.is_file():
+        return []
+    try:
+        config = load_node_config(path)
+    except (OSError, ValueError):
+        return []
+    return list(config.advertised_routes)
+
+
 def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any]:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
+    controllers = enrollment.get("controllers", [])
+    if not isinstance(controllers, list):
+        controllers = []
+    software_version = (
+        (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        if (ROOT / "VERSION").is_file()
+        else "source"
+    )
     response = request_json(
         str(enrollment["controller_url"]),
         "/v1/nodes/heartbeat",
         {
             "status": "online",
-            "version": (
-                (ROOT / "VERSION").read_text(encoding="utf-8").strip()
-                if (ROOT / "VERSION").is_file()
-                else "source"
-            ),
+            "version": software_version,
+            "protocol_version": BPC_PROTOCOL_VERSION,
+            "state_schema_version": STATE_SCHEMA_VERSION,
+            "advertised_routes": _local_advertised_routes(state_dir),
             "services": local_services(roles),
         },
         credential=str(enrollment["credential"]),
+        controller_urls=[str(item) for item in controllers],
     )
+    selected = str(response.pop("_controller_url", enrollment["controller_url"]))
+    enrollment["controller_url"] = selected
+
     response_roles = response.get("roles", {})
     config = response.get("config", {})
     if isinstance(response_roles, dict):
         enrollment["roles"] = response_roles
+        roles = response_roles
     if isinstance(config, dict):
         enrollment["config"] = config
+        response_controllers = config.get("controllers", [])
+        if isinstance(response_controllers, list):
+            pool = _controller_candidates(
+                selected,
+                [str(item) for item in response_controllers],
+            )
+            enrollment["controllers"] = pool
+
+    if bool(roles.get("gateway")):
+        snapshot = response.get("security_snapshot")
+        verification_key = str(
+            response.get("security_snapshot_verification_key", "")
+        ).strip()
+        if not isinstance(snapshot, dict) or not verification_key:
+            raise EnrollmentError("Gateway security snapshot is missing")
+        try:
+            installed = install_security_snapshot(
+                state_dir,
+                snapshot,
+                verification_key,
+            )
+        except GatewaySnapshotError as exc:
+            raise EnrollmentError(str(exc)) from exc
+        enrollment["security_revision"] = int(installed.get("revision", 0))
+        enrollment["security_expires_at"] = int(installed.get("expires_at", 0))
+
     enrollment["last_heartbeat"] = int(response.get("server_time", time.time()))
     write_local_enrollment(state_dir, enrollment)
     public_key = (state_dir / "identity" / "node.pub").read_text(
@@ -982,7 +1271,8 @@ def cmd_join(args: argparse.Namespace) -> int:
             print(f"  {role}: {state}")
         return 0
 
-    controller_url, _ = parse_join_token(args.token)
+    controller_urls, _ = parse_join_token_endpoints(args.token)
+    controller_url = controller_urls[0]
     public_key = generate_node_identity(args.state_dir)
     try:
         controller_csr = ensure_controller_csr(args.state_dir)
@@ -1001,17 +1291,39 @@ def cmd_join(args: argparse.Namespace) -> int:
             "public_key": public_key,
             "name": socket.gethostname()[:64] or "bpc-node",
             "version": software_version,
+            "protocol_version": BPC_PROTOCOL_VERSION,
+            "state_schema_version": STATE_SCHEMA_VERSION,
             "controller_csr": controller_csr,
-            "controller_advertise_host": args.controller_advertise_host or "",
+            "controller_advertise_host": getattr(
+                args, "controller_advertise_host", None
+            )
+            or "",
         },
+        controller_urls=controller_urls,
     )
     roles = response.get("roles", {})
     config = response.get("config", {})
     if not isinstance(roles, dict) or not isinstance(config, dict):
         raise EnrollmentError("controller returned invalid enrollment configuration")
+    selected_controller = str(response.pop("_controller_url", controller_url))
     enrollment = {
         "version": 1,
-        "controller_url": controller_url,
+        "controller_url": selected_controller,
+        "controllers": _controller_candidates(
+            selected_controller,
+            [
+                *controller_urls,
+                *(
+                    [
+                        str(item)
+                        for item in response.get("config", {}).get("controllers", [])
+                    ]
+                    if isinstance(response.get("config"), dict)
+                    and isinstance(response.get("config", {}).get("controllers"), list)
+                    else []
+                ),
+            ],
+        ),
         "node_id": str(response["node_id"]),
         "name": str(response["name"]),
         "credential": str(response["credential"]),
@@ -1063,11 +1375,14 @@ def cmd_join(args: argparse.Namespace) -> int:
             )
 
         request_json(
-            controller_url,
+            selected_controller,
             "/v1/nodes/controller-ready",
             {"node_id": enrollment["node_id"]},
             credential=str(enrollment["credential"]),
             timeout=40,
+            controller_urls=[
+                str(item) for item in enrollment.get("controllers", [])
+            ],
         )
         try:
             activate_controller_marker(
@@ -1078,6 +1393,21 @@ def cmd_join(args: argparse.Namespace) -> int:
             )
         except ControllerEnrollmentError as exc:
             raise EnrollmentError(str(exc)) from exc
+
+        public_helper = ROOT / "deploy" / "bpc-enable-control-replica.sh"
+        completed = subprocess.run(
+            [
+                str(public_helper),
+                "--hostname",
+                advertise_host,
+            ],
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise EnrollmentError(
+                "Controller joined Raft but public control API bootstrap failed "
+                f"({completed.returncode}); fix public TLS/DNS and rerun bpc join"
+            )
 
     results = reconcile_roles(args.state_dir, roles, role_config)
     install_runtime_service(args.state_dir)
@@ -1128,6 +1458,11 @@ def cmd_leave(args: argparse.Namespace) -> int:
             "/v1/nodes/leave",
             {"node_id": str(enrollment["node_id"])},
             credential=str(enrollment["credential"]),
+            controller_urls=[
+                str(item)
+                for item in enrollment.get("controllers", [])
+                if isinstance(item, str)
+            ],
         )
     except EnrollmentError as exc:
         if not args.force:
@@ -1199,6 +1534,27 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             )
         except (EnrollmentError, OSError, ValueError) as exc:
             print(f"heartbeat warning: {exc}", file=sys.stderr)
+            roles = enrollment.get("roles", {})
+            if isinstance(roles, dict) and bool(roles.get("gateway")):
+                try:
+                    snapshot = load_valid_security_snapshot(args.state_dir)
+                    print(
+                        "Gateway offline grace active: "
+                        f"revision={snapshot.get('revision')} "
+                        f"expires_at={snapshot.get('expires_at')}",
+                        file=sys.stderr,
+                    )
+                except (GatewaySnapshotError, OSError, ValueError, json.JSONDecodeError):
+                    subprocess.run(
+                        ["systemctl", "stop", "xray.service"],
+                        check=False,
+                        capture_output=True,
+                    )
+                    print(
+                        "Gateway security snapshot expired/unavailable; "
+                        "BPC gateway transport stopped fail-closed.",
+                        file=sys.stderr,
+                    )
             interval = HEARTBEAT_INTERVAL
         time.sleep(max(10, min(interval, 300)))
 

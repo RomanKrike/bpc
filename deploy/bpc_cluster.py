@@ -107,6 +107,8 @@ def ensure_cluster_record(state: StateLayout, node_id: str, now: int) -> dict[st
         "cluster_id": uuid.uuid4().hex,
         "created_at": now,
         "controller_node_id": node_id,
+        "protocol_version": 1,
+        "state_schema_version": 1,
     }
     atomic_json(path, value)
     return value

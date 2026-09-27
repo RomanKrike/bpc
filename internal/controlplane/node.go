@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/hashicorp/raft"
 )
+
+const ProtocolVersion = 1
 
 var ErrNotLeader = errors.New("not raft leader")
 
@@ -47,6 +50,9 @@ type Status struct {
 	Revision        uint64             `json:"revision"`
 	StateSchema     uint64             `json:"state_schema_version"`
 	ProtocolVersion uint64             `json:"protocol_version"`
+	RaftProtocol    uint64             `json:"raft_protocol_version"`
+	PeerCount       int                `json:"peer_count"`
+	ReplicationLag  uint64             `json:"replication_lag"`
 	Members         []ControllerMember `json:"members"`
 	Voters          int                `json:"voters"`
 	Quorum          int                `json:"quorum"`
@@ -263,6 +269,57 @@ func (n *Node) ExportSnapshot() ([]byte, error) { return n.fsm.ExportSnapshot() 
 
 func (n *Node) Revision() uint64 { return n.fsm.Revision() }
 
+func SnapshotClusterID(raw []byte) (string, error) {
+	var envelope snapshotEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return "", err
+	}
+	if envelope.Version != 1 || envelope.SchemaVersion > ControlSchemaVersion {
+		return "", errors.New("incompatible canonical snapshot schema")
+	}
+	if snapshotChecksum(envelope.SchemaVersion, envelope.Revision, envelope.Entries) != envelope.Checksum {
+		return "", errors.New("canonical snapshot checksum mismatch")
+	}
+	clusterRaw, ok := envelope.Entries["cluster/cluster.json"]
+	if !ok {
+		return "", errors.New("canonical snapshot does not contain cluster metadata")
+	}
+	var cluster struct {
+		ClusterID string `json:"cluster_id"`
+	}
+	if err := json.Unmarshal(clusterRaw, &cluster); err != nil {
+		return "", err
+	}
+	cluster.ClusterID = strings.TrimSpace(cluster.ClusterID)
+	if cluster.ClusterID == "" {
+		return "", errors.New("canonical snapshot cluster_id is missing")
+	}
+	return cluster.ClusterID, nil
+}
+
+func (n *Node) RestoreSnapshot(raw []byte, timeout time.Duration) error {
+	if !n.IsLeader() {
+		return ErrNotLeader
+	}
+	if _, err := SnapshotClusterID(raw); err != nil {
+		return err
+	}
+	configuration := n.raft.GetConfiguration()
+	if err := configuration.Error(); err != nil {
+		return err
+	}
+	stats := n.raft.Stats()
+	meta := &raft.SnapshotMeta{
+		Version:            raft.SnapshotVersionMax,
+		Index:              n.raft.LastIndex(),
+		Term:               parseUint(stats["term"]),
+		Configuration:      configuration.Configuration(),
+		ConfigurationIndex: configuration.Index(),
+		Size:               int64(len(raw)),
+	}
+	return n.raft.Restore(meta, bytes.NewReader(raw), timeout)
+}
+
 func (n *Node) Status() (Status, error) {
 	stats := n.raft.Stats()
 	status := Status{
@@ -270,7 +327,8 @@ func (n *Node) Status() (Status, error) {
 		RaftRole:        stats["state"],
 		Revision:        n.fsm.Revision(),
 		StateSchema:     n.fsm.SchemaVersion(),
-		ProtocolVersion: parseUint(stats["protocol_version"]),
+		ProtocolVersion: ProtocolVersion,
+		RaftProtocol:    parseUint(stats["protocol_version"]),
 		Term:            parseUint(stats["term"]),
 		CommitIndex:     parseUint(stats["commit_index"]),
 		LastApplied:     parseUint(stats["applied_index"]),
@@ -291,6 +349,12 @@ func (n *Node) Status() (Status, error) {
 	}
 	if status.Voters > 0 {
 		status.Quorum = status.Voters/2 + 1
+	}
+	if len(status.Members) > 0 {
+		status.PeerCount = len(status.Members) - 1
+	}
+	if status.CommitIndex > status.LastApplied {
+		status.ReplicationLag = status.CommitIndex - status.LastApplied
 	}
 	return status, nil
 }

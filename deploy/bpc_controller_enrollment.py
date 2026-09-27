@@ -20,6 +20,7 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 RAFT_PORT = 9445
 CLUSTER_API_PORT = 9447
+PUBLIC_CONTROL_PORT = 8444
 HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 
 
@@ -136,8 +137,15 @@ def build_controller_enrollment(
     advertise_host: str,
     csr_pem: str,
     software_version: str,
+    protocol_version: int = 1,
+    state_schema_version: int = 1,
     now: int | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
+    if protocol_version != 1 or state_schema_version != 1:
+        raise ControllerEnrollmentError(
+            "Controller protocol/state schema is incompatible",
+            409,
+        )
     state_root = control_dir.parent
     host = normalize_advertise_host(advertise_host)
     cluster = _read_json(state_root / "cluster" / "cluster.json")
@@ -218,10 +226,11 @@ def build_controller_enrollment(
         "node_id": node_id,
         "raft_address": f"{host}:{RAFT_PORT}",
         "api_address": f"{host}:{CLUSTER_API_PORT}",
+        "public_url": f"https://{host}:{PUBLIC_CONTROL_PORT}",
         "state": "pending",
         "software_version": software_version[:64],
-        "protocol_version": 1,
-        "state_schema_version": 1,
+        "protocol_version": int(protocol_version),
+        "state_schema_version": int(state_schema_version),
         "certificate_sha256": cert_sha256,
         "updated_at": timestamp,
     }
@@ -238,9 +247,10 @@ def build_controller_enrollment(
         "advertise_host": host,
         "raft_address": record["raft_address"],
         "cluster_api_address": record["api_address"],
+        "public_url": record["public_url"],
         "controllers": records,
-        "protocol_version": 1,
-        "state_schema_version": 1,
+        "protocol_version": int(protocol_version),
+        "state_schema_version": int(state_schema_version),
     }
     operation = {
         "op": "put",

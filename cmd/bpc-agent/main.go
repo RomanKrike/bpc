@@ -232,7 +232,7 @@ func enrollOrLoadState(
 	if err != nil {
 		return nil, fmt.Errorf("generate WireGuard identity: %w", err)
 	}
-	client, err := agentctl.NewClient(bootstrap.ControlURL, "")
+	client, err := agentctl.NewMultiClient(bootstrap.ControlEndpoints(), "")
 	if err != nil {
 		return nil, err
 	}
@@ -270,6 +270,7 @@ func enrollOrLoadState(
 			PublicKey:    publicKey,
 			PrivateKey:   privateKey,
 			ControlURL:   bootstrap.ControlURL,
+			ControlURLs:  append([]string(nil), response.Config.Controllers...),
 			UpdatePubKey: bootstrap.UpdatePublicKey,
 			Config:       response.Config,
 			WireGuard:    wireGuardProfile,
@@ -340,6 +341,7 @@ func enrollOrLoadState(
 		PublicKey:        publicKey,
 		PrivateKey:       privateKey,
 		ControlURL:       bootstrap.ControlURL,
+		ControlURLs:      append([]string(nil), response.Config.Controllers...),
 		UpdatePubKey:     bootstrap.UpdatePublicKey,
 		Config:           response.Config,
 		WireGuard:        wireGuardProfile,
@@ -388,7 +390,10 @@ func runAgentContext(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
-	control, err := agentctl.NewClient(state.ControlURL, state.ControlCredential())
+	control, err := agentctl.NewMultiClient(
+		state.ControlEndpoints(),
+		state.ControlCredential(),
+	)
 	if err != nil {
 		return err
 	}
@@ -539,6 +544,8 @@ func syncRuntimeState(
 		cfg.WireGuard = nil
 	}
 	state.Config = *cfg
+	state.ControlURL = control.BaseURL
+	state.ControlURLs = append([]string(nil), cfg.Controllers...)
 	if err := agentctl.SaveState(statePath, *state); err != nil {
 		return err
 	}
@@ -826,7 +833,10 @@ func updateNow() error {
 	if err != nil {
 		return err
 	}
-	control, err := agentctl.NewClient(state.ControlURL, state.ControlCredential())
+	control, err := agentctl.NewMultiClient(
+		state.ControlEndpoints(),
+		state.ControlCredential(),
+	)
 	if err != nil {
 		return err
 	}

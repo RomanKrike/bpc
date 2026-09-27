@@ -32,7 +32,8 @@ const (
 type Bootstrap struct {
 	Version         int    `json:"version"`
 	Device          string `json:"device"`
-	ControlURL      string `json:"control_url"`
+	ControlURL      string   `json:"control_url"`
+	ControlURLs     []string `json:"control_urls,omitempty"`
 	EnrollToken     string `json:"enroll_token"`
 	UpdatePublicKey string `json:"update_public_key"`
 	LegacyTunnel    string `json:"legacy_tunnel,omitempty"`
@@ -40,6 +41,7 @@ type Bootstrap struct {
 
 type RuntimeConfig struct {
 	ConfigVersion int               `json:"config_version"`
+	Controllers   []string          `json:"controllers,omitempty"`
 	WGShimServer  string            `json:"wgshim_server"`
 	WGShimServers []string          `json:"wgshim_servers,omitempty"`
 	WGShimListen  string            `json:"wgshim_listen"`
@@ -64,6 +66,7 @@ type State struct {
 	PublicKey        string           `json:"public_key"`
 	PrivateKey       string           `json:"private_key"`
 	ControlURL       string           `json:"control_url"`
+	ControlURLs      []string         `json:"control_urls,omitempty"`
 	UpdatePubKey     string           `json:"update_public_key"`
 	Config           RuntimeConfig    `json:"config"`
 	WireGuard        WireGuardProfile `json:"wireguard"`
@@ -160,27 +163,59 @@ type UpdateManifest struct {
 }
 
 type Client struct {
-	BaseURL string
-	Token   string
-	HTTP    *http.Client
+	BaseURL  string
+	BaseURLs []string
+	Token    string
+	HTTP     *http.Client
 }
 
-func NewClient(baseURL, token string) (*Client, error) {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	parsed, err := url.Parse(baseURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse control URL: %w", err)
+func normalizeControlURLs(values []string) ([]string, error) {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		baseURL := strings.TrimRight(strings.TrimSpace(raw), "/")
+		if baseURL == "" {
+			continue
+		}
+		parsed, err := url.Parse(baseURL)
+		if err != nil {
+			return nil, fmt.Errorf("parse control URL: %w", err)
+		}
+		if parsed.Scheme != "https" || parsed.Host == "" {
+			return nil, errors.New("control URL must be HTTPS")
+		}
+		if _, ok := seen[baseURL]; ok {
+			continue
+		}
+		seen[baseURL] = struct{}{}
+		result = append(result, baseURL)
 	}
-	if parsed.Scheme != "https" || parsed.Host == "" {
-		return nil, errors.New("control URL must be HTTPS")
+	if len(result) == 0 {
+		return nil, errors.New("at least one HTTPS control URL is required")
+	}
+	if len(result) > 16 {
+		return nil, errors.New("control URL pool is too large")
+	}
+	return result, nil
+}
+
+func NewMultiClient(baseURLs []string, token string) (*Client, error) {
+	normalized, err := normalizeControlURLs(baseURLs)
+	if err != nil {
+		return nil, err
 	}
 	return &Client{
-		BaseURL: baseURL,
-		Token:   strings.TrimSpace(token),
+		BaseURL:  normalized[0],
+		BaseURLs: normalized,
+		Token:    strings.TrimSpace(token),
 		HTTP: &http.Client{
 			Timeout: 20 * time.Second,
 		},
 	}, nil
+}
+
+func NewClient(baseURL, token string) (*Client, error) {
+	return NewMultiClient([]string{baseURL}, token)
 }
 
 func (c *Client) Enroll(ctx context.Context, req EnrollmentRequest) (*EnrollmentResponse, error) {
@@ -366,44 +401,90 @@ func (c *Client) doJSON(
 	body any,
 	out any,
 ) error {
-	var payload io.Reader
+	var rawBody []byte
 	if body != nil {
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return err
 		}
-		payload = bytes.NewReader(raw)
+		rawBody = raw
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, payload)
-	if err != nil {
-		return err
+	endpoints := c.BaseURLs
+	if len(endpoints) == 0 {
+		endpoints = []string{c.BaseURL}
 	}
-	req.Header.Set("Accept", "application/json")
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
+	var lastErr error
+	for index, baseURL := range endpoints {
+		var payload io.Reader
+		if rawBody != nil {
+			payload = bytes.NewReader(rawBody)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, baseURL+path, payload)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Accept", "application/json")
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("%s %s: %w", method, path, err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("%s %s: HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(message)))
-	}
-	if out == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("%s %s via %s: %w", method, path, baseURL, err)
+			continue
+		}
+		if resp.StatusCode == http.StatusBadGateway ||
+			resp.StatusCode == http.StatusServiceUnavailable ||
+			resp.StatusCode == http.StatusGatewayTimeout {
+			message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			lastErr = fmt.Errorf(
+				"%s %s via %s: HTTP %d: %s",
+				method,
+				path,
+				baseURL,
+				resp.StatusCode,
+				strings.TrimSpace(string(message)),
+			)
+			if index+1 < len(endpoints) {
+				continue
+			}
+			return lastErr
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			message, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			_ = resp.Body.Close()
+			return fmt.Errorf(
+				"%s %s: HTTP %d: %s",
+				method,
+				path,
+				resp.StatusCode,
+				strings.TrimSpace(string(message)),
+			)
+		}
+		if out == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			c.BaseURL = baseURL
+			return nil
+		}
+		err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out)
+		_ = resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("decode %s %s response: %w", method, path, err)
+			continue
+		}
+		c.BaseURL = baseURL
 		return nil
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(out); err != nil {
-		return fmt.Errorf("decode %s %s response: %w", method, path, err)
+	if lastErr != nil {
+		return lastErr
 	}
-	return nil
+	return fmt.Errorf("%s %s: no Controller endpoints available", method, path)
 }
 
 func GenerateIdentity() (publicB64, privateB64 string, err error) {
@@ -451,6 +532,18 @@ func (s *State) ControlCredential() string {
 	return strings.TrimSpace(s.DeviceToken)
 }
 
+func (s *State) ControlEndpoints() []string {
+	values := make([]string, 0, 1+len(s.ControlURLs)+len(s.Config.Controllers))
+	values = append(values, s.ControlURL)
+	values = append(values, s.ControlURLs...)
+	values = append(values, s.Config.Controllers...)
+	normalized, err := normalizeControlURLs(values)
+	if err != nil {
+		return []string{s.ControlURL}
+	}
+	return normalized
+}
+
 func (s *State) NeedsRefresh(now time.Time) bool {
 	if strings.TrimSpace(s.RefreshToken) == "" {
 		return false
@@ -459,6 +552,17 @@ func (s *State) NeedsRefresh(now time.Time) bool {
 		return true
 	}
 	return s.AccessExpiresAt <= now.Add(60*time.Second).Unix()
+}
+
+func (b Bootstrap) ControlEndpoints() []string {
+	values := make([]string, 0, 1+len(b.ControlURLs))
+	values = append(values, b.ControlURL)
+	values = append(values, b.ControlURLs...)
+	normalized, err := normalizeControlURLs(values)
+	if err != nil {
+		return []string{b.ControlURL}
+	}
+	return normalized
 }
 
 func ValidateBootstrap(cfg Bootstrap) error {
@@ -471,7 +575,7 @@ func ValidateBootstrap(cfg Bootstrap) error {
 	if cfg.Version == LegacyBootstrapVersion && strings.TrimSpace(cfg.EnrollToken) == "" {
 		return errors.New("legacy bootstrap enrollment token is empty")
 	}
-	if _, err := NewClient(cfg.ControlURL, ""); err != nil {
+	if _, err := NewMultiClient(cfg.ControlEndpoints(), ""); err != nil {
 		return err
 	}
 	if _, err := ParseUpdatePublicKey(cfg.UpdatePublicKey); err != nil {
@@ -481,6 +585,11 @@ func ValidateBootstrap(cfg Bootstrap) error {
 }
 
 func ValidateRuntimeConfig(cfg RuntimeConfig) error {
+	if len(cfg.Controllers) > 0 {
+		if _, err := normalizeControlURLs(cfg.Controllers); err != nil {
+			return fmt.Errorf("runtime Controller pool: %w", err)
+		}
+	}
 	required := map[string]string{
 		"wgshim_server": cfg.WGShimServer,
 		"wgshim_listen": cfg.WGShimListen,

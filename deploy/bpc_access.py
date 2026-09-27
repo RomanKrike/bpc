@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import os
@@ -145,9 +146,13 @@ def set_access(
     if not canonical:
         raise AccessError("at least one CIDR is required")
 
+    record_path = _record_path(root, subject_type, subject_id)
+    existing_raw: bytes | None = None
     if bpc_control_state.cluster_enabled(root):
         try:
             bpc_control_state.strong_read(root)
+            if record_path.is_file():
+                existing_raw = record_path.read_bytes()
         except bpc_control_state.ControlStateError as exc:
             raise AccessError(str(exc)) from exc
     record = load_access(root, subject_type, subject_id)
@@ -166,21 +171,23 @@ def set_access(
     record["allow"] = sorted(set(allow))
     record["deny"] = sorted(set(deny))
     record["updated_at"] = int(time.time()) if now is None else int(now)
-    record_path = _record_path(root, subject_type, subject_id)
     if bpc_control_state.cluster_enabled(root):
+        operation: dict[str, Any] = {
+            "op": "put",
+            "path": record_path,
+            "data": json.dumps(
+                record, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8"),
+        }
+        if existing_raw is None:
+            operation["if_absent"] = True
+        else:
+            operation["expected_sha256"] = hashlib.sha256(existing_raw).hexdigest()
         try:
             bpc_control_state.mutation(
                 root,
                 "SetAccess",
-                [
-                    {
-                        "op": "put",
-                        "path": record_path,
-                        "data": json.dumps(
-                            record, sort_keys=True, separators=(",", ":")
-                        ).encode("utf-8"),
-                    }
-                ],
+                [operation],
                 issued_at=record["updated_at"],
             )
         except bpc_control_state.ControlStateError as exc:

@@ -101,6 +101,7 @@ def test_controller_enrollment_keeps_private_key_local(tmp_path: Path) -> None:
     assert pending["state"] == "pending"
     assert pending["node_id"] == node_id
     assert pending["raft_address"] == "controller-b.example:9445"
+    assert pending["public_url"] == "https://controller-b.example:8444"
 
     local_key_before = (joining_state / "cluster" / "pki" / "controller.key").read_bytes()
     install_controller_enrollment(joining_state, payload)
@@ -128,3 +129,32 @@ def test_controller_enrollment_keeps_private_key_local(tmp_path: Path) -> None:
     )
     assert marker["node_id"] == node_id
     assert marker["raft_address"] == "controller-b.example:9445"
+
+
+def test_incompatible_controller_is_rejected_before_certificate_issue(
+    tmp_path: Path,
+) -> None:
+    controller_state = tmp_path / "controller"
+    control_dir = controller_state / "control"
+    control_dir.mkdir(parents=True)
+    seed_cluster_signing_identity(controller_state)
+
+    joining_state = tmp_path / "joining"
+    csr = ensure_controller_csr(joining_state)
+    from bpc_controller_enrollment import ControllerEnrollmentError
+
+    try:
+        build_controller_enrollment(
+            control_dir,
+            node_id="c" * 32,
+            advertise_host="controller-c.example",
+            csr_pem=csr,
+            software_version="99.0.0",
+            protocol_version=99,
+            state_schema_version=99,
+            now=2_000,
+        )
+    except ControllerEnrollmentError as exc:
+        assert exc.status == 409
+    else:
+        raise AssertionError("incompatible Controller was accepted")

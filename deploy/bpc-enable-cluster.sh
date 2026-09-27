@@ -6,6 +6,7 @@ BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RAFT_PORT="${BPC_RAFT_PORT:-9445}"
 CLUSTER_API_PORT="${BPC_CLUSTER_API_PORT:-9447}"
 LOCAL_API_PORT="${BPC_LOCAL_API_PORT:-9446}"
+PUBLIC_CONTROL_PORT="${BPC_CONTROL_PORT:-8444}"
 ADVERTISE_HOST=""
 BOOTSTRAP="false"
 DEFER_MARKER="false"
@@ -68,7 +69,7 @@ if [[ -z "${ADVERTISE_HOST}" || "${ADVERTISE_HOST}" == *:* ]]; then
   echo "--advertise-host must be a DNS name or IPv4 address without a port" >&2
   exit 2
 fi
-for port in "${RAFT_PORT}" "${CLUSTER_API_PORT}" "${LOCAL_API_PORT}"; do
+for port in "${RAFT_PORT}" "${CLUSTER_API_PORT}" "${LOCAL_API_PORT}" "${PUBLIC_CONTROL_PORT}"; do
   if ! [[ "${port}" =~ ^[0-9]+$ ]] || (( port < 1024 || port > 65535 )); then
     echo "Controller ports must be between 1024 and 65535" >&2
     exit 2
@@ -212,9 +213,10 @@ fi
 RAFT_ADDRESS="${ADVERTISE_HOST}:${RAFT_PORT}"
 API_ADDRESS="${ADVERTISE_HOST}:${CLUSTER_API_PORT}"
 LOCAL_ADDRESS="127.0.0.1:${LOCAL_API_PORT}"
+PUBLIC_URL="https://${ADVERTISE_HOST}:${PUBLIC_CONTROL_PORT}"
 
 if [[ ! -f "${CONTROLLERS_DIR}/${NODE_ID}.json" ]]; then
-  python3 - "${CONTROLLERS_DIR}/${NODE_ID}.json" "${NODE_ID}" "${RAFT_ADDRESS}" "${API_ADDRESS}" "${CERT_SHA256}" "${VERSION}" <<'PY'
+  python3 - "${CONTROLLERS_DIR}/${NODE_ID}.json" "${NODE_ID}" "${RAFT_ADDRESS}" "${API_ADDRESS}" "${PUBLIC_URL}" "${CERT_SHA256}" "${VERSION}" <<'PY'
 import json
 import os
 import sys
@@ -226,11 +228,12 @@ value = {
     "node_id": sys.argv[2],
     "raft_address": sys.argv[3],
     "api_address": sys.argv[4],
+    "public_url": sys.argv[5],
     "state": "voter",
-    "software_version": sys.argv[6],
+    "software_version": sys.argv[7],
     "protocol_version": 1,
     "state_schema_version": 1,
-    "certificate_sha256": sys.argv[5],
+    "certificate_sha256": sys.argv[6],
     "updated_at": int(time.time()),
 }
 tmp = path.with_name("." + path.name + ".tmp")
@@ -344,5 +347,6 @@ echo "BPC distributed Controller is active."
 echo "  Node: ${NODE_ID}"
 echo "  Raft: ${RAFT_ADDRESS}"
 echo "  Cluster API: ${API_ADDRESS}"
+echo "  Public API: ${PUBLIC_URL}"
 echo "  Local API: ${LOCAL_ADDRESS}"
 echo "Allow inbound TCP/${RAFT_PORT} and TCP/${CLUSTER_API_PORT} between Controller Nodes."

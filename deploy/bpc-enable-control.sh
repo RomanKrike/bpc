@@ -114,8 +114,9 @@ release_identity="${BPC_ROOT}/current/deploy/bpc_identity.py"
 release_access="${BPC_ROOT}/current/deploy/bpc_access.py"
 release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"
 release_controller_enrollment="${BPC_ROOT}/current/deploy/bpc_controller_enrollment.py"
+release_gateway_snapshot="${BPC_ROOT}/current/deploy/bpc_gateway_snapshot.py"
 release_package="${BPC_ROOT}/current/src/bpc_connect"
-for required in "${release_control_server}" "${release_node_enrollment}" "${release_identity}" "${release_access}" "${release_control_state}" "${release_controller_enrollment}" "${release_package}"; do
+for required in "${release_control_server}" "${release_node_enrollment}" "${release_identity}" "${release_access}" "${release_control_state}" "${release_controller_enrollment}" "${release_gateway_snapshot}" "${release_package}"; do
   if [[ ! -e "${required}" ]]; then
     echo "BPC control runtime dependency is missing from the current release: ${required}" >&2
     exit 3
@@ -132,6 +133,7 @@ install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"
 install -m 0600 "${release_access}" "${runtime_tmp}/bpc_access.py"
 install -m 0600 "${release_control_state}" "${runtime_tmp}/bpc_control_state.py"
 install -m 0600 "${release_controller_enrollment}" "${runtime_tmp}/bpc_controller_enrollment.py"
+install -m 0600 "${release_gateway_snapshot}" "${runtime_tmp}/bpc_gateway_snapshot.py"
 cp -R "${release_package}" "${runtime_tmp}/src/bpc_connect"
 chown -R root:root "${runtime_tmp}"
 find "${runtime_tmp}" -type d -exec chmod 0700 {} +
