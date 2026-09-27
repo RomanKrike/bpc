@@ -250,7 +250,8 @@ Wants=network-online.target
 Type=simple
 ExecStart=${CONTROLD} \
   --node-id ${NODE_ID} \
-  --raft-address 0.0.0.0:${RAFT_PORT} \
+  --raft-bind-address 0.0.0.0:${RAFT_PORT} \
+  --raft-address ${RAFT_ADDRESS} \
   --cluster-api-address 0.0.0.0:${CLUSTER_API_PORT} \
   --local-api-address ${LOCAL_ADDRESS} \
   --state-root ${BPC_STATE_DIR} \
