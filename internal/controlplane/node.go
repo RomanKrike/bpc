@@ -17,6 +17,7 @@ var ErrNotLeader = errors.New("not raft leader")
 
 type NodeConfig struct {
 	NodeID            string
+	RaftBindAddress   string
 	RaftAddress       string
 	StateRoot         string
 	DataDir           string
@@ -61,7 +62,10 @@ type Node struct {
 
 func NewNode(config NodeConfig) (*Node, error) {
 	if strings.TrimSpace(config.NodeID) == "" || strings.TrimSpace(config.RaftAddress) == "" {
-		return nil, errors.New("node id and raft address are required")
+		return nil, errors.New("node id and raft advertise address are required")
+	}
+	if strings.TrimSpace(config.RaftBindAddress) == "" {
+		config.RaftBindAddress = config.RaftAddress
 	}
 	if config.SnapshotRetain <= 0 {
 		config.SnapshotRetain = 3
@@ -94,7 +98,7 @@ func NewNode(config NodeConfig) (*Node, error) {
 		_ = store.Close()
 		return nil, err
 	}
-	stream, err := NewTLSStreamLayer(config.RaftAddress, config.TLS)
+	stream, err := NewTLSStreamLayer(config.RaftBindAddress, config.RaftAddress, config.TLS)
 	if err != nil {
 		_ = store.Close()
 		return nil, err
