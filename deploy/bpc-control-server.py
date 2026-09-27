@@ -35,20 +35,20 @@ from bpc_identity import (
     IdentityError,
     authenticate_local_user,
     authorize_access_credential,
+    credential_index as identity_credential_index,
     deactivate_device,
     device_is_active,
     find_device_by_public_key,
     issue_access_credential,
     issue_device_session,
+    list_devices as identity_list_devices,
+    load_device as identity_load_device,
     logout_session,
     refresh_device_session,
     registration_message,
     revoke_device_credentials,
     verify_device_proof,
 )
-from bpc_identity import credential_index as identity_credential_index
-from bpc_identity import list_devices as identity_list_devices
-from bpc_identity import load_device as identity_load_device
 from bpc_node_enrollment import (
     EnrollmentError,
     enroll_node,
@@ -164,9 +164,13 @@ def gateway_routes(devices: list[dict[str, Any]]) -> dict[str, str]:
             try:
                 network = ipaddress.ip_network(str(raw), strict=False)
             except ValueError as exc:
-                raise RuntimeError(f"compatibility site-router {owner} has invalid route {raw!r}") from exc
+                raise RuntimeError(
+                    f"compatibility site-router {owner} has invalid route {raw!r}"
+                ) from exc
             if network.version != 4 or network.prefixlen == 0:
-                raise RuntimeError(f"compatibility site-router {owner} has unsupported route {network}")
+                raise RuntimeError(
+                    f"compatibility site-router {owner} has unsupported route {network}"
+                )
             for existing, existing_owner in networks:
                 if network.overlaps(existing):
                     raise RuntimeError(
@@ -248,7 +252,9 @@ def sync_gateway_routes(state_dir: Path) -> None:
         )
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip()
-            raise RuntimeError(message or f"failed to install compatibility site-router route {route}")
+            raise RuntimeError(
+                message or f"failed to install compatibility site-router route {route}"
+            )
 
     atomic_json(state_path, {"interface": interface, "routes": routes})
 
