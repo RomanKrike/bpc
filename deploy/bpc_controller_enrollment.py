@@ -24,7 +24,9 @@ HOST_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$")
 
 
 class ControllerEnrollmentError(RuntimeError):
-    pass
+    def __init__(self, message: str, status: int = 400) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 def _atomic_bytes(path: Path, value: bytes, mode: int) -> None:
@@ -139,7 +141,7 @@ def build_controller_enrollment(
     cluster = _read_json(state_root / "cluster" / "cluster.json")
     cluster_id = str(cluster.get("cluster_id", "")).strip()
     if not cluster_id:
-        raise ControllerEnrollmentError("canonical cluster_id is missing")
+        raise ControllerEnrollmentError("canonical cluster_id is missing", 503)
 
     pki = state_root / "cluster" / "pki"
     ca_cert_path = pki / "cluster-ca.crt"
@@ -148,7 +150,10 @@ def build_controller_enrollment(
         ca_cert_pem = ca_cert_path.read_bytes()
         ca_key_pem = ca_key_path.read_bytes()
     except OSError as exc:
-        raise ControllerEnrollmentError("cluster signing identity is unavailable") from exc
+        raise ControllerEnrollmentError(
+            "cluster signing identity is unavailable",
+            503,
+        ) from exc
 
     ca_cert = x509.load_pem_x509_certificate(ca_cert_pem)
     ca_key = serialization.load_pem_private_key(ca_key_pem, password=None)
