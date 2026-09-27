@@ -457,7 +457,6 @@ func randomID() string {
 	return hex.EncodeToString(raw[:])
 }
 
-
 func readLocalToken(path string) (string, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
