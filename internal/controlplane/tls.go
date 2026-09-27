@@ -59,14 +59,20 @@ func ClientTLSConfig(material TLSMaterial, serverName string) (*tls.Config, erro
 	}, nil
 }
 
+type advertisedAddr string
+
+func (a advertisedAddr) Network() string { return "tcp" }
+func (a advertisedAddr) String() string  { return string(a) }
+
 type TLSStreamLayer struct {
-	listener net.Listener
-	server   *tls.Config
-	material TLSMaterial
+	listener  net.Listener
+	advertise net.Addr
+	server    *tls.Config
+	material  TLSMaterial
 }
 
-func NewTLSStreamLayer(address string, material TLSMaterial) (*TLSStreamLayer, error) {
-	listener, err := net.Listen("tcp", address)
+func NewTLSStreamLayer(bindAddress, advertiseAddress string, material TLSMaterial) (*TLSStreamLayer, error) {
+	listener, err := net.Listen("tcp", bindAddress)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +81,13 @@ func NewTLSStreamLayer(address string, material TLSMaterial) (*TLSStreamLayer, e
 		_ = listener.Close()
 		return nil, err
 	}
-	return &TLSStreamLayer{listener: listener, server: server, material: material}, nil
+	if advertiseAddress == "" {
+		advertiseAddress = listener.Addr().String()
+	}
+	return &TLSStreamLayer{
+		listener: listener, advertise: advertisedAddr(advertiseAddress),
+		server: server, material: material,
+	}, nil
 }
 
 func (l *TLSStreamLayer) Accept() (net.Conn, error) {
@@ -92,7 +104,7 @@ func (l *TLSStreamLayer) Accept() (net.Conn, error) {
 }
 
 func (l *TLSStreamLayer) Close() error   { return l.listener.Close() }
-func (l *TLSStreamLayer) Addr() net.Addr { return l.listener.Addr() }
+func (l *TLSStreamLayer) Addr() net.Addr { return l.advertise }
 
 func (l *TLSStreamLayer) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
 	host, _, err := net.SplitHostPort(string(address))
