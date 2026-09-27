@@ -66,3 +66,16 @@ def test_private_key_mismatch_refuses_public_key_overwrite(tmp_path: Path) -> No
         first.public_key
     )
     assert load_node_config(tmp_path / "node.yaml").node.public_key == "different-public-key"
+
+
+def test_orphaned_public_key_file_refuses_rotation(tmp_path: Path) -> None:
+    seed_empty_node(tmp_path)
+    identity = tmp_path / "identity"
+    identity.mkdir()
+    (identity / "node.pub").write_text("orphaned-public-key\n", encoding="utf-8")
+
+    with pytest.raises(NodeIdentityError, match="node.pub exists"):
+        ensure_node_identity(tmp_path)
+
+    assert not (identity / "node.key").exists()
+    assert (identity / "node.pub").read_text(encoding="utf-8").strip() == "orphaned-public-key"
