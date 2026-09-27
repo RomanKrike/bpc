@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "deploy"))
 
+from bpc_node_enrollment import generate_node_identity, normalize_roles  # noqa: E402
+
 from bpc_connect.compat.legacy import legacy_control_dir, legacy_node_dir  # noqa: E402
 from bpc_connect.compat.migration import format_report, migrate_canonical_state  # noqa: E402
 from bpc_connect.compat.runtime import (  # noqa: E402
@@ -24,12 +26,10 @@ from bpc_connect.compat.runtime import (  # noqa: E402
 )
 from bpc_connect.node import (  # noqa: E402
     CORE_CAPABILITIES,
-    load_node_config,
     reconcile_node_config,
     set_node_identity,
 )
 from bpc_connect.state import StateLayout  # noqa: E402
-from bpc_node_enrollment import generate_node_identity, normalize_roles  # noqa: E402
 
 
 class ClusterInitError(RuntimeError):
