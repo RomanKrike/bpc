@@ -60,6 +60,11 @@ def test_control_service_stages_self_contained_runtime_inside_canonical_state() 
         'release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"'
         in enable_control
     )
+    assert (
+        'release_controller_enrollment='
+        '"${BPC_ROOT}/current/deploy/bpc_controller_enrollment.py"'
+        in enable_control
+    )
     assert 'release_package="${BPC_ROOT}/current/src/bpc_connect"' in enable_control
     assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in enable_control
     assert 'chown -R root:root "${runtime_tmp}"' in enable_control
@@ -74,6 +79,10 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
     shutil.copy(ROOT / "deploy" / "bpc_identity.py", runtime / "bpc_identity.py")
     shutil.copy(ROOT / "deploy" / "bpc_access.py", runtime / "bpc_access.py")
     shutil.copy(ROOT / "deploy" / "bpc_control_state.py", runtime / "bpc_control_state.py")
+    shutil.copy(
+        ROOT / "deploy" / "bpc_controller_enrollment.py",
+        runtime / "bpc_controller_enrollment.py",
+    )
     shutil.copytree(ROOT / "src" / "bpc_connect", runtime / "src" / "bpc_connect")
 
     completed = subprocess.run(
