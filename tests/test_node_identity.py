@@ -46,7 +46,7 @@ def test_configured_identity_without_private_key_refuses_rotation(tmp_path: Path
     seed_empty_node(tmp_path)
     set_node_identity(tmp_path / "node.yaml", "configured-public-key")
 
-    with pytest.raises(NodeIdentityError, match="private key is missing"):
+    with pytest.raises(NodeIdentityError, match="node.key is missing"):
         ensure_node_identity(tmp_path)
 
     assert not (tmp_path / "identity" / "node.key").exists()
