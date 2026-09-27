@@ -3,6 +3,8 @@ module github.com/RomanKrike/bpc
 go 1.23.1
 
 require (
+	github.com/hashicorp/raft v1.7.3
+	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.37.0
 	golang.org/x/sys v0.32.0
 	golang.zx2c4.com/wireguard v0.0.0-20260522210424-ecfc5a8d5446
