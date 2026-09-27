@@ -57,11 +57,17 @@ def ensure_node_identity(state_dir: str | Path) -> NodeIdentityResult:
     private_path = identity_dir / "node.key"
     public_path = identity_dir / "node.pub"
 
-    if configured_public_key and not private_path.is_file():
-        raise NodeIdentityError(
-            "node.yaml contains a Node public key but identity/node.key is missing; "
-            "refusing to rotate Node identity automatically"
-        )
+    if not private_path.is_file():
+        if configured_public_key:
+            raise NodeIdentityError(
+                "node.yaml contains a Node public key but identity/node.key is missing; "
+                "refusing to rotate Node identity automatically"
+            )
+        if public_path.is_file() and public_path.read_text(encoding="utf-8").strip():
+            raise NodeIdentityError(
+                "identity/node.pub exists but identity/node.key is missing; "
+                "refusing to rotate Node identity automatically"
+            )
 
     private_created = False
     if not private_path.is_file():
