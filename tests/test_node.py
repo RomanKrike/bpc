@@ -2,15 +2,16 @@ from pathlib import Path
 
 import pytest
 
+from bpc_connect.compat.legacy import migrate_legacy_node
 from bpc_connect.errors import BPCConfigError
 from bpc_connect.node import (
     CORE_CAPABILITIES,
     Capabilities,
     load_node_config,
-    migrate_legacy_node,
     new_node_config,
     parse_node_config,
     save_node_config,
+    set_advertised_routes,
     set_capabilities,
 )
 
@@ -64,11 +65,17 @@ def test_invalid_capabilities_are_rejected(roles: dict[str, object], message: st
         Capabilities.from_mapping(roles)
 
 
-def test_node_config_round_trip(tmp_path: Path) -> None:
+def test_node_config_round_trip_includes_canonical_advertised_routes(tmp_path: Path) -> None:
     path = tmp_path / "node.yaml"
     config = new_node_config(
         name="ru-01",
-        roles={"controller": True, "gateway": True, "relay": True},
+        roles={
+            "controller": True,
+            "gateway": True,
+            "relay": True,
+            "site_router": True,
+        },
+        advertised_routes=["192.168.88.14/24", "10.20.0.0/16"],
         now=100,
     )
     save_node_config(path, config)
@@ -84,16 +91,17 @@ def test_node_config_round_trip(tmp_path: Path) -> None:
     assert loaded.node.has_capability("controller")
     assert loaded.node.has_capability("gateway")
     assert loaded.node.has_capability("relay")
-    assert not loaded.node.has_capability("site_router")
+    assert loaded.node.has_capability("site_router")
+    assert loaded.advertised_routes == ("10.20.0.0/16", "192.168.88.0/24")
 
 
-def test_legacy_ru_node_migrates_to_multiple_capabilities(tmp_path: Path) -> None:
-    ru = tmp_path / "ru-node"
-    (ru / "control").mkdir(parents=True)
-    (ru / "agent").mkdir(parents=True)
-    (ru / "config.json").write_text("{}", encoding="utf-8")
-    (ru / "control" / "enabled").touch()
-    (ru / "agent" / "enabled").touch()
+def test_legacy_state_migrates_only_through_compatibility_adapter(tmp_path: Path) -> None:
+    legacy = tmp_path / "ru-node"
+    (legacy / "control").mkdir(parents=True)
+    (legacy / "agent").mkdir(parents=True)
+    (legacy / "config.json").write_text("{}", encoding="utf-8")
+    (legacy / "control" / "enabled").touch()
+    (legacy / "agent" / "enabled").touch()
 
     first, changed = migrate_legacy_node(tmp_path, name="ru-01", now=200)
     second, changed_again = migrate_legacy_node(tmp_path, now=300)
@@ -108,7 +116,7 @@ def test_legacy_ru_node_migrates_to_multiple_capabilities(tmp_path: Path) -> Non
     assert not second.node.roles.has("site_router")
 
 
-def test_legacy_install_role_is_compatibility_input_not_node_type(tmp_path: Path) -> None:
+def test_legacy_install_profile_is_compatibility_input_only(tmp_path: Path) -> None:
     (tmp_path / "install.env").write_text("BPC_ROLE=ru-node\n", encoding="utf-8")
 
     config, _ = migrate_legacy_node(tmp_path, name="legacy-ru", now=400)
@@ -118,10 +126,11 @@ def test_legacy_install_role_is_compatibility_input_not_node_type(tmp_path: Path
     assert not config.node.roles.has("relay")
 
 
-def test_reconcile_never_drops_explicit_or_extension_capabilities(tmp_path: Path) -> None:
+def test_compatibility_reconcile_never_drops_canonical_capabilities(tmp_path: Path) -> None:
     config = new_node_config(
         name="mixed-node",
         roles={"site_router": True, "future_role": True},
+        advertised_routes=["192.168.88.0/24"],
         now=500,
     )
     save_node_config(tmp_path / "node.yaml", config)
@@ -134,6 +143,7 @@ def test_reconcile_never_drops_explicit_or_extension_capabilities(tmp_path: Path
     assert reconciled.node.roles.has("controller")
     assert reconciled.node.roles.has("site_router")
     assert reconciled.node.roles.has("future_role")
+    assert reconciled.advertised_routes == ("192.168.88.0/24",)
 
 
 def test_set_capabilities_updates_one_role_without_type_switch(tmp_path: Path) -> None:
@@ -145,6 +155,19 @@ def test_set_capabilities_updates_one_role_without_type_switch(tmp_path: Path) -
     assert updated.node.roles.has("controller")
     assert updated.node.roles.has("relay")
     assert not updated.node.roles.has("gateway")
+
+
+def test_set_advertised_routes_is_node_owned_state(tmp_path: Path) -> None:
+    path = tmp_path / "node.yaml"
+    save_node_config(
+        path,
+        new_node_config(name="site-01", roles={"site_router": True}, now=800),
+    )
+
+    updated = set_advertised_routes(path, ["192.168.88.0/24"])
+
+    assert updated.node.roles.has("site_router")
+    assert updated.advertised_routes == ("192.168.88.0/24",)
 
 
 def test_unknown_node_config_version_is_rejected() -> None:
