@@ -217,7 +217,6 @@ func TestStateCredentialSelectionAndRefreshWindow(t *testing.T) {
 	}
 }
 
-
 func TestControllerFailoverUsesNextEndpoint(t *testing.T) {
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/config" {

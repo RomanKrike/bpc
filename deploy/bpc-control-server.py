@@ -33,21 +33,30 @@ from bpc_identity import (
     IdentityError,
     authenticate_local_user,
     authorize_access_credential,
-    credential_index as identity_credential_index,
     deactivate_device,
-    delete_canonical as identity_delete_canonical,
     device_is_active,
     find_device_by_public_key,
     issue_access_credential,
     issue_device_session,
-    list_devices as identity_list_devices,
-    load_device as identity_load_device,
     logout_session,
     refresh_device_session,
     registration_message,
     revoke_device_credentials,
     verify_device_proof,
 )
+from bpc_identity import (
+    credential_index as identity_credential_index,
+)
+from bpc_identity import (
+    delete_canonical as identity_delete_canonical,
+)
+from bpc_identity import (
+    list_devices as identity_list_devices,
+)
+from bpc_identity import (
+    load_device as identity_load_device,
+)
+
 from bpc_node_enrollment import (
     EnrollmentError,
     authorize_node,

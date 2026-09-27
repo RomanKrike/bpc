@@ -141,7 +141,11 @@ def cmd_status(args: argparse.Namespace) -> int:
         if not isinstance(peer, dict):
             peer = {}
         role = "leader" if node_id == status.get("leader_id") else "follower"
-        online = "online" if bool(peer.get("healthy", node_id == status.get("node_id"))) else "offline"
+        online = (
+            "online"
+            if bool(peer.get("healthy", node_id == status.get("node_id")))
+            else "offline"
+        )
         print(
             f"  {node_id}\t{role}\t{online}\t"
             f"{member.get('suffrage', '-')}"
@@ -163,10 +167,15 @@ def cmd_members(args: argparse.Namespace) -> int:
         if not isinstance(peer, dict):
             peer = {}
         leader = node_id == status.get("leader_id")
+        online = (
+            "online"
+            if bool(peer.get("healthy", node_id == status.get("node_id")))
+            else "offline"
+        )
         print(
             f"{node_id}\t"
             f"{'leader' if leader else 'follower'}\t"
-            f"{'online' if bool(peer.get('healthy', node_id == status.get('node_id'))) else 'offline'}\t"
+            f"{online}\t"
             f"{member.get('suffrage', '-')}"
         )
     return 0

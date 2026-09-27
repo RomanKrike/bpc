@@ -359,9 +359,7 @@ def snapshot_allows_device(
             return False
         if bool(device.get("revoked", False)):
             return False
-        if device.get("revoked_at") not in (None, "", 0):
-            return False
-        return True
+        return device.get("revoked_at") in (None, "", 0)
     return False
 
 

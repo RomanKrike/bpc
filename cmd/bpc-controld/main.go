@@ -199,15 +199,15 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok": true,
-		"node_id": status.NodeID,
-		"raft_role": status.RaftRole,
-		"leader_id": status.LeaderID,
-		"commit_index": status.CommitIndex,
-		"last_applied": status.LastApplied,
-		"revision": status.Revision,
-		"software_version": s.version,
-		"protocol_version": controlplane.ProtocolVersion,
+		"ok":                   true,
+		"node_id":              status.NodeID,
+		"raft_role":            status.RaftRole,
+		"leader_id":            status.LeaderID,
+		"commit_index":         status.CommitIndex,
+		"last_applied":         status.LastApplied,
+		"revision":             status.Revision,
+		"software_version":     s.version,
+		"protocol_version":     controlplane.ProtocolVersion,
 		"state_schema_version": controlplane.ControlSchemaVersion,
 	})
 }
@@ -233,11 +233,11 @@ func (s *server) status(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"cluster_id": clusterID,
-		"software_version": s.version,
-		"status": status,
+		"cluster_id":               clusterID,
+		"software_version":         s.version,
+		"status":                   status,
 		"healthy_controller_count": healthy,
-		"controller_health": health,
+		"controller_health":        health,
 	})
 }
 
@@ -445,15 +445,15 @@ func (s *server) addMember(w http.ResponseWriter, r *http.Request) {
 	status, err := s.node.Status()
 	if err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error":              err.Error(),
+			"error":             err.Error(),
 			"nonvoter_revision": nonvoter.Revision,
 		})
 		return
 	}
 	if err := s.waitControllerApplied(record, status.CommitIndex, 30*time.Second); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error":              err.Error(),
-			"state":              "nonvoter",
+			"error":             err.Error(),
+			"state":             "nonvoter",
 			"nonvoter_revision": nonvoter.Revision,
 		})
 		return
@@ -575,7 +575,7 @@ func (s *server) removeMember(w http.ResponseWriter, r *http.Request) {
 	record := controllerRecord{
 		NodeID: request.NodeID, State: "revoked", UpdatedAt: time.Now().Unix(),
 		ProtocolVersion: controlplane.ProtocolVersion,
-		StateSchema: controlplane.ControlSchemaVersion,
+		StateSchema:     controlplane.ControlSchemaVersion,
 	}
 	if existing, readErr := os.ReadFile(path); readErr == nil {
 		_ = json.Unmarshal(existing, &record)
@@ -589,16 +589,16 @@ func (s *server) removeMember(w http.ResponseWriter, r *http.Request) {
 	record.UpdatedAt = time.Now().Unix()
 	recordRaw, _ := json.Marshal(record)
 	revocationRaw, _ := json.Marshal(map[string]any{
-		"version": 1,
-		"kind": "controller",
+		"version":    1,
+		"kind":       "controller",
 		"subject_id": request.NodeID,
 		"revoked_at": record.UpdatedAt,
-		"reason": "controller_removed",
+		"reason":     "controller_removed",
 	})
 	result, err := s.node.Submit(controlplane.Mutation{
-		Version: controlplane.CommandVersion,
-		ID: randomID(),
-		Kind: "RevokeController",
+		Version:  controlplane.CommandVersion,
+		ID:       randomID(),
+		Kind:     "RevokeController",
 		IssuedAt: record.UpdatedAt,
 		Operations: []controlplane.Operation{
 			{Op: "put", Path: "cluster/controllers/" + request.NodeID + ".json", Data: recordRaw},
@@ -713,8 +713,8 @@ func (s *server) controllerHealth(status controlplane.Status) map[string]map[str
 	for _, member := range status.Members {
 		if member.ID == status.NodeID {
 			result[member.ID] = map[string]any{
-				"healthy": true,
-				"raft_role": status.RaftRole,
+				"healthy":      true,
+				"raft_role":    status.RaftRole,
 				"commit_index": status.CommitIndex,
 				"last_applied": status.LastApplied,
 			}
@@ -753,7 +753,7 @@ func (s *server) probeController(record controllerRecord) (map[string]any, error
 		return nil, err
 	}
 	client := &http.Client{
-		Timeout: 1500 * time.Millisecond,
+		Timeout:   1500 * time.Millisecond,
 		Transport: &http.Transport{TLSClientConfig: tlsConfig},
 	}
 	response, err := client.Get("https://" + record.APIAddress + "/v1/health")

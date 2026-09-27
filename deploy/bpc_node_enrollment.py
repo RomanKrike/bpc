@@ -222,7 +222,7 @@ def parse_join_token_endpoints(token: str) -> tuple[list[str], str]:
     if decoded.lstrip().startswith("{"):
         try:
             envelope = json.loads(decoded)
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             raise EnrollmentError("invalid join token", 401) from exc
         if not isinstance(envelope, dict) or int(envelope.get("version", 0)) != 2:
             raise EnrollmentError("invalid join token", 401)
@@ -599,7 +599,7 @@ def normalize_advertised_routes(values: object) -> list[str]:
 
 
 def _route_path(control_dir: Path, node_id: str, cidr: str) -> Path:
-    index = hashlib.sha256(f"{node_id}\0{cidr}".encode("utf-8")).hexdigest()
+    index = hashlib.sha256(f"{node_id}\0{cidr}".encode()).hexdigest()
     return control_dir / "routes" / f"{index}.json"
 
 

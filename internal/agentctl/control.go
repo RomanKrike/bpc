@@ -30,13 +30,13 @@ const (
 )
 
 type Bootstrap struct {
-	Version         int    `json:"version"`
-	Device          string `json:"device"`
+	Version         int      `json:"version"`
+	Device          string   `json:"device"`
 	ControlURL      string   `json:"control_url"`
 	ControlURLs     []string `json:"control_urls,omitempty"`
-	EnrollToken     string `json:"enroll_token"`
-	UpdatePublicKey string `json:"update_public_key"`
-	LegacyTunnel    string `json:"legacy_tunnel,omitempty"`
+	EnrollToken     string   `json:"enroll_token"`
+	UpdatePublicKey string   `json:"update_public_key"`
+	LegacyTunnel    string   `json:"legacy_tunnel,omitempty"`
 }
 
 type RuntimeConfig struct {
