@@ -162,7 +162,8 @@ python3 - "${CONTROL_DIR}/config.json" \
   "${AGENT_WG_PORT}" "${AGENT_WGSHIM_PADDING_MIN}" "${AGENT_WGSHIM_PADDING_MAX}" \
   "${AGENT_WG_INTERFACE}" "${AGENT_WG_SUBNET}" "${AGENT_WG_SERVER_ADDRESS}" \
   "${AGENT_WG_SERVER_PUBLIC_KEY}" "${AGENT_WG_MTU}" "${AGENT_WG_KEEPALIVE}" \
-  "${AGENT_WG_ALLOWED_IPS}" "${AGENT_WGSHIM_KEY_DIR}" <<'PY'
+  "${AGENT_WG_ALLOWED_IPS}" "${AGENT_WGSHIM_KEY_DIR}" "${AGENT_DIR}/server.key" "${CONTROL_DIR}/runtime" <<'PY'
+import base64
 import json
 import os
 import sys
@@ -173,6 +174,23 @@ host = sys.argv[2]
 primary_port = sys.argv[3]
 ports = [item.strip() for item in sys.argv[4].split(",") if item.strip()]
 tcp_port = sys.argv[5]
+private_key = Path(sys.argv[18]).read_text(encoding="ascii").strip()
+try:
+    private_raw = base64.b64decode(private_key, validate=True)
+except (ValueError, base64.binascii.Error) as exc:
+    raise SystemExit(f"invalid BPC overlay WireGuard private key: {exc}") from exc
+if len(private_raw) != 32:
+    raise SystemExit("invalid BPC overlay WireGuard private key length")
+
+existing = {}
+if path.is_file():
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            existing = loaded
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+
 value = {
     "config_version": 4,
     "wgshim_server": f"{host}:{primary_port}",
@@ -186,16 +204,33 @@ value = {
     "wireguard_subnet": sys.argv[11],
     "wireguard_server_address": sys.argv[12],
     "wireguard_server_public_key": sys.argv[13],
+    "wireguard_server_private_key": private_key,
     "wireguard_mtu": int(sys.argv[14]),
     "wireguard_keepalive": int(sys.argv[15]),
     "wireguard_allowed_ips": [item.strip() for item in sys.argv[16].split(",") if item.strip()],
     "wgshim_key_dir": sys.argv[17],
-    "update_channel": "stable",
+    "update_channel": str(existing.get("update_channel", "stable")),
 }
-tmp = path.with_suffix(".tmp")
-tmp.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
+if "paths" in existing:
+    value["paths"] = existing["paths"]
+
+payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+runtime = Path(sys.argv[19])
+cluster_marker = path.parent.parent / "cluster" / "controller.json"
+if cluster_marker.is_file():
+    sys.path.insert(0, str(runtime))
+    import bpc_control_state
+
+    bpc_control_state.mutation(
+        path.parent,
+        "UpdateControlConfig",
+        [{"op": "put", "path": path, "data": payload}],
+    )
+else:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(payload)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
 PY
 chmod 0600 "${CONTROL_DIR}/config.json"
 
