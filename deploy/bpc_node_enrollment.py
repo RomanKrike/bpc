@@ -294,6 +294,47 @@ def normalize_roles(values: list[str] | tuple[str, ...]) -> list[str]:
     return sorted(roles)
 
 
+def normalize_transport_runtime(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    raw_ports = raw.get("udp_ports", [])
+    if not isinstance(raw_ports, list):
+        return {}
+    ports: list[int] = []
+    seen: set[int] = set()
+    for raw_port in raw_ports[:16]:
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            continue
+        if 1024 <= port <= 65535 and port not in seen:
+            seen.add(port)
+            ports.append(port)
+    try:
+        tcp_port = int(raw.get("tcp_port", 0) or 0)
+    except (TypeError, ValueError):
+        tcp_port = 0
+    if not 1024 <= tcp_port <= 65535:
+        tcp_port = 0
+    overlay_public_key = str(raw.get("overlay_public_key", "")).strip()
+    if overlay_public_key:
+        try:
+            decoded = base64.b64decode(overlay_public_key, validate=True)
+        except (ValueError, base64.binascii.Error):
+            overlay_public_key = ""
+        else:
+            if len(decoded) != 32:
+                overlay_public_key = ""
+    result: dict[str, Any] = {}
+    if ports:
+        result["udp_ports"] = ports
+    if tcp_port:
+        result["tcp_port"] = tcp_port
+    if overlay_public_key:
+        result["overlay_public_key"] = overlay_public_key
+    return result
+
+
 def normalize_node_name(value: str | None, fallback: str = "bpc-node") -> str:
     name = (value or "").strip() or fallback
     if not NODE_NAME_RE.fullmatch(name):
@@ -684,6 +725,10 @@ def node_heartbeat(
     roles = node.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
+    if bool(roles.get("relay")):
+        node["transport"] = normalize_transport_runtime(payload.get("transport", {}))
+    else:
+        node.pop("transport", None)
     advertised = (
         normalize_advertised_routes(payload.get("advertised_routes", []))
         if bool(roles.get("site_router"))
@@ -1035,6 +1080,39 @@ def local_services(roles: dict[str, Any]) -> dict[str, str]:
     return services
 
 
+def local_transport_runtime(
+    state_dir: Path,
+    roles: dict[str, Any],
+) -> dict[str, Any]:
+    if not bool(roles.get("relay")):
+        return {}
+    runtime = state_dir / "ru-node" / "agent" / "runtime.env"
+    if not runtime.is_file():
+        return {}
+    ports: list[int] = []
+    raw_ports = read_env_value(runtime, "AGENT_WGSHIM_PORTS")
+    for raw in raw_ports.split(","):
+        try:
+            port = int(raw.strip())
+        except ValueError:
+            continue
+        if 1024 <= port <= 65535 and port not in ports:
+            ports.append(port)
+    try:
+        tcp_port = int(read_env_value(runtime, "AGENT_WGSHIM_TCP_PORT") or "0")
+    except ValueError:
+        tcp_port = 0
+    return normalize_transport_runtime(
+        {
+            "udp_ports": ports,
+            "tcp_port": tcp_port,
+            "overlay_public_key": read_env_value(
+                runtime, "AGENT_WG_SERVER_PUBLIC_KEY"
+            ),
+        }
+    )
+
+
 def reconcile_roles(
     state_dir: Path,
     roles: dict[str, Any],
@@ -1181,6 +1259,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
             "state_schema_version": STATE_SCHEMA_VERSION,
             "advertised_routes": _local_advertised_routes(state_dir),
             "services": local_services(roles),
+            "transport": local_transport_runtime(state_dir, roles),
         },
         credential=str(enrollment["credential"]),
         controller_urls=[str(item) for item in controllers],
