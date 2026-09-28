@@ -26,6 +26,11 @@ def _read_env_value(path: Path, name: str) -> str:
     return ""
 
 
+def agent_runtime_env(state_dir: Path) -> Path:
+    """Return the historical Agent runtime env behind the compatibility boundary."""
+    return legacy_node_dir(state_dir) / "agent" / "runtime.env"
+
+
 def service_state(name: str) -> str:
     completed = subprocess.run(
         ["systemctl", "is-active", name],
