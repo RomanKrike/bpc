@@ -23,6 +23,13 @@ controller state and do not change when the selected transport path changes.
 The canonical overlay private key is replicated only in controller state and is
 never returned in Device runtime configuration.
 
+A UDP-port switch inside one Public Node leaves the embedded WireGuard peer
+untouched. A switch between different Public Nodes keeps the Wintun interface,
+overlay address and routes alive, but reapplies the peer with
+`replace_peers=true` so wireguard-go discards the responder-specific ephemeral
+session state and can immediately establish a fresh handshake through the newly
+selected Node.
+
 WGShim uses the existing authenticated probe wire format. Internal transport
 status includes each path's reachability, smoothed RTT and jitter, rolling probe
 loss (32 samples), last success, cumulative failures and ACTIVE/STANDBY state.
@@ -66,9 +73,9 @@ requires isolated exchanges to avoid an unread queue suppressing notifications.
 
 Both relays in this test lead to ONE surviving WireGuard destination. Public
 Nodes can now materialize the same Device peers/WGShim keys and share the
-canonical WireGuard static identity, but WireGuard ephemeral session state and
-Linux conntrack/NAT state are not replicated between Nodes. Therefore an
-independent gateway failover may still require an inner WireGuard re-handshake
-and may not preserve NAT-backed TCP sessions. Production multi-VPS acceptance,
-systemd restart, reboot and Windows Wintun measurements are still outstanding;
-this is not yet a zero-loss failover claim.
+canonical WireGuard static identity. Cross-node selection explicitly triggers a
+fresh inner WireGuard handshake without recreating the client interface.
+Linux conntrack/NAT state is still not replicated between Nodes, so flows that
+depend on gateway-local NAT may not survive an independent gateway failure.
+Production multi-VPS acceptance, systemd restart, reboot and Windows Wintun
+measurements are still outstanding; this is not yet a zero-loss failover claim.
