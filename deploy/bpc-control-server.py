@@ -622,21 +622,25 @@ class ControlHandler(BaseHTTPRequestHandler):
                 }
             )
 
-        # Keep the historical pool as compatibility paths even before the
-        # original Public Node has reported runtime metadata.
+        # Reserve path capacity for distinct Public Nodes before filling the
+        # remaining slots with extra compatibility/randomized ports.
         compatibility = global_config.get(
             "wgshim_servers",
             [global_config["wgshim_server"]],
         )
         if not isinstance(compatibility, list):
             compatibility = [global_config["wgshim_server"]]
+        add("compat-primary", str(global_config["wgshim_server"]))
+        for node, host, ports in candidates:
+            if ports:
+                add(node, f"{host}:{ports[0]}")
         for endpoint in compatibility:
             if isinstance(endpoint, str) and endpoint.strip():
                 add("compat-primary", endpoint.strip())
 
-        # Round-robin ports across Nodes so every healthy Public Node gets at
-        # least one path before extra randomized ports consume the 16-path cap.
-        depth = 0
+        # Round-robin additional ports across Nodes after every healthy Public
+        # Node had a chance to claim one path.
+        depth = 1
         while len(result) < 16:
             added = False
             for node, host, ports in candidates:
