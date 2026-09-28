@@ -1295,6 +1295,69 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def resume_controller_provisioning(state_dir: Path, enrollment: dict[str, Any]) -> None:
+    """Resume durable enrollment phases without consuming another invitation."""
+    if not enrollment.get("roles", {}).get("controller"):
+        return
+    progress = enrollment.get("controller_provision")
+    if not isinstance(progress, dict):
+        # Older, fully configured Controllers have no provisioning journal.
+        if (state_dir / "cluster" / "controller.json").is_file():
+            return
+        raise EnrollmentError("Controller enrollment is incomplete and has no recovery material")
+    if progress.get("complete"):
+        subprocess.run(["systemctl", "start", "bpc-controld.service"], check=True)
+        return
+    payload = progress["payload"]
+    host = str(payload["advertise_host"])
+    software_version = (
+        (ROOT / "VERSION").read_text().strip() if (ROOT / "VERSION").is_file() else "source"
+    )
+
+    def checkpoint(phase: str) -> None:
+        progress[phase] = True
+        write_local_enrollment(state_dir, enrollment)
+
+    def run_helper(name: str, *arguments: str) -> None:
+        env = dict(os.environ, BPC_STATE_DIR=str(state_dir))
+        result = subprocess.run([str(ROOT / "deploy" / name), *arguments], check=False, env=env)
+        if result.returncode:
+            raise EnrollmentError(
+                f"{name} failed ({result.returncode}); rerun the same join command"
+            )
+
+    if not progress.get("trust_installed"):
+        try:
+            install_controller_enrollment(state_dir, payload)
+        except ControllerEnrollmentError as exc:
+            raise EnrollmentError(str(exc)) from exc
+        checkpoint("trust_installed")
+    if not progress.get("raft_ready"):
+        # Reconcile/restart the runtime even if the previous attempt died after
+        # service startup. Never re-bootstrap or replace an existing Raft log.
+        run_helper("bpc-enable-cluster.sh", "--advertise-host", host, "--defer-marker")
+        ready = request_json(
+            str(enrollment["controller_url"]), "/v1/nodes/controller-ready",
+            {"node_id": enrollment["node_id"]}, credential=str(enrollment["credential"]),
+            timeout=90, controller_urls=enrollment.get("controllers", []),
+        )
+        if ready.get("state") != "voter":
+            raise EnrollmentError("Controller did not complete voter promotion")
+        checkpoint("raft_ready")
+    try:
+        activate_controller_marker(
+            state_dir, node_id=str(enrollment["node_id"]), payload=payload,
+            software_version=software_version,
+        )
+    except ControllerEnrollmentError as exc:
+        raise EnrollmentError(str(exc)) from exc
+    run_helper("bpc-enable-control-replica.sh", "--hostname", host)
+    # Trust material now has its canonical local PKI files. Do not retain a
+    # second CA private-key copy in the finished enrollment journal.
+    progress["payload"] = {"advertise_host": host}
+    checkpoint("complete")
+
+
 def cmd_join(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         raise EnrollmentError("run bpc join as root")
@@ -1309,12 +1372,18 @@ def cmd_join(args: argparse.Namespace) -> int:
         role_config = config.get("role_config", {})
         if not isinstance(role_config, dict):
             role_config = {}
+        if "controller_provision" in existing:
+            public_key = (args.state_dir / "identity" / "node.pub").read_text().strip()
+            apply_remote_node_config(
+                args.state_dir, node_id=str(existing["node_id"]), name=str(existing["name"]),
+                public_key=public_key, roles=roles, created_at=int(existing["created_at"]),
+                last_seen=int(time.time()), endpoints=config.get("endpoints"),
+                initial_routes=config.get("advertised_routes"),
+            )
+        resume_controller_provisioning(args.state_dir, existing)
         results = reconcile_roles(args.state_dir, roles, role_config)
         install_runtime_service(args.state_dir)
-        try:
-            send_heartbeat(args.state_dir, existing)
-        except EnrollmentError as exc:
-            print(f"WARNING: heartbeat retry failed: {exc}", file=sys.stderr)
+        send_heartbeat(args.state_dir, existing)
         print(
             f"Node is already joined: {existing.get('name')} "
             f"({existing.get('node_id')}); enrollment preserved and runtime reconciled."
@@ -1385,6 +1454,11 @@ def cmd_join(args: argparse.Namespace) -> int:
         "roles": roles,
         "config": config,
     }
+    if roles.get("controller"):
+        payload = response.get("controller")
+        if not isinstance(payload, dict):
+            raise EnrollmentError("Controller enrollment material is missing from join response")
+        enrollment["controller_provision"] = {"payload": payload}
     write_local_enrollment(args.state_dir, enrollment)
     apply_remote_node_config(
         args.state_dir,
@@ -1401,74 +1475,11 @@ def cmd_join(args: argparse.Namespace) -> int:
     if not isinstance(role_config, dict):
         role_config = {}
 
-    if bool(roles.get("controller")):
-        controller_payload = response.get("controller")
-        if not isinstance(controller_payload, dict):
-            raise EnrollmentError(
-                "Controller enrollment material is missing from join response"
-            )
-        try:
-            install_controller_enrollment(args.state_dir, controller_payload)
-        except ControllerEnrollmentError as exc:
-            raise EnrollmentError(str(exc)) from exc
-
-        advertise_host = str(controller_payload.get("advertise_host", "")).strip()
-        cluster_helper = ROOT / "deploy" / "bpc-enable-cluster.sh"
-        completed = subprocess.run(
-            [
-                str(cluster_helper),
-                "--advertise-host",
-                advertise_host,
-                "--defer-marker",
-            ],
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise EnrollmentError(
-                f"distributed Controller bootstrap failed ({completed.returncode})"
-            )
-
-        request_json(
-            selected_controller,
-            "/v1/nodes/controller-ready",
-            {"node_id": enrollment["node_id"]},
-            credential=str(enrollment["credential"]),
-            timeout=40,
-            controller_urls=[
-                str(item) for item in enrollment.get("controllers", [])
-            ],
-        )
-        try:
-            activate_controller_marker(
-                args.state_dir,
-                node_id=str(enrollment["node_id"]),
-                payload=controller_payload,
-                software_version=software_version,
-            )
-        except ControllerEnrollmentError as exc:
-            raise EnrollmentError(str(exc)) from exc
-
-        public_helper = ROOT / "deploy" / "bpc-enable-control-replica.sh"
-        completed = subprocess.run(
-            [
-                str(public_helper),
-                "--hostname",
-                advertise_host,
-            ],
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise EnrollmentError(
-                "Controller joined Raft but public control API bootstrap failed "
-                f"({completed.returncode}); fix public TLS/DNS and rerun bpc join"
-            )
+    resume_controller_provisioning(args.state_dir, enrollment)
 
     results = reconcile_roles(args.state_dir, roles, role_config)
     install_runtime_service(args.state_dir)
-    try:
-        send_heartbeat(args.state_dir, enrollment)
-    except EnrollmentError as exc:
-        print(f"WARNING: initial heartbeat failed: {exc}", file=sys.stderr)
+    send_heartbeat(args.state_dir, enrollment)
 
     print(f"Node joined: {enrollment['name']} ({enrollment['node_id']})")
     enabled = ", ".join(sorted(role for role, value in roles.items() if value)) or "none"

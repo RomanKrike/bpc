@@ -1137,9 +1137,16 @@ class ControlHandler(BaseHTTPRequestHandler):
                 extra_operations: list[dict[str, Any]] = []
                 controller_payload: dict[str, Any] | None = None
                 if "controller" in roles:
+                    endpoints = metadata.get("endpoints", [])
+                    invited_host = next((str(item["host"]) for item in endpoints
+                                         if item.get("public") and item.get("enabled")), "")
                     advertise_host = str(
                         body.get("controller_advertise_host", "")
                     ).strip()
+                    if invited_host:
+                        if advertise_host and advertise_host.lower() != invited_host:
+                            raise EnrollmentError("Controller host differs from invitation", 403)
+                        advertise_host = invited_host
                     if not advertise_host:
                         raise EnrollmentError(
                             "controller_advertise_host is required for Controller join",
