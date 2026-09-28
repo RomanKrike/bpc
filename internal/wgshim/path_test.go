@@ -59,9 +59,11 @@ func TestPathFailureUsesWarmStandbyAndRecoveryCooldown(t *testing.T) {
 	m.Observe(0, 1, []time.Duration{time.Millisecond}, now)
 	m.Observe(1, 1, []time.Duration{80 * time.Millisecond}, now)
 	m.Observe(0, 1, nil, now)
-	m.Observe(0, 1, nil, now)
+	if !m.Snapshot()[0].Reachable {
+		t.Fatal("one failed round should not flap reachability telemetry")
+	}
 	if active, changed := m.Select(now); !changed || active != 1 {
-		t.Fatal("failed path not replaced")
+		t.Fatal("warm standby not selected after complete active probe failure")
 	}
 	m.ConfirmTraffic("ru-02", now)
 	m.Observe(0, 1, []time.Duration{time.Millisecond}, now.Add(time.Second))
