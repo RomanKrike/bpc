@@ -181,7 +181,7 @@ func configureEmbeddedInterface(
 	if err != nil {
 		return err
 	}
-	serverIP, err := resolveWGShimServerIPv4(cfg.WGShimServer)
+	serverIP, err := resolveWGShimServerIPv4(cfg.TransportPaths()[0].Endpoint)
 	if err != nil {
 		return err
 	}

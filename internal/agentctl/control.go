@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -40,6 +39,7 @@ type Bootstrap struct {
 }
 
 type RuntimeConfig struct {
+	Paths         []TransportPath   `json:"paths,omitempty"`
 	ConfigVersion int               `json:"config_version"`
 	Controllers   []string          `json:"controllers,omitempty"`
 	WGShimServer  string            `json:"wgshim_server"`
@@ -591,7 +591,7 @@ func ValidateRuntimeConfig(cfg RuntimeConfig) error {
 		}
 	}
 	required := map[string]string{
-		"wgshim_server": cfg.WGShimServer,
+
 		"wgshim_listen": cfg.WGShimListen,
 		"wgshim_target": cfg.WGShimTarget,
 		"wgshim_psk":    cfg.WGShimPSK,
@@ -601,29 +601,17 @@ func ValidateRuntimeConfig(cfg RuntimeConfig) error {
 			return fmt.Errorf("runtime config field %s is empty", name)
 		}
 	}
-	servers := cfg.WGShimServers
-	if len(servers) == 0 {
-		servers = []string{cfg.WGShimServer}
+	if err := cfg.ValidatePaths(); err != nil {
+		return err
 	}
-	if len(servers) > 16 {
-		return fmt.Errorf("runtime WGShim server pool is too large: %d", len(servers))
-	}
-	seenServers := map[string]struct{}{}
-	for _, endpoint := range servers {
-		endpoint = strings.TrimSpace(endpoint)
-		if endpoint == "" {
-			return errors.New("runtime WGShim server list contains an empty endpoint")
+	if len(cfg.Paths) == 0 && len(cfg.WGShimServers) > 0 {
+		found := false
+		for _, endpoint := range cfg.WGShimServers {
+			if endpoint == cfg.WGShimServer {
+				found = true
+			}
 		}
-		if _, _, err := net.SplitHostPort(endpoint); err != nil {
-			return fmt.Errorf("invalid WGShim server endpoint %q: %w", endpoint, err)
-		}
-		if _, exists := seenServers[endpoint]; exists {
-			return fmt.Errorf("duplicate WGShim server endpoint %q", endpoint)
-		}
-		seenServers[endpoint] = struct{}{}
-	}
-	if len(cfg.WGShimServers) > 0 {
-		if _, ok := seenServers[strings.TrimSpace(cfg.WGShimServer)]; !ok {
+		if !found {
 			return errors.New("runtime WGShim server pool does not contain the primary endpoint")
 		}
 	}

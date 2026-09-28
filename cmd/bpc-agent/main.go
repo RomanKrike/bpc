@@ -637,9 +637,9 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 			logger.Printf("create RX codec: %v", err)
 			return
 		}
-		servers := append([]string(nil), cfg.WGShimServers...)
-		if len(servers) == 0 {
-			servers = []string{cfg.WGShimServer}
+		var servers []string
+		for _, path := range cfg.TransportPaths() {
+			servers = append(servers, path.Endpoint)
 		}
 		if len(servers) > 1 {
 			err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
@@ -673,13 +673,13 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 		} else {
 			_ = writeUITransportStatus(transportTelemetry{
 				UpdatedAt: time.Now().Unix(),
-				Endpoint:  cfg.WGShimServer,
+				Endpoint:  servers[0],
 				Reachable: 1,
 				Total:     1,
 			})
 			err = wgshim.RunClient(ctx, wgshim.ClientConfig{
 				LocalListen:   cfg.WGShimListen,
-				Server:        cfg.WGShimServer,
+				Server:        servers[0],
 				TX:            tx,
 				RX:            rx,
 				Logger:        logger,

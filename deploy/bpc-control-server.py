@@ -577,6 +577,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             "controllers": controller_public_urls(self._root().parent),
             "wireguard": self._wireguard_profile_for_device(device),
         }
+        # Explicit runtime paths describe routes to this overlay peer. Do not
+        # infer compatibility from a Node's public DNS endpoint alone.
+        if "paths" in global_config:
+            config["paths"] = global_config["paths"]
         apply_compat_transport_hint(device, config)
         return config
 
