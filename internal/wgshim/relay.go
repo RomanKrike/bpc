@@ -73,6 +73,46 @@ type probeMeasurement struct {
 	rtt      time.Duration
 }
 
+type adaptiveUDPResolver func(network, address string) (*net.UDPAddr, error)
+
+func resolveAdaptiveServers(
+	servers []string,
+	resolver adaptiveUDPResolver,
+	logger *log.Logger,
+) ([]*net.UDPAddr, []string, map[string]string, error) {
+	serverAddrs := make([]*net.UDPAddr, 0, len(servers))
+	serverNames := make([]string, 0, len(servers))
+	serverSources := make(map[string]string, len(servers))
+	seen := map[string]struct{}{}
+	for _, raw := range servers {
+		addr, err := resolver("udp", raw)
+		if err != nil {
+			if logger != nil {
+				logger.Printf("adaptive endpoint unavailable endpoint=%s error=%v", raw, err)
+			}
+			continue
+		}
+		key := addr.String()
+		if _, ok := seen[key]; ok {
+			if logger != nil {
+				logger.Printf("adaptive endpoint duplicate endpoint=%s resolved=%s", raw, key)
+			}
+			continue
+		}
+		seen[key] = struct{}{}
+		serverAddrs = append(serverAddrs, addr)
+		serverNames = append(serverNames, raw)
+		serverSources[key] = raw
+	}
+	if len(serverAddrs) == 0 {
+		return nil, nil, nil, fmt.Errorf(
+			"adaptive client has no resolvable servers (%d configured)",
+			len(servers),
+		)
+	}
+	return serverAddrs, serverNames, serverSources, nil
+}
+
 func RunClient(ctx context.Context, cfg ClientConfig) error {
 	localAddr, err := net.ResolveUDPAddr("udp", cfg.LocalListen)
 	if err != nil {
@@ -190,26 +230,13 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	if err != nil {
 		return fmt.Errorf("resolve local listen address: %w", err)
 	}
-	serverAddrs := make([]*net.UDPAddr, 0, len(cfg.Servers))
-	serverNames := make([]string, 0, len(cfg.Servers))
-	serverSources := map[string]string{}
-	seen := map[string]struct{}{}
-	for _, raw := range cfg.Servers {
-		addr, err := net.ResolveUDPAddr("udp", raw)
-		if err != nil {
-			return fmt.Errorf("resolve adaptive server %q: %w", raw, err)
-		}
-		key := addr.String()
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		serverAddrs = append(serverAddrs, addr)
-		serverNames = append(serverNames, raw)
-		serverSources[key] = raw
-	}
-	if len(serverAddrs) == 0 {
-		return errors.New("adaptive client has no unique servers")
+	serverAddrs, serverNames, serverSources, err := resolveAdaptiveServers(
+		cfg.Servers,
+		net.ResolveUDPAddr,
+		cfg.Logger,
+	)
+	if err != nil {
+		return err
 	}
 
 	localConn, err := net.ListenUDP("udp", localAddr)
