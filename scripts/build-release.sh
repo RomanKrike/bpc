@@ -78,6 +78,7 @@ versioned="${OUT_DIR}/bpc-connect-${VERSION}-deploy.tar.gz"
 stable="${OUT_DIR}/bpc-connect-deploy.tar.gz"
 tar -C "${staging}" -czf "${versioned}" .
 cp "${versioned}" "${stable}"
+cp "${ROOT_DIR}/install.sh" "${OUT_DIR}/install.sh"
 
 mapfile -t artifacts < <(
   find "${OUT_DIR}" -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort
