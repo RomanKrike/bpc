@@ -18,6 +18,10 @@ from .state import StateLayout
 
 NODE_CONFIG_VERSION = 1
 CORE_CAPABILITIES = ("controller", "gateway", "relay", "site_router")
+NODE_PRESETS = {
+    "public-node": ("controller", "gateway", "relay"),
+    "site-router": ("site_router",),
+}
 _CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 

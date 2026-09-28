@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import ssl
@@ -52,9 +53,11 @@ from bpc_connect.compat.runtime import (  # noqa: E402
     default_role_config as compatibility_role_config,
 )
 from bpc_connect.node import (  # noqa: E402
+    NODE_PRESETS,
     Capabilities,
     Node,
     NodeConfig,
+    canonical_advertised_routes,
     canonical_endpoints,
     load_node_config,
     save_node_config,
@@ -316,6 +319,7 @@ def create_join_token(
     expires_in: int = 900,
     role_config: dict[str, Any] | None = None,
     endpoints: list[dict[str, Any]] | None = None,
+    advertised_routes: list[str] | None = None,
     now: int | None = None,
 ) -> str:
     timestamp = int(time.time()) if now is None else int(now)
@@ -323,6 +327,9 @@ def create_join_token(
         raise EnrollmentError("invalid join token expiration")
     normalized_roles = normalize_roles(roles)
     normalized_name = normalize_node_name(name) if name else None
+    routes = canonical_advertised_routes(advertised_routes)
+    if routes and "site_router" not in normalized_roles:
+        raise EnrollmentError("advertised routes require site_router capability")
     secret = secrets.token_hex(32)
     controllers = controller_public_urls(control_dir.parent)
     token = make_join_token(controller_url, secret, controllers)
@@ -337,6 +344,7 @@ def create_join_token(
         "controllers": _controller_candidates(controller_url, controllers),
         "role_config": role_config or {},
         "endpoints": [item.to_mapping() for item in canonical_endpoints(endpoints)],
+        "advertised_routes": list(routes),
     }
     atomic_json(control_dir / "node-join" / f"{index}.json", metadata)
     return token
@@ -444,6 +452,7 @@ def enroll_node(
         "roles": role_map,
         "role_config": role_config,
         "endpoints": [item.to_mapping() for item in canonical_endpoints(record.get("endpoints"))],
+        "advertised_routes": list(canonical_advertised_routes(record.get("advertised_routes"))),
         "created_at": timestamp,
         "last_seen": timestamp,
         "revoked": False,
@@ -550,6 +559,7 @@ def enroll_node(
             "heartbeat_interval": HEARTBEAT_INTERVAL,
             "role_config": role_config,
             "endpoints": node["endpoints"],
+            "advertised_routes": node["advertised_routes"],
         },
     }
 
@@ -659,6 +669,7 @@ def node_heartbeat(
         if bool(roles.get("site_router"))
         else []
     )
+    node["advertised_routes"] = advertised
     existing_routes = _existing_node_routes(control_dir, node_id)
 
     operations: list[dict[str, Any]] = [
@@ -945,12 +956,13 @@ def apply_remote_node_config(
     created_at: int,
     last_seen: int,
     endpoints: list[dict[str, Any]] | None = None,
+    initial_routes: list[str] | None = None,
 ) -> None:
     role_values = Capabilities.from_mapping(
         {str(key): bool(value) for key, value in roles.items()}
     )
     path = state_dir / "node.yaml"
-    advertised_routes: tuple[str, ...] = ()
+    advertised_routes = canonical_advertised_routes(initial_routes)
     endpoint_values = canonical_endpoints(endpoints)
     if path.is_file():
         try:
@@ -1203,6 +1215,38 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
     return response
 
 
+def cmd_node_create(args: argparse.Namespace) -> int:
+    roles = list(NODE_PRESETS[args.preset])
+    endpoints = [item.to_mapping() for item in canonical_endpoints(
+        [{"host": host} for host in args.host]
+    )]
+    if args.preset == "public-node":
+        if not endpoints:
+            raise EnrollmentError("public-node requires --host with a public DNS hostname")
+        for endpoint in endpoints:
+            host = endpoint["host"]
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                if "." in host:
+                    continue
+            raise EnrollmentError("public-node requires a public DNS hostname")
+        if not bpc_control_state.cluster_enabled(args.control_dir):
+            raise EnrollmentError("public-node requires an initialized distributed control plane")
+    controller_url = args.controller_url or discover_controller_url(args.control_dir)
+    strong_read(args.control_dir)
+    token = create_join_token(
+        args.control_dir, controller_url=controller_url, roles=roles, name=args.name,
+        expires_in=parse_duration(args.expires), endpoints=endpoints,
+        advertised_routes=args.route, role_config=default_role_config(args.state_dir, roles),
+    )
+    bootstrap = "https://github.com/RomanKrike/bpc/releases/latest/download/install.sh"
+    print(f"Node invitation: {args.name} ({', '.join(roles)}); expires in {args.expires}")
+    print("Run as root on the target Node:")
+    print(f"curl -fsSL {bootstrap} | bash -s -- join {shlex.quote(token)}")
+    return 0
+
+
 def cmd_token_create(args: argparse.Namespace) -> int:
     roles = normalize_roles(args.roles)
     controller_url = (
@@ -1351,6 +1395,7 @@ def cmd_join(args: argparse.Namespace) -> int:
         created_at=enrollment["created_at"],
         last_seen=int(time.time()),
         endpoints=config.get("endpoints"),
+        initial_routes=config.get("advertised_routes"),
     )
     role_config = config.get("role_config", {})
     if not isinstance(role_config, dict):
@@ -1575,6 +1620,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--control-dir", type=Path, default=DEFAULT_CONTROL_DIR)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    create = sub.add_parser("node-create")
+    create.add_argument("--name", required=True)
+    create.add_argument("--preset", choices=sorted(NODE_PRESETS), required=True)
+    create.add_argument("--host", action="append", default=[])
+    create.add_argument("--route", action="append", default=[])
+    create.add_argument("--expires", default="15m")
+    create.add_argument("--controller-url")
+
     token = sub.add_parser("token-create")
     token.add_argument("--roles", action="append", required=True)
     token.add_argument("--name")
@@ -1602,6 +1655,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "node-create":
+            return cmd_node_create(args)
         if args.command == "token-create":
             return cmd_token_create(args)
         if args.command == "list":

@@ -1,5 +1,25 @@
 # Stage 2: one-command install and Node Join
 
+## Node invitations
+
+Presets expand to capabilities; they are not Node types. On an initialized
+distributed Controller:
+
+```bash
+bpc node create --name ru-02 --preset public-node --host ru-02.blinpi.ru
+bpc node create --name home-01 --preset site-router --route 192.168.88.0/24
+```
+
+The command prints an expiring, single-use installation command. `public-node`
+assigns `controller,gateway,relay`; `site-router` assigns `site_router`.
+`--host` and `--route` can be repeated. A private Node needs no public endpoint.
+Treat the printed command as a secret. Default expiry is 15 minutes; override
+with `--expires`. Creating an invitation does not create a live Node record.
+Node identity is allocated when the invitation is consumed.
+
+Routes are configured on the joined Node and advertised by its authenticated
+heartbeat. This does not implement a new site-router dataplane or grant Access.
+
 Stage 2 enrolls a server-side BPC Node into an existing Controller without
 manually editing BPC configuration files. It extends the unified Node model
 from Stage 1 and does not replace the existing data-plane transports.
