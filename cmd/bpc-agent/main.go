@@ -546,7 +546,36 @@ func syncRuntimeState(
 	return writeUIStatus(state)
 }
 
+type transportNodeTracker struct {
+	current string
+}
+
+func (t *transportNodeTracker) observe(
+	report wgshim.EndpointReport,
+	nodeByEndpoint map[string]string,
+) (pathSwitchEvent, bool) {
+	node := nodeByEndpoint[report.Selected]
+	if node == "" {
+		return pathSwitchEvent{}, false
+	}
+	previous := t.current
+	t.current = node
+	if !report.Switched || previous == "" || previous == node {
+		return pathSwitchEvent{}, false
+	}
+	return pathSwitchEvent{FromNode: previous, ToNode: node}, true
+}
+
 func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) {
+	runWGShimLoopWithSwitch(ctx, cfg, logger, nil)
+}
+
+func runWGShimLoopWithSwitch(
+	ctx context.Context,
+	cfg agentctl.RuntimeConfig,
+	logger *log.Logger,
+	pathSwitches chan<- pathSwitchEvent,
+) {
 	for ctx.Err() == nil {
 		psk, err := base64.StdEncoding.DecodeString(cfg.WGShimPSK)
 		if err != nil || len(psk) != 32 {
@@ -573,10 +602,14 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 			logger.Printf("create RX codec: %v", err)
 			return
 		}
-		var servers []string
-		for _, path := range cfg.TransportPaths() {
+		paths := cfg.TransportPaths()
+		servers := make([]string, 0, len(paths))
+		nodeByEndpoint := make(map[string]string, len(paths))
+		for _, path := range paths {
 			servers = append(servers, path.Endpoint)
+			nodeByEndpoint[path.Endpoint] = path.Node
 		}
+		tracker := &transportNodeTracker{}
 		err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
 			LocalListen:     cfg.WGShimListen,
 			Servers:         servers,
@@ -588,10 +621,24 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 			SwitchThreshold: 10 * time.Millisecond,
 			OnEndpointReport: func(report wgshim.EndpointReport) {
 				for i := range report.Paths {
-					for _, path := range cfg.TransportPaths() {
-						if path.Endpoint == report.Paths[i].Endpoint {
-							report.Paths[i].Node = path.Node
-							break
+					report.Paths[i].Node = nodeByEndpoint[report.Paths[i].Endpoint]
+				}
+				if event, changedNode := tracker.observe(report, nodeByEndpoint); changedNode {
+					logger.Printf(
+						"transport Public Node switched from=%s to=%s endpoint=%s",
+						event.FromNode,
+						event.ToNode,
+						report.Selected,
+					)
+					if pathSwitches != nil {
+						select {
+						case pathSwitches <- event:
+						default:
+							logger.Printf(
+								"overlay path-switch notification dropped from=%s to=%s",
+								event.FromNode,
+								event.ToNode,
+							)
 						}
 					}
 				}
