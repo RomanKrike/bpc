@@ -83,6 +83,10 @@ def test_route_scope_is_validated_before_invitation_write(tmp_path):
 
 
 def test_join_applies_invited_routes_without_endpoint(tmp_path):
+    from bpc_connect.node import new_node_config, save_node_config
+
+    # The installer creates a provisional Node before enrollment assigns its ID.
+    save_node_config(tmp_path / "node.yaml", new_node_config(name="fresh-machine"))
     enrollment.apply_remote_node_config(
         tmp_path, node_id="a" * 32, name="home-01", public_key="key",
         roles={"site_router": True}, created_at=1, last_seen=1, endpoints=[],

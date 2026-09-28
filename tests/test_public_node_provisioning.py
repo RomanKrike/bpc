@@ -133,3 +133,9 @@ def test_public_join_uses_invitation_hostname(tmp_path, monkeypatch, presented, 
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize("state", ["inactive", "failed", "pending:tls-bootstrap", None])
+def test_join_does_not_claim_ready_for_unhealthy_capability(state):
+    with pytest.raises(enrollment.EnrollmentError, match="not ready"):
+        enrollment.require_role_health({"controller": True}, {"controller": state})

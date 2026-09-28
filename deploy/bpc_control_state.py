@@ -77,7 +77,9 @@ def _local_token(control_root: Path) -> str:
     return token
 
 
-def _post(control_root: Path, path: str, value: dict[str, Any]) -> dict[str, Any]:
+def _post(
+    control_root: Path, path: str, value: dict[str, Any], *, timeout: int = 12
+) -> dict[str, Any]:
     request = urllib.request.Request(
         LOCAL_API + path,
         data=json.dumps(value, separators=(",", ":")).encode(),
@@ -88,7 +90,7 @@ def _post(control_root: Path, path: str, value: dict[str, Any]) -> dict[str, Any
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=12) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read()
     except urllib.error.HTTPError as exc:
         try:
@@ -167,4 +169,5 @@ def add_controller_member(
             "state_schema_version": int(record.get("state_schema_version", 0)),
             "certificate_sha256": str(record.get("certificate_sha256", "")),
         },
+        timeout=90,
     )

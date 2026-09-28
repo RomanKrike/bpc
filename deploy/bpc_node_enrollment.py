@@ -984,8 +984,10 @@ def apply_remote_node_config(
     if path.is_file():
         try:
             current = load_node_config(path)
-            created_at = current.node.created_at or created_at
-            advertised_routes = current.advertised_routes
+            if current.node.id == node_id:
+                created_at = current.node.created_at or created_at
+            if current.node.id == node_id or initial_routes is None:
+                advertised_routes = current.advertised_routes
             if endpoints is None:
                 endpoint_values = current.node.endpoints
         except (OSError, ValueError):
@@ -1376,6 +1378,12 @@ def resume_controller_provisioning(state_dir: Path, enrollment: dict[str, Any]) 
     checkpoint("complete")
 
 
+def require_role_health(roles: dict[str, Any], results: dict[str, str]) -> None:
+    for role, enabled in roles.items():
+        if enabled and results.get(role) not in {"active", "configured"}:
+            raise EnrollmentError(f"Node capability {role} is not ready: {results.get(role)}")
+
+
 def cmd_join(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         raise EnrollmentError("run bpc join as root")
@@ -1400,6 +1408,7 @@ def cmd_join(args: argparse.Namespace) -> int:
             )
         resume_controller_provisioning(args.state_dir, existing)
         results = reconcile_roles(args.state_dir, roles, role_config)
+        require_role_health(roles, results)
         install_runtime_service(args.state_dir)
         send_heartbeat(args.state_dir, existing)
         print(
@@ -1496,6 +1505,7 @@ def cmd_join(args: argparse.Namespace) -> int:
     resume_controller_provisioning(args.state_dir, enrollment)
 
     results = reconcile_roles(args.state_dir, roles, role_config)
+    require_role_health(roles, results)
     install_runtime_service(args.state_dir)
     send_heartbeat(args.state_dir, enrollment)
 

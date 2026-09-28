@@ -234,7 +234,9 @@ def test_repeated_join_is_safe_noop(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         enrollment,
         "reconcile_roles",
-        lambda _state, roles, _config: reconciled.append(dict(roles)) or {},
+        lambda _state, roles, _config: (
+            reconciled.append(dict(roles)) or dict.fromkeys(roles, "active")
+        ),
     )
     monkeypatch.setattr(enrollment, "install_runtime_service", lambda _state: None)
     monkeypatch.setattr(

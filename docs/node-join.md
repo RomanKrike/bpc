@@ -127,15 +127,15 @@ Capabilities remain metadata on one Node rather than separate Node types.
 
 - `gateway`: reuses the existing Xray/REALITY gateway bootstrap and state.
 - `relay`: reuses the existing Agent/WGShim relay data-plane provisioner.
-- `controller`: an already provisioned Controller service is reconciled and
-  started. Automatic promotion of a completely fresh remote Node into a second
-  Controller would require certificate distribution and replicated Controller
-  state, which belongs to a later distributed-control-plane stage.
+- `controller`: a public-node invitation supplies the DNS endpoint. Join installs
+  locally generated Controller identity/certificates, starts the distributed
+  runtime, joins as nonvoter, waits for catch-up, promotes to voter and provisions
+  the public HTTPS API. Durable local checkpoints resume interrupted provisioning.
 - `site_router`: is a Node capability. Stage 4.5 moves route advertisement
   into canonical Node state; the new site-router data plane and MikroTik
   integration remain deferred.
 
-A typical Stage 2 fresh-server token therefore assigns `gateway,relay`.
+Public Nodes use the `public-node` preset; private Nodes use `site-router`.
 
 ## Idempotency and compatibility
 

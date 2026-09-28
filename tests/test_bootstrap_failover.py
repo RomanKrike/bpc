@@ -72,3 +72,20 @@ def test_heartbeat_retains_bootstrap_pool_if_response_has_no_alternatives(tmp_pa
     restored = enrollment.enrolled_state(tmp_path)
     assert restored["controller_url"] == B
     assert set(restored["controllers"]) == {A, B}
+
+
+def test_controller_promotion_waits_for_catchup_deadline(tmp_path, monkeypatch):
+    import bpc_control_state as state
+
+    (tmp_path / "cluster").mkdir()
+    (tmp_path / "cluster/controller.json").write_text("{}")
+    monkeypatch.setattr(state, "_local_token", lambda _: "a" * 64)
+    observed = []
+
+    def open_url(request, **kwargs):
+        observed.append(kwargs["timeout"])
+        return io.BytesIO(b'{"ok":true,"state":"voter"}')
+
+    monkeypatch.setattr(state.urllib.request, "urlopen", open_url)
+    assert state.add_controller_member(tmp_path / "control", {})["state"] == "voter"
+    assert observed == [90]
