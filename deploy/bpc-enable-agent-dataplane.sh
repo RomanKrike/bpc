@@ -357,31 +357,27 @@ if [[ ! -s "${RUNTIME_ENV}" ]]; then
 fi
 # shellcheck disable=SC1090,SC1091
 source "${RUNTIME_ENV}"
-DEFAULT_IF="$(ip -4 route show default | awk 'NR==1 {print $5}')"
-if [[ -z "${DEFAULT_IF}" ]]; then
-  echo "Unable to determine default IPv4 interface" >&2
-  exit 1
-fi
+# A matching subnet or interface name does not prove rule ownership. All
+# mutations target explicit BPC comments; historical untagged rules are kept.
+bpc_rule() {
+  iptables "$@" -m comment --comment "bpc-agent-dataplane:${AGENT_WG_INTERFACE}"
+}
 case "${ACTION}" in
   up)
-    iptables -C FORWARD -i "${AGENT_WG_INTERFACE}" -j ACCEPT 2>/dev/null || \
-      iptables -I FORWARD 1 -i "${AGENT_WG_INTERFACE}" -j ACCEPT
-    iptables -C FORWARD -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
-      iptables -I FORWARD 1 -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-    # 0.11.0+: Agent routes can leave through another BPC tunnel (home/work),
-    # not only the VPS default interface. Remove the legacy default-only NAT
-    # rule and masquerade all forwarded Agent traffic outside its own overlay.
-    iptables -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE 2>/dev/null || true
-    iptables -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" -o "${DEFAULT_IF}" -j MASQUERADE 2>/dev/null || true
-    iptables -t nat -C POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE 2>/dev/null || \
-      iptables -t nat -A POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE
-    iptables -C INPUT -p udp --dport "${AGENT_WG_PORT}" -j DROP 2>/dev/null || \
-      iptables -I INPUT 1 -p udp --dport "${AGENT_WG_PORT}" -j DROP
-    iptables -C INPUT -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT 2>/dev/null || \
-      iptables -I INPUT 1 -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT
-    iptables -C INPUT -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
+    bpc_rule -C FORWARD -i "${AGENT_WG_INTERFACE}" -j ACCEPT 2>/dev/null || \
+      bpc_rule -I FORWARD 1 -i "${AGENT_WG_INTERFACE}" -j ACCEPT
+    bpc_rule -C FORWARD -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || \
+      bpc_rule -I FORWARD 1 -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+    # Do not delete/reinsert live NAT rules during reconciliation.
+    bpc_rule -t nat -C POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE 2>/dev/null || \
+      bpc_rule -t nat -A POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE
+    bpc_rule -C INPUT -p udp --dport "${AGENT_WG_PORT}" -j DROP 2>/dev/null || \
+      bpc_rule -I INPUT 1 -p udp --dport "${AGENT_WG_PORT}" -j DROP
+    bpc_rule -C INPUT -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT 2>/dev/null || \
+      bpc_rule -I INPUT 1 -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT
+    bpc_rule -C INPUT -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
       -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || \
-      iptables -I INPUT 1 -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
+      bpc_rule -I INPUT 1 -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
         -p icmp --icmp-type echo-request -j ACCEPT
     # Access owns the first FORWARD decision for Agent-originated traffic.
     # Reconcile after broad compatibility rules so they cannot move ahead of it.
@@ -390,14 +386,13 @@ case "${ACTION}" in
     fi
     ;;
   down)
-    iptables -D FORWARD -i "${AGENT_WG_INTERFACE}" -j ACCEPT 2>/dev/null || true
-    iptables -D FORWARD -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-    iptables -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE 2>/dev/null || true
-    iptables -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" -o "${DEFAULT_IF}" -j MASQUERADE 2>/dev/null || true
-    iptables -D INPUT -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
+    bpc_rule -D FORWARD -i "${AGENT_WG_INTERFACE}" -j ACCEPT 2>/dev/null || true
+    bpc_rule -D FORWARD -o "${AGENT_WG_INTERFACE}" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+    bpc_rule -t nat -D POSTROUTING -s "${AGENT_WG_SUBNET}" ! -d "${AGENT_WG_SUBNET}" -j MASQUERADE 2>/dev/null || true
+    bpc_rule -D INPUT -i "${AGENT_WG_INTERFACE}" -s "${AGENT_WG_SUBNET}" \
       -p icmp --icmp-type echo-request -j ACCEPT 2>/dev/null || true
-    iptables -D INPUT -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT 2>/dev/null || true
-    iptables -D INPUT -p udp --dport "${AGENT_WG_PORT}" -j DROP 2>/dev/null || true
+    bpc_rule -D INPUT -i lo -p udp --dport "${AGENT_WG_PORT}" -j ACCEPT 2>/dev/null || true
+    bpc_rule -D INPUT -p udp --dport "${AGENT_WG_PORT}" -j DROP 2>/dev/null || true
     ;;
   *) echo "Usage: bpc-agent-dataplane-firewall [up|down]" >&2; exit 2 ;;
 esac

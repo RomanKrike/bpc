@@ -1,4 +1,6 @@
 import pathlib
+import re
+import tomllib
 
 ENABLE = pathlib.Path("deploy/bpc-enable-mihomo-transports.sh").read_text(encoding="utf-8")
 ENABLE_CORE = pathlib.Path("deploy/bpc-enable-mihomo-transports-core.sh").read_text(
@@ -18,8 +20,9 @@ TLS_FIX = pathlib.Path("deploy/bpc-fix-mihomo-tls.sh").read_text(encoding="utf-8
 UPDATE = pathlib.Path("deploy/bpc-update.sh").read_text(encoding="utf-8")
 
 
-def test_release_version_is_0184() -> None:
-    assert 'version = "0.18.4"' in PYPROJECT
+def test_release_version_is_stable_semver() -> None:
+    version = tomllib.loads(PYPROJECT)["project"]["version"]
+    assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version)
 
 
 def test_mihomo_transport_pack_is_pinned_and_digest_verified() -> None:

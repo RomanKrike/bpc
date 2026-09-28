@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import ssl
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -52,9 +55,12 @@ from bpc_connect.compat.runtime import (  # noqa: E402
     default_role_config as compatibility_role_config,
 )
 from bpc_connect.node import (  # noqa: E402
+    NODE_PRESETS,
     Capabilities,
     Node,
     NodeConfig,
+    canonical_advertised_routes,
+    canonical_endpoints,
     load_node_config,
     save_node_config,
 )
@@ -178,6 +184,19 @@ def normalize_controller_url(value: str) -> str:
         raise EnrollmentError("controller URL must use https://")
     if len(url) > 512:
         raise EnrollmentError("controller URL is too long")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+        valid = (
+            parsed.hostname and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment and not parsed.path
+            and (port is None or 1 <= port <= 65535)
+            and not any(char.isspace() for char in url)
+        )
+    except ValueError as exc:
+        raise EnrollmentError("invalid controller URL") from exc
+    if not valid:
+        raise EnrollmentError("invalid controller URL")
     return url
 
 
@@ -314,6 +333,8 @@ def create_join_token(
     name: str | None = None,
     expires_in: int = 900,
     role_config: dict[str, Any] | None = None,
+    endpoints: list[dict[str, Any]] | None = None,
+    advertised_routes: list[str] | None = None,
     now: int | None = None,
 ) -> str:
     timestamp = int(time.time()) if now is None else int(now)
@@ -321,6 +342,9 @@ def create_join_token(
         raise EnrollmentError("invalid join token expiration")
     normalized_roles = normalize_roles(roles)
     normalized_name = normalize_node_name(name) if name else None
+    routes = canonical_advertised_routes(advertised_routes)
+    if routes and "site_router" not in normalized_roles:
+        raise EnrollmentError("advertised routes require site_router capability")
     secret = secrets.token_hex(32)
     controllers = controller_public_urls(control_dir.parent)
     token = make_join_token(controller_url, secret, controllers)
@@ -334,6 +358,8 @@ def create_join_token(
         "controller_url": normalize_controller_url(controller_url),
         "controllers": _controller_candidates(controller_url, controllers),
         "role_config": role_config or {},
+        "endpoints": [item.to_mapping() for item in canonical_endpoints(endpoints)],
+        "advertised_routes": list(routes),
     }
     atomic_json(control_dir / "node-join" / f"{index}.json", metadata)
     return token
@@ -440,6 +466,8 @@ def enroll_node(
         "public_key_fingerprint": fingerprint,
         "roles": role_map,
         "role_config": role_config,
+        "endpoints": [item.to_mapping() for item in canonical_endpoints(record.get("endpoints"))],
+        "advertised_routes": list(canonical_advertised_routes(record.get("advertised_routes"))),
         "created_at": timestamp,
         "last_seen": timestamp,
         "revoked": False,
@@ -545,6 +573,8 @@ def enroll_node(
             "version": 1,
             "heartbeat_interval": HEARTBEAT_INTERVAL,
             "role_config": role_config,
+            "endpoints": node["endpoints"],
+            "advertised_routes": node["advertised_routes"],
         },
     }
 
@@ -654,6 +684,7 @@ def node_heartbeat(
         if bool(roles.get("site_router"))
         else []
     )
+    node["advertised_routes"] = advertised
     existing_routes = _existing_node_routes(control_dir, node_id)
 
     operations: list[dict[str, Any]] = [
@@ -722,6 +753,7 @@ def node_heartbeat(
             "state_schema_version": STATE_SCHEMA_VERSION,
             "controllers": controller_public_urls(control_dir.parent),
             "role_config": dict(node.get("role_config", {})),
+            "endpoints": node.get("endpoints", []),
         },
     }
 
@@ -899,7 +931,9 @@ def request_json(
                 raise error from exc
             last_error = error
             continue
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (
+            urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException
+        ) as exc:
             last_error = EnrollmentError(
                 f"controller connection failed via {target}: {exc}"
             )
@@ -938,17 +972,24 @@ def apply_remote_node_config(
     roles: dict[str, Any],
     created_at: int,
     last_seen: int,
+    endpoints: list[dict[str, Any]] | None = None,
+    initial_routes: list[str] | None = None,
 ) -> None:
     role_values = Capabilities.from_mapping(
         {str(key): bool(value) for key, value in roles.items()}
     )
     path = state_dir / "node.yaml"
-    advertised_routes: tuple[str, ...] = ()
+    advertised_routes = canonical_advertised_routes(initial_routes)
+    endpoint_values = canonical_endpoints(endpoints)
     if path.is_file():
         try:
             current = load_node_config(path)
-            created_at = current.node.created_at or created_at
-            advertised_routes = current.advertised_routes
+            if current.node.id == node_id:
+                created_at = current.node.created_at or created_at
+            if current.node.id == node_id or initial_routes is None:
+                advertised_routes = current.advertised_routes
+            if endpoints is None:
+                endpoint_values = current.node.endpoints
         except (OSError, ValueError):
             pass
     config = NodeConfig(
@@ -960,6 +1001,7 @@ def apply_remote_node_config(
             created_at=int(created_at),
             last_seen=int(last_seen),
             roles=role_values,
+            endpoints=endpoint_values,
         ),
         advertised_routes=advertised_routes,
     )
@@ -1152,7 +1194,8 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         if isinstance(response_controllers, list):
             pool = _controller_candidates(
                 selected,
-                [str(item) for item in response_controllers],
+                [*[str(item) for item in controllers],
+                 *[str(item) for item in response_controllers]],
             )
             enrollment["controllers"] = pool
 
@@ -1187,8 +1230,41 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         roles=dict(enrollment.get("roles", {})),
         created_at=int(enrollment.get("created_at", 0)),
         last_seen=int(enrollment["last_heartbeat"]),
+        endpoints=enrollment.get("config", {}).get("endpoints"),
     )
     return response
+
+
+def cmd_node_create(args: argparse.Namespace) -> int:
+    roles = list(NODE_PRESETS[args.preset])
+    endpoints = [item.to_mapping() for item in canonical_endpoints(
+        [{"host": host} for host in args.host]
+    )]
+    if args.preset == "public-node":
+        if not endpoints:
+            raise EnrollmentError("public-node requires --host with a public DNS hostname")
+        for endpoint in endpoints:
+            host = endpoint["host"]
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                if "." in host:
+                    continue
+            raise EnrollmentError("public-node requires a public DNS hostname")
+        if not bpc_control_state.cluster_enabled(args.control_dir):
+            raise EnrollmentError("public-node requires an initialized distributed control plane")
+    controller_url = args.controller_url or discover_controller_url(args.control_dir)
+    strong_read(args.control_dir)
+    token = create_join_token(
+        args.control_dir, controller_url=controller_url, roles=roles, name=args.name,
+        expires_in=parse_duration(args.expires), endpoints=endpoints,
+        advertised_routes=args.route, role_config=default_role_config(args.state_dir, roles),
+    )
+    bootstrap = "https://github.com/RomanKrike/bpc/releases/latest/download/install.sh"
+    print(f"Node invitation: {args.name} ({', '.join(roles)}); expires in {args.expires}")
+    print("Run as root on the target Node:")
+    print(f"curl -fsSL {bootstrap} | bash -s -- join {shlex.quote(token)}")
+    return 0
 
 
 def cmd_token_create(args: argparse.Namespace) -> int:
@@ -1239,6 +1315,75 @@ def cmd_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def resume_controller_provisioning(state_dir: Path, enrollment: dict[str, Any]) -> None:
+    """Resume durable enrollment phases without consuming another invitation."""
+    if not enrollment.get("roles", {}).get("controller"):
+        return
+    progress = enrollment.get("controller_provision")
+    if not isinstance(progress, dict):
+        # Older, fully configured Controllers have no provisioning journal.
+        if (state_dir / "cluster" / "controller.json").is_file():
+            return
+        raise EnrollmentError("Controller enrollment is incomplete and has no recovery material")
+    if progress.get("complete"):
+        subprocess.run(["systemctl", "start", "bpc-controld.service"], check=True)
+        return
+    payload = progress["payload"]
+    host = str(payload["advertise_host"])
+    software_version = (
+        (ROOT / "VERSION").read_text().strip() if (ROOT / "VERSION").is_file() else "source"
+    )
+
+    def checkpoint(phase: str) -> None:
+        progress[phase] = True
+        write_local_enrollment(state_dir, enrollment)
+
+    def run_helper(name: str, *arguments: str) -> None:
+        env = dict(os.environ, BPC_STATE_DIR=str(state_dir))
+        result = subprocess.run([str(ROOT / "deploy" / name), *arguments], check=False, env=env)
+        if result.returncode:
+            raise EnrollmentError(
+                f"{name} failed ({result.returncode}); rerun the same join command"
+            )
+
+    if not progress.get("trust_installed"):
+        try:
+            install_controller_enrollment(state_dir, payload)
+        except ControllerEnrollmentError as exc:
+            raise EnrollmentError(str(exc)) from exc
+        checkpoint("trust_installed")
+    if not progress.get("raft_ready"):
+        # Reconcile/restart the runtime even if the previous attempt died after
+        # service startup. Never re-bootstrap or replace an existing Raft log.
+        run_helper("bpc-enable-cluster.sh", "--advertise-host", host, "--defer-marker")
+        ready = request_json(
+            str(enrollment["controller_url"]), "/v1/nodes/controller-ready",
+            {"node_id": enrollment["node_id"]}, credential=str(enrollment["credential"]),
+            timeout=90, controller_urls=enrollment.get("controllers", []),
+        )
+        if ready.get("state") != "voter":
+            raise EnrollmentError("Controller did not complete voter promotion")
+        checkpoint("raft_ready")
+    try:
+        activate_controller_marker(
+            state_dir, node_id=str(enrollment["node_id"]), payload=payload,
+            software_version=software_version,
+        )
+    except ControllerEnrollmentError as exc:
+        raise EnrollmentError(str(exc)) from exc
+    run_helper("bpc-enable-control-replica.sh", "--hostname", host)
+    # Trust material now has its canonical local PKI files. Do not retain a
+    # second CA private-key copy in the finished enrollment journal.
+    progress["payload"] = {"advertise_host": host}
+    checkpoint("complete")
+
+
+def require_role_health(roles: dict[str, Any], results: dict[str, str]) -> None:
+    for role, enabled in roles.items():
+        if enabled and results.get(role) not in {"active", "configured"}:
+            raise EnrollmentError(f"Node capability {role} is not ready: {results.get(role)}")
+
+
 def cmd_join(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
         raise EnrollmentError("run bpc join as root")
@@ -1253,12 +1398,19 @@ def cmd_join(args: argparse.Namespace) -> int:
         role_config = config.get("role_config", {})
         if not isinstance(role_config, dict):
             role_config = {}
+        if "controller_provision" in existing:
+            public_key = (args.state_dir / "identity" / "node.pub").read_text().strip()
+            apply_remote_node_config(
+                args.state_dir, node_id=str(existing["node_id"]), name=str(existing["name"]),
+                public_key=public_key, roles=roles, created_at=int(existing["created_at"]),
+                last_seen=int(time.time()), endpoints=config.get("endpoints"),
+                initial_routes=config.get("advertised_routes"),
+            )
+        resume_controller_provisioning(args.state_dir, existing)
         results = reconcile_roles(args.state_dir, roles, role_config)
+        require_role_health(roles, results)
         install_runtime_service(args.state_dir)
-        try:
-            send_heartbeat(args.state_dir, existing)
-        except EnrollmentError as exc:
-            print(f"WARNING: heartbeat retry failed: {exc}", file=sys.stderr)
+        send_heartbeat(args.state_dir, existing)
         print(
             f"Node is already joined: {existing.get('name')} "
             f"({existing.get('node_id')}); enrollment preserved and runtime reconciled."
@@ -1329,6 +1481,11 @@ def cmd_join(args: argparse.Namespace) -> int:
         "roles": roles,
         "config": config,
     }
+    if roles.get("controller"):
+        payload = response.get("controller")
+        if not isinstance(payload, dict):
+            raise EnrollmentError("Controller enrollment material is missing from join response")
+        enrollment["controller_provision"] = {"payload": payload}
     write_local_enrollment(args.state_dir, enrollment)
     apply_remote_node_config(
         args.state_dir,
@@ -1338,79 +1495,19 @@ def cmd_join(args: argparse.Namespace) -> int:
         roles=roles,
         created_at=enrollment["created_at"],
         last_seen=int(time.time()),
+        endpoints=config.get("endpoints"),
+        initial_routes=config.get("advertised_routes"),
     )
     role_config = config.get("role_config", {})
     if not isinstance(role_config, dict):
         role_config = {}
 
-    if bool(roles.get("controller")):
-        controller_payload = response.get("controller")
-        if not isinstance(controller_payload, dict):
-            raise EnrollmentError(
-                "Controller enrollment material is missing from join response"
-            )
-        try:
-            install_controller_enrollment(args.state_dir, controller_payload)
-        except ControllerEnrollmentError as exc:
-            raise EnrollmentError(str(exc)) from exc
-
-        advertise_host = str(controller_payload.get("advertise_host", "")).strip()
-        cluster_helper = ROOT / "deploy" / "bpc-enable-cluster.sh"
-        completed = subprocess.run(
-            [
-                str(cluster_helper),
-                "--advertise-host",
-                advertise_host,
-                "--defer-marker",
-            ],
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise EnrollmentError(
-                f"distributed Controller bootstrap failed ({completed.returncode})"
-            )
-
-        request_json(
-            selected_controller,
-            "/v1/nodes/controller-ready",
-            {"node_id": enrollment["node_id"]},
-            credential=str(enrollment["credential"]),
-            timeout=40,
-            controller_urls=[
-                str(item) for item in enrollment.get("controllers", [])
-            ],
-        )
-        try:
-            activate_controller_marker(
-                args.state_dir,
-                node_id=str(enrollment["node_id"]),
-                payload=controller_payload,
-                software_version=software_version,
-            )
-        except ControllerEnrollmentError as exc:
-            raise EnrollmentError(str(exc)) from exc
-
-        public_helper = ROOT / "deploy" / "bpc-enable-control-replica.sh"
-        completed = subprocess.run(
-            [
-                str(public_helper),
-                "--hostname",
-                advertise_host,
-            ],
-            check=False,
-        )
-        if completed.returncode != 0:
-            raise EnrollmentError(
-                "Controller joined Raft but public control API bootstrap failed "
-                f"({completed.returncode}); fix public TLS/DNS and rerun bpc join"
-            )
+    resume_controller_provisioning(args.state_dir, enrollment)
 
     results = reconcile_roles(args.state_dir, roles, role_config)
+    require_role_health(roles, results)
     install_runtime_service(args.state_dir)
-    try:
-        send_heartbeat(args.state_dir, enrollment)
-    except EnrollmentError as exc:
-        print(f"WARNING: initial heartbeat failed: {exc}", file=sys.stderr)
+    send_heartbeat(args.state_dir, enrollment)
 
     print(f"Node joined: {enrollment['name']} ({enrollment['node_id']})")
     enabled = ", ".join(sorted(role for role, value in roles.items() if value)) or "none"
@@ -1488,6 +1585,7 @@ def cmd_leave(args: argparse.Namespace) -> int:
                 created_at=current.node.created_at,
                 last_seen=current.node.last_seen,
                 roles=Capabilities.from_mapping({}),
+                endpoints=current.node.endpoints,
             ),
             advertised_routes=current.advertised_routes,
         )
@@ -1561,6 +1659,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--control-dir", type=Path, default=DEFAULT_CONTROL_DIR)
     sub = parser.add_subparsers(dest="command", required=True)
 
+    create = sub.add_parser("node-create")
+    create.add_argument("--name", required=True)
+    create.add_argument("--preset", choices=sorted(NODE_PRESETS), required=True)
+    create.add_argument("--host", action="append", default=[])
+    create.add_argument("--route", action="append", default=[])
+    create.add_argument("--expires", default="15m")
+    create.add_argument("--controller-url")
+
     token = sub.add_parser("token-create")
     token.add_argument("--roles", action="append", required=True)
     token.add_argument("--name")
@@ -1588,6 +1694,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "node-create":
+            return cmd_node_create(args)
         if args.command == "token-create":
             return cmd_token_create(args)
         if args.command == "list":

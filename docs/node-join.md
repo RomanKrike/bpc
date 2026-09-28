@@ -1,5 +1,25 @@
 # Stage 2: one-command install and Node Join
 
+## Node invitations
+
+Presets expand to capabilities; they are not Node types. On an initialized
+distributed Controller:
+
+```bash
+bpc node create --name ru-02 --preset public-node --host ru-02.blinpi.ru
+bpc node create --name home-01 --preset site-router --route 192.168.88.0/24
+```
+
+The command prints an expiring, single-use installation command. `public-node`
+assigns `controller,gateway,relay`; `site-router` assigns `site_router`.
+`--host` and `--route` can be repeated. A private Node needs no public endpoint.
+Treat the printed command as a secret. Default expiry is 15 minutes; override
+with `--expires`. Creating an invitation does not create a live Node record.
+Node identity is allocated when the invitation is consumed.
+
+Routes are configured on the joined Node and advertised by its authenticated
+heartbeat. This does not implement a new site-router dataplane or grant Access.
+
 Stage 2 enrolls a server-side BPC Node into an existing Controller without
 manually editing BPC configuration files. It extends the unified Node model
 from Stage 1 and does not replace the existing data-plane transports.
@@ -107,15 +127,15 @@ Capabilities remain metadata on one Node rather than separate Node types.
 
 - `gateway`: reuses the existing Xray/REALITY gateway bootstrap and state.
 - `relay`: reuses the existing Agent/WGShim relay data-plane provisioner.
-- `controller`: an already provisioned Controller service is reconciled and
-  started. Automatic promotion of a completely fresh remote Node into a second
-  Controller would require certificate distribution and replicated Controller
-  state, which belongs to a later distributed-control-plane stage.
+- `controller`: a public-node invitation supplies the DNS endpoint. Join installs
+  locally generated Controller identity/certificates, starts the distributed
+  runtime, joins as nonvoter, waits for catch-up, promotes to voter and provisions
+  the public HTTPS API. Durable local checkpoints resume interrupted provisioning.
 - `site_router`: is a Node capability. Stage 4.5 moves route advertisement
   into canonical Node state; the new site-router data plane and MikroTik
   integration remain deferred.
 
-A typical Stage 2 fresh-server token therefore assigns `gateway,relay`.
+Public Nodes use the `public-node` preset; private Nodes use `site-router`.
 
 ## Idempotency and compatibility
 

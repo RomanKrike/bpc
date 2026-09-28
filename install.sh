@@ -13,10 +13,12 @@ WITH_AWG="false"
 AWG_PORT="443"
 WITH_WG="false"
 WG_PORT="51820"
+JOIN_TOKEN=""
 
 usage() {
   cat <<'USAGE'
 Usage: install.sh [options]
+       install.sh join BPC-...
 
 Options:
   --role ru-node                 Optional legacy RU gateway bootstrap
@@ -107,6 +109,14 @@ RESOLVED
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    join)
+      if [[ $# -ne 2 || ! "${2:-}" =~ ^BPC-[A-Za-z0-9_-]+\.[0-9a-fA-F]{64}$ ]]; then
+        echo "Usage: install.sh join BPC-..." >&2
+        exit 2
+      fi
+      JOIN_TOKEN="$2"
+      shift 2
+      ;;
     --role)
       ROLE="${2:-}"
       shift 2
@@ -160,6 +170,32 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
+# Reject unsupported hosts before package installation or network changes.
+# shellcheck disable=SC1091
+source /etc/os-release
+case "${ID}:${VERSION_ID}" in
+  debian:12|debian:13|ubuntu:24.04) ;;
+  *) echo "Unsupported OS: ${ID} ${VERSION_ID}; use Debian 12/13 or Ubuntu 24.04" >&2; exit 2 ;;
+esac
+case "$(uname -m)" in
+  x86_64|amd64) BPC_ARCH="amd64" ;;
+  aarch64|arm64) BPC_ARCH="arm64" ;;
+  *) echo "Unsupported architecture: $(uname -m)" >&2; exit 2 ;;
+esac
+export BPC_ROOT BPC_STATE_DIR
+
+if [[ -n "${JOIN_TOKEN}" && ( -n "${ROLE}" || "${WITH_AWG}" == "true" || "${WITH_WG}" == "true" ) ]]; then
+  echo "join cannot be combined with legacy transport bootstrap options" >&2
+  exit 2
+fi
+
+# A repeat bootstrap resumes the installed release. Updates remain the job of
+# bpc-update, with its backup, migration and rollback lifecycle.
+if [[ -n "${JOIN_TOKEN}" && -s "${BPC_ROOT}/current/VERSION" && \
+      -x "${BPC_ROOT}/current/deploy/bpc.sh" ]]; then
+  exec "${BPC_ROOT}/current/deploy/bpc.sh" join "${JOIN_TOKEN}"
+fi
+
 if [[ -n "${ROLE}" && "${ROLE}" != "ru-node" ]]; then
   echo "Unsupported legacy install profile: ${ROLE}" >&2
   exit 2
@@ -180,15 +216,27 @@ for port_spec in "XRAY_PORT:${XRAY_PORT}" "AWG_PORT:${AWG_PORT}" "WG_PORT:${WG_P
   fi
 done
 
-ensure_bootstrap_dns
+if [[ -z "${JOIN_TOKEN}" ]]; then
+  ensure_bootstrap_dns
+elif ! getent ahostsv4 github.com >/dev/null 2>&1; then
+  echo "DNS is unavailable; configure a working resolver before retrying join." >&2
+  exit 3
+fi
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl tar openssl python3 python3-yaml
+apt-get install -y --no-install-recommends ca-certificates curl tar openssl python3 python3-yaml python3-cryptography python3-argon2
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
-asset_base="https://github.com/${REPO}/releases/latest/download"
+curl --fail --location --proto '=https' --tlsv1.2 \
+  "https://api.github.com/repos/${REPO}/releases/latest" -o "${tmp}/release.json"
+release_tag="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "${tmp}/release.json")"
+if ! [[ "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid stable release tag" >&2
+  exit 3
+fi
+asset_base="https://github.com/${REPO}/releases/download/${release_tag}"
 
 curl --fail --location --proto '=https' --tlsv1.2 \
   "${asset_base}/bpc-connect-deploy.tar.gz" -o "${tmp}/bpc-connect-deploy.tar.gz"
@@ -215,6 +263,12 @@ fi
 version="$(tr -d '[:space:]' < "${tmp}/release/VERSION")"
 if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
   echo "Invalid release version: ${version}" >&2
+  exit 3
+fi
+if [[ "v${version}" != "${release_tag}" || \
+      ! -x "${tmp}/release/bin/bpc-controld-linux-${BPC_ARCH}" || \
+      ! -x "${tmp}/release/bin/bpc-agent-relay-linux-${BPC_ARCH}" ]]; then
+  echo "Release bundle version or architecture does not match" >&2
   exit 3
 fi
 
@@ -324,6 +378,13 @@ if [[ -f "${node_model}" ]]; then
     node_args+=(--name "${BPC_NODE_NAME}")
   fi
   python3 "${node_model}" "${node_args[@]}" migrate
+fi
+
+if [[ -n "${JOIN_TOKEN}" ]]; then
+  "${BPC_ROOT}/current/deploy/bpc.sh" join "${JOIN_TOKEN}"
+  "${BPC_ROOT}/current/deploy/bpc-healthcheck.sh"
+  echo "Node bootstrap completed. Updates are available through bpc-update."
+  exit 0
 fi
 
 cat <<DONE

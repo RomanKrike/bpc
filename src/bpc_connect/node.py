@@ -18,7 +18,49 @@ from .state import StateLayout
 
 NODE_CONFIG_VERSION = 1
 CORE_CAPABILITIES = ("controller", "gateway", "relay", "site_router")
+NODE_PRESETS = {
+    "public-node": ("controller", "gateway", "relay"),
+    "site-router": ("site_router",),
+}
 _CAPABILITY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+@dataclass(frozen=True)
+class Endpoint:
+    host: str
+    public: bool = True
+    enabled: bool = True
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {"host": self.host, "public": self.public, "enabled": self.enabled}
+
+
+def canonical_endpoints(raw: Any = None) -> tuple[Endpoint, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, (list, tuple)):
+        raise BPCConfigError("endpoints must be a list")
+    result: list[Endpoint] = []
+    hosts: set[str] = set()
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise BPCConfigError("endpoint must be a mapping")
+        host = item.get("host")
+        if not isinstance(host, str):
+            raise BPCConfigError("endpoint host must be a hostname")
+        host = host.lower()
+        if len(host) > 253 or not all(_HOST_LABEL_RE.fullmatch(x) for x in host.split(".")):
+            raise BPCConfigError(f"Invalid endpoint hostname: {host!r}")
+        public = item.get("public", True)
+        enabled = item.get("enabled", True)
+        if not isinstance(public, bool) or not isinstance(enabled, bool):
+            raise BPCConfigError("endpoint public and enabled must be boolean")
+        if host in hosts:
+            raise BPCConfigError(f"Duplicate endpoint hostname: {host!r}")
+        hosts.add(host)
+        result.append(Endpoint(host, public, enabled))
+    return tuple(result)
 
 
 @dataclass(frozen=True)
@@ -66,6 +108,7 @@ class Node:
     created_at: int
     last_seen: int
     roles: Capabilities
+    endpoints: tuple[Endpoint, ...] = ()
 
     def has_capability(self, name: str) -> bool:
         return self.roles.has(name)
@@ -88,6 +131,7 @@ class NodeConfig:
                 "last_seen": self.node.last_seen,
             },
             "roles": dict(sorted(self.node.roles.values.items())),
+            "endpoints": [item.to_mapping() for item in self.node.endpoints],
             "advertised_routes": list(self.advertised_routes),
         }
 
@@ -167,6 +211,7 @@ def parse_node_config(raw: Any) -> NodeConfig:
             created_at=created_at,
             last_seen=last_seen,
             roles=roles,
+            endpoints=canonical_endpoints(root.get("endpoints")),
         ),
         advertised_routes=advertised_routes,
     )
@@ -211,6 +256,7 @@ def new_node_config(
     name: str | None = None,
     roles: Mapping[str, Any] | None = None,
     advertised_routes: Iterable[object] | None = None,
+    endpoints: list[dict[str, Any]] | None = None,
     now: int | None = None,
 ) -> NodeConfig:
     timestamp = int(time.time()) if now is None else int(now)
@@ -226,6 +272,7 @@ def new_node_config(
             created_at=timestamp,
             last_seen=0,
             roles=Capabilities.from_mapping(roles),
+            endpoints=canonical_endpoints(endpoints),
         ),
         advertised_routes=canonical_advertised_routes(advertised_routes),
     )
@@ -262,6 +309,7 @@ def reconcile_node_config(
                 created_at=current.node.created_at,
                 last_seen=timestamp if touch_last_seen else current.node.last_seen,
                 roles=roles,
+                endpoints=current.node.endpoints,
             ),
             advertised_routes=routes,
         )
@@ -286,6 +334,7 @@ def reconcile_node_config(
                 created_at=created.node.created_at,
                 last_seen=timestamp,
                 roles=created.node.roles,
+                endpoints=created.node.endpoints,
             ),
             advertised_routes=created.advertised_routes,
         )
@@ -304,6 +353,7 @@ def set_capabilities(path: str | Path, updates: Mapping[str, bool]) -> NodeConfi
             created_at=current.node.created_at,
             last_seen=current.node.last_seen,
             roles=current.node.roles.with_updates(**dict(updates)),
+            endpoints=current.node.endpoints,
         ),
         advertised_routes=current.advertised_routes,
     )
@@ -333,6 +383,7 @@ def set_node_identity(path: str | Path, public_key: str) -> NodeConfig:
             created_at=current.node.created_at,
             last_seen=current.node.last_seen,
             roles=current.node.roles,
+            endpoints=current.node.endpoints,
         ),
         advertised_routes=current.advertised_routes,
     )

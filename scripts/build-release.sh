@@ -17,6 +17,7 @@ trap 'rm -rf "${staging}"' EXIT
 for path in config deploy docs scripts src pyproject.toml README.md LICENSE install.sh go.mod go.sum cmd internal; do
   cp -a "${ROOT_DIR}/${path}" "${staging}/"
 done
+find "${staging}" -type d -name __pycache__ -prune -exec rm -rf {} +
 printf '%s\n' "${VERSION}" > "${staging}/VERSION"
 
 if ! command -v go >/dev/null 2>&1; then
@@ -78,6 +79,7 @@ versioned="${OUT_DIR}/bpc-connect-${VERSION}-deploy.tar.gz"
 stable="${OUT_DIR}/bpc-connect-deploy.tar.gz"
 tar -C "${staging}" -czf "${versioned}" .
 cp "${versioned}" "${stable}"
+cp "${ROOT_DIR}/install.sh" "${OUT_DIR}/install.sh"
 
 mapfile -t artifacts < <(
   find "${OUT_DIR}" -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort

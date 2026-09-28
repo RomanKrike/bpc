@@ -44,7 +44,18 @@ roles:
   site_router: false
 
 advertised_routes: []
+
+endpoints:
+  - host: ru-01.blinpi.ru
+    public: true
+    enabled: true
 ```
+
+Endpoints are optional Node metadata, carried in canonical `control/nodes/`
+records and replicated by the existing Raft state machine. An empty list is
+valid for private Nodes. Endpoint metadata does not modify transport listeners,
+routes or firewall rules. Enrollment assigns endpoints; heartbeats cannot
+replace Controller-assigned endpoints with client-supplied values.
 
 `public_key` is the Node identity key, not an Xray, WireGuard, WGShim or
 Device key.

@@ -184,3 +184,35 @@ def test_unknown_node_config_version_is_rejected() -> None:
     }
     with pytest.raises(BPCConfigError, match="Unsupported node config version"):
         parse_node_config(raw)
+
+
+@pytest.mark.parametrize("endpoints", [[], [{"host": "ru-01.blinpi.ru"}], [
+    {"host": "ru-01.blinpi.ru", "public": True, "enabled": True},
+    {"host": "ru-01.internal", "public": False, "enabled": False},
+]])
+def test_endpoints_roundtrip_and_survive_reconciliation(tmp_path, endpoints):
+    from bpc_connect.node import reconcile_node_config, set_node_identity
+
+    path = tmp_path / "node.yaml"
+    config = new_node_config(name="ru-01", endpoints=endpoints)
+    save_node_config(path, config)
+    set_capabilities(path, {"controller": True})
+    set_advertised_routes(path, ["192.168.88.0/24"])
+    set_node_identity(path, "key")
+    updated, _ = reconcile_node_config(tmp_path, touch_last_seen=True)
+    assert updated.node.endpoints == config.node.endpoints
+    assert load_node_config(path).node.endpoints == config.node.endpoints
+
+
+@pytest.mark.parametrize("host", ["", "https://ru-01.blinpi.ru", "a..b", "-a.b", "a-.b",
+                                  "a_b.c", "a.b:8444", "a.b/x", "a.b\n", "a" * 64 + ".ru"])
+def test_invalid_endpoint_hostname(host):
+    with pytest.raises(BPCConfigError, match="hostname"):
+        new_node_config(endpoints=[{"host": host}])
+
+
+@pytest.mark.parametrize("endpoints", ["host", ["host"], [{"host": "a.b", "public": "yes"}],
+                                       [{"host": "a.b"}, {"host": "A.B"}]])
+def test_invalid_endpoint_structure(endpoints):
+    with pytest.raises(BPCConfigError):
+        new_node_config(endpoints=endpoints)
