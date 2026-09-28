@@ -54,8 +54,10 @@ from bpc_gateway_snapshot import (  # noqa: E402
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
-    agent_runtime_env as compatibility_agent_runtime_env,
     reconcile_transport_roles,
+)
+from bpc_connect.compat.runtime import (  # noqa: E402
+    agent_runtime_env as compatibility_agent_runtime_env,
 )
 from bpc_connect.compat.runtime import (  # noqa: E402
     default_role_config as compatibility_role_config,
