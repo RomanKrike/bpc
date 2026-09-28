@@ -150,7 +150,7 @@ def test_controller_discovers_paths_only_from_live_matching_public_nodes(tmp_pat
     overlay = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     config = {
         "wireguard_server_public_key": overlay,
-        "wgshim_server": "legacy.example:24444",
+        "wgshim_server": "ru-01.example:24444",
     }
     (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
     nodes = tmp_path / "nodes"
@@ -192,8 +192,8 @@ def test_controller_discovers_paths_only_from_live_matching_public_nodes(tmp_pat
 
     assert paths[:5] == [
         {
-            "node": "compat-primary",
-            "endpoint": "legacy.example:24444",
+            "node": "ru-01",
+            "endpoint": "ru-01.example:24444",
             "peer_public_key": overlay,
         },
         {
