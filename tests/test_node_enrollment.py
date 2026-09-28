@@ -85,7 +85,14 @@ def test_enrollment_end_to_end_join_heartbeat_list_leave(tmp_path: Path) -> None
         payload={
             "status": "online",
             "version": "0.15.0",
+            "protocol_version": 1,
+            "state_schema_version": 1,
             "services": {"gateway": "active", "relay": "active"},
+            "transport": {
+                "udp_ports": [24444, 24445, 24444, 80],
+                "tcp_port": 24444,
+                "overlay_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            },
         },
         now=1_020,
     )
@@ -99,6 +106,12 @@ def test_enrollment_end_to_end_join_heartbeat_list_leave(tmp_path: Path) -> None
     assert nodes[0]["online"] is True
     assert nodes[0]["last_seen"] == 1_020
     assert nodes[0]["services"] == {"gateway": "active", "relay": "active"}
+    assert nodes[0]["transport"] == {
+        "udp_ports": [24444, 24445],
+        "tcp_port": 24444,
+        "overlay_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    }
+    assert nodes[0]["compatibility"] == "compatible"
 
     left = enrollment.leave_node(
         control,
