@@ -162,14 +162,17 @@ func (m *PathManager) Select(now time.Time) (int, bool) {
 		return m.active, true
 	}
 	best := -1
-	currentHealthy := m.paths[m.active].Reachable
+	// Reachable is intentionally debounced for telemetry, but an active path that
+	// just lost an entire authenticated probe round should not hold traffic when
+	// an already-warm standby is healthy.
+	currentUsable := m.paths[m.active].Reachable && m.paths[m.active].ConsecutiveFailures == 0
 	for i, p := range m.paths {
 		if !p.Reachable || p.ConsecutiveFailures > 0 {
 			continue
 		}
 		// Cooldown prevents flapping back to a recovered path. A failed active path
 		// may use it when it is the only remaining reachable candidate.
-		if currentHealthy && !p.recoveredAt.IsZero() && now.Sub(p.recoveredAt) < m.policy.RecoveryCooldown {
+		if currentUsable && !p.recoveredAt.IsZero() && now.Sub(p.recoveredAt) < m.policy.RecoveryCooldown {
 			continue
 		}
 		if best < 0 || m.score(p, now) < m.score(m.paths[best], now) {
@@ -180,7 +183,7 @@ func (m *PathManager) Select(now time.Time) (int, bool) {
 		m.candidate = -1
 		return m.active, false
 	}
-	if currentHealthy {
+	if currentUsable {
 		if m.score(m.paths[m.active], now)-m.score(m.paths[best], now) < float64(m.policy.MinimumImprovement)/float64(time.Millisecond) {
 			m.candidate = -1
 			return m.active, false
