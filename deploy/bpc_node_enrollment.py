@@ -46,6 +46,11 @@ from bpc_gateway_snapshot import (  # noqa: E402
     install_security_snapshot,
     load_valid_security_snapshot,
 )
+from bpc_gateway_dataplane import (  # noqa: E402
+    GatewayDataplaneError,
+    reconcile_gateway_dataplane,
+)
+from bpc_access import AccessError, sync_access_firewall  # noqa: E402
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
@@ -1216,6 +1221,21 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
             raise EnrollmentError(str(exc)) from exc
         enrollment["security_revision"] = int(installed.get("revision", 0))
         enrollment["security_expires_at"] = int(installed.get("expires_at", 0))
+        control_config = state_dir / "control" / "config.json"
+        if control_config.is_file():
+            try:
+                reconcile_gateway_dataplane(state_dir)
+                sync_access_firewall(state_dir / "control")
+            except (
+                GatewayDataplaneError,
+                AccessError,
+                OSError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise EnrollmentError(
+                    f"Gateway dataplane reconciliation failed: {exc}"
+                ) from exc
 
     enrollment["last_heartbeat"] = int(response.get("server_time", time.time()))
     write_local_enrollment(state_dir, enrollment)
