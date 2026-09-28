@@ -3,6 +3,7 @@ package wgshim
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -248,5 +249,45 @@ func TestAdaptiveClientSelectsReachableEndpoint(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("adaptive server did not stop")
+	}
+}
+
+
+func TestResolveAdaptiveServersSkipsUnavailableEndpoint(t *testing.T) {
+	resolver := func(network, address string) (*net.UDPAddr, error) {
+		if address == "broken.example:24444" {
+			return nil, errors.New("synthetic DNS failure")
+		}
+		return net.ResolveUDPAddr(network, address)
+	}
+	addrs, names, sources, err := resolveAdaptiveServers(
+		[]string{"broken.example:24444", "127.0.0.1:24445"},
+		resolver,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != 1 || len(names) != 1 {
+		t.Fatalf("unexpected resolved set: addrs=%v names=%v", addrs, names)
+	}
+	if names[0] != "127.0.0.1:24445" {
+		t.Fatalf("wrong surviving endpoint: %q", names[0])
+	}
+	if got := sources[addrs[0].String()]; got != names[0] {
+		t.Fatalf("source mapping mismatch: got %q want %q", got, names[0])
+	}
+}
+
+func TestResolveAdaptiveServersFailsOnlyWhenAllUnavailable(t *testing.T) {
+	resolver := func(string, string) (*net.UDPAddr, error) {
+		return nil, errors.New("synthetic DNS failure")
+	}
+	if _, _, _, err := resolveAdaptiveServers(
+		[]string{"ru-01.example:24444", "ru-02.example:24444"},
+		resolver,
+		nil,
+	); err == nil {
+		t.Fatal("all unavailable endpoints must fail startup")
 	}
 }
