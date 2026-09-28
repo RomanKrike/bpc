@@ -394,3 +394,29 @@ def test_node_heartbeat_marks_incompatible_protocol(tmp_path: Path) -> None:
     assert node["protocol_version"] == 99
     assert node["state_schema_version"] == 99
     assert node["compatibility"] == "incompatible"
+
+
+def test_public_nodes_have_independent_canonical_endpoints(tmp_path):
+    control = tmp_path / "control"
+    for name in ("ru-01", "ru-02", "home-01"):
+        endpoints = [] if name == "home-01" else [{"host": f"{name}.blinpi.ru"}]
+        token = enrollment.create_join_token(
+            control, controller_url="https://ru-01.blinpi.ru:8444",
+            roles=["site_router"], name=name, endpoints=endpoints,
+        )
+        joined = enrollment.enroll_node(
+            control, token=token, public_key=base64.b64encode(os.urandom(32)).decode(),
+            presented_name="ignored",
+        )
+        expected = (
+            [{"host": f"{name}.blinpi.ru", "public": True, "enabled": True}] if endpoints else []
+        )
+        assert joined["config"]["endpoints"] == expected
+        record = enrollment.read_json(control / "nodes" / f'{joined["node_id"]}.json')
+        assert record["endpoints"] == expected
+        response = enrollment.node_heartbeat(
+            control, credential=joined["credential"],
+            payload={"endpoints": [{"host": "attacker.invalid"}]},
+        )
+        assert response["config"]["endpoints"] == expected
+    assert len(enrollment.list_nodes(control)) == 3

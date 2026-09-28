@@ -55,6 +55,7 @@ from bpc_connect.node import (  # noqa: E402
     Capabilities,
     Node,
     NodeConfig,
+    canonical_endpoints,
     load_node_config,
     save_node_config,
 )
@@ -314,6 +315,7 @@ def create_join_token(
     name: str | None = None,
     expires_in: int = 900,
     role_config: dict[str, Any] | None = None,
+    endpoints: list[dict[str, Any]] | None = None,
     now: int | None = None,
 ) -> str:
     timestamp = int(time.time()) if now is None else int(now)
@@ -334,6 +336,7 @@ def create_join_token(
         "controller_url": normalize_controller_url(controller_url),
         "controllers": _controller_candidates(controller_url, controllers),
         "role_config": role_config or {},
+        "endpoints": [item.to_mapping() for item in canonical_endpoints(endpoints)],
     }
     atomic_json(control_dir / "node-join" / f"{index}.json", metadata)
     return token
@@ -440,6 +443,7 @@ def enroll_node(
         "public_key_fingerprint": fingerprint,
         "roles": role_map,
         "role_config": role_config,
+        "endpoints": [item.to_mapping() for item in canonical_endpoints(record.get("endpoints"))],
         "created_at": timestamp,
         "last_seen": timestamp,
         "revoked": False,
@@ -545,6 +549,7 @@ def enroll_node(
             "version": 1,
             "heartbeat_interval": HEARTBEAT_INTERVAL,
             "role_config": role_config,
+            "endpoints": node["endpoints"],
         },
     }
 
@@ -722,6 +727,7 @@ def node_heartbeat(
             "state_schema_version": STATE_SCHEMA_VERSION,
             "controllers": controller_public_urls(control_dir.parent),
             "role_config": dict(node.get("role_config", {})),
+            "endpoints": node.get("endpoints", []),
         },
     }
 
@@ -938,17 +944,21 @@ def apply_remote_node_config(
     roles: dict[str, Any],
     created_at: int,
     last_seen: int,
+    endpoints: list[dict[str, Any]] | None = None,
 ) -> None:
     role_values = Capabilities.from_mapping(
         {str(key): bool(value) for key, value in roles.items()}
     )
     path = state_dir / "node.yaml"
     advertised_routes: tuple[str, ...] = ()
+    endpoint_values = canonical_endpoints(endpoints)
     if path.is_file():
         try:
             current = load_node_config(path)
             created_at = current.node.created_at or created_at
             advertised_routes = current.advertised_routes
+            if endpoints is None:
+                endpoint_values = current.node.endpoints
         except (OSError, ValueError):
             pass
     config = NodeConfig(
@@ -960,6 +970,7 @@ def apply_remote_node_config(
             created_at=int(created_at),
             last_seen=int(last_seen),
             roles=role_values,
+            endpoints=endpoint_values,
         ),
         advertised_routes=advertised_routes,
     )
@@ -1187,6 +1198,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         roles=dict(enrollment.get("roles", {})),
         created_at=int(enrollment.get("created_at", 0)),
         last_seen=int(enrollment["last_heartbeat"]),
+        endpoints=enrollment.get("config", {}).get("endpoints"),
     )
     return response
 
@@ -1338,6 +1350,7 @@ def cmd_join(args: argparse.Namespace) -> int:
         roles=roles,
         created_at=enrollment["created_at"],
         last_seen=int(time.time()),
+        endpoints=config.get("endpoints"),
     )
     role_config = config.get("role_config", {})
     if not isinstance(role_config, dict):
@@ -1488,6 +1501,7 @@ def cmd_leave(args: argparse.Namespace) -> int:
                 created_at=current.node.created_at,
                 last_seen=current.node.last_seen,
                 roles=Capabilities.from_mapping({}),
+                endpoints=current.node.endpoints,
             ),
             advertised_routes=current.advertised_routes,
         )
