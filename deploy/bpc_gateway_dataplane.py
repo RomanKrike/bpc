@@ -124,7 +124,7 @@ def reconcile_gateway_dataplane(state_dir: Path) -> dict[str, int]:
     interface, key_dir = _owned_interface(control_dir, config)
     wanted = _active_devices(control_dir)
 
-    state_path = state_dir / "runtime" / "gateway-dataplane-managed.json"
+    state_path = state_dir / "gateway-dataplane-managed.json"
     previous: dict[str, Any] = {}
     if state_path.is_file():
         previous = _read_json(state_path)
