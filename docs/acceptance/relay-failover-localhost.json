@@ -1,0 +1,42 @@
+{
+  "failover_ms": 1054.111086,
+  "gateway_failure_tested": false,
+  "overlay_ip_after": "10.253.0.2",
+  "overlay_ip_before": "10.253.0.2",
+  "topology": "two WGShim relays, one unchanged WireGuard destination, localhost",
+  "traffic": {
+    "ping": {
+      "unit": "ICMP_exchanges",
+      "sent": 190,
+      "received": 181,
+      "lost": 9,
+      "max_gap_ms": 1117.106125,
+      "survived": true
+    },
+    "rdp_like_tcp": {
+      "unit": "application_messages",
+      "sent": 67,
+      "received": 67,
+      "lost": 0,
+      "max_gap_ms": 1656.769427,
+      "survived": true
+    },
+    "tcp_stream": {
+      "unit": "application_messages",
+      "sent": 90,
+      "received": 90,
+      "lost": 0,
+      "max_gap_ms": 3654.443537,
+      "survived": true
+    },
+    "udp": {
+      "unit": "datagrams",
+      "sent": 254,
+      "received": 201,
+      "lost": 53,
+      "max_gap_ms": 1079.307859,
+      "survived": true
+    }
+  },
+  "wireguard_identity_and_routes_unchanged": true
+}
