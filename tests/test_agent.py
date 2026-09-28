@@ -378,6 +378,13 @@ def test_agent_has_persistent_randomized_udp_port_pool() -> None:
     assert "udp-pool=" in STATUS
 
 
+def test_windows_pins_every_transport_path_outside_overlay() -> None:
+    assert "resolveWGShimServerIPv4s(cfg.TransportPaths())" in TUNNEL
+    assert "for _, serverIP := range serverIPs" in TUNNEL
+    assert "physicalRouteCommands" in TUNNEL
+    assert "cfg.TransportPaths()[0]" not in TUNNEL
+
+
 def test_agent_adaptive_port_selection_uses_authenticated_rtt_probes() -> None:
     assert "packetProbe" in WGSHIM_CODEC
     assert "packetProbeReply" in WGSHIM_CODEC
