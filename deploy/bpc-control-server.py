@@ -623,20 +623,32 @@ class ControlHandler(BaseHTTPRequestHandler):
             )
 
         # Reserve path capacity for distinct Public Nodes before filling the
-        # remaining slots with extra compatibility/randomized ports.
+        # remaining slots with extra compatibility/randomized ports. Legacy
+        # endpoints that match an authenticated Node hostname inherit that Node
+        # label so changing ports on one VPS does not look like cross-node failover.
+        node_by_host = {host: node for node, host, _ in candidates}
+
+        def compatibility_node(endpoint: str) -> str:
+            host, separator, _ = endpoint.rpartition(":")
+            if not separator:
+                return "compat-primary"
+            return node_by_host.get(host.strip("[]").lower(), "compat-primary")
+
         compatibility = global_config.get(
             "wgshim_servers",
             [global_config["wgshim_server"]],
         )
         if not isinstance(compatibility, list):
             compatibility = [global_config["wgshim_server"]]
-        add("compat-primary", str(global_config["wgshim_server"]))
+        primary = str(global_config["wgshim_server"]).strip()
+        add(compatibility_node(primary), primary)
         for node, host, ports in candidates:
             if ports:
                 add(node, f"{host}:{ports[0]}")
         for endpoint in compatibility:
             if isinstance(endpoint, str) and endpoint.strip():
-                add("compat-primary", endpoint.strip())
+                value = endpoint.strip()
+                add(compatibility_node(value), value)
 
         # Round-robin additional ports across Nodes after every healthy Public
         # Node had a chance to claim one path.
