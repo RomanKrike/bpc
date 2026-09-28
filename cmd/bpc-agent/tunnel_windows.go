@@ -181,11 +181,33 @@ func configureEmbeddedInterface(
 	if err != nil {
 		return err
 	}
-	serverIP, err := resolveWGShimServerIPv4(cfg.TransportPaths()[0].Endpoint)
+	serverIPs, err := resolveWGShimServerIPv4s(cfg.TransportPaths())
 	if err != nil {
 		return err
 	}
 	escapedName := psQuote(name)
+
+	physicalRouteCommands := make([]string, 0, len(serverIPs))
+	for _, serverIP := range serverIPs {
+		physicalRouteCommands = append(
+			physicalRouteCommands,
+			fmt.Sprintf(
+				"$route=Find-NetRoute -RemoteIPAddress '%s' | "+
+					"Where-Object {$_.InterfaceAlias -ne '%s'} | "+
+					"Sort-Object RouteMetric | Select-Object -First 1; "+
+					"if ($null -eq $route) { throw 'No physical route to BPC relay %s' }; "+
+					"$nextHop=$route.NextHop; if ([string]::IsNullOrWhiteSpace($nextHop)) {$nextHop='0.0.0.0'}; "+
+					"Remove-NetRoute -DestinationPrefix '%s/32' -Confirm:$false -ErrorAction SilentlyContinue; "+
+					"New-NetRoute -InterfaceIndex $route.InterfaceIndex -DestinationPrefix '%s/32' "+
+					"-NextHop $nextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
+				serverIP,
+				escapedName,
+				serverIP,
+				serverIP,
+				serverIP,
+			),
+		)
+	}
 
 	routeCommands := make([]string, 0, len(profile.AllowedIPs))
 	for _, route := range profile.AllowedIPs {
@@ -216,14 +238,7 @@ func configureEmbeddedInterface(
 		"$ErrorActionPreference='Stop'; "+
 			"Get-NetRoute -InterfaceAlias '%s' -ErrorAction SilentlyContinue | "+
 			"Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue; "+
-			"$route=Find-NetRoute -RemoteIPAddress '%s' | "+
-			"Where-Object {$_.InterfaceAlias -ne '%s'} | "+
-			"Sort-Object RouteMetric | Select-Object -First 1; "+
-			"if ($null -eq $route) { throw 'No physical route to BPC relay' }; "+
-			"$nextHop=$route.NextHop; if ([string]::IsNullOrWhiteSpace($nextHop)) {$nextHop='0.0.0.0'}; "+
-			"Remove-NetRoute -DestinationPrefix '%s/32' -Confirm:$false -ErrorAction SilentlyContinue; "+
-			"New-NetRoute -InterfaceIndex $route.InterfaceIndex -DestinationPrefix '%s/32' "+
-			"-NextHop $nextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null; "+
+			"%s; "+
 			"Get-NetIPAddress -InterfaceAlias '%s' -AddressFamily IPv4 "+
 			"-ErrorAction SilentlyContinue | "+
 			"Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue; "+
@@ -232,10 +247,7 @@ func configureEmbeddedInterface(
 			"Set-NetIPInterface -InterfaceAlias '%s' -AddressFamily IPv4 "+
 			"-NlMtuBytes %d -ErrorAction Stop; %s",
 		escapedName,
-		serverIP,
-		escapedName,
-		serverIP,
-		serverIP,
+		strings.Join(physicalRouteCommands, "; "),
 		escapedName,
 		escapedName,
 		address.Addr().String(),
@@ -261,26 +273,73 @@ func configureEmbeddedInterface(
 	return nil
 }
 
+func resolveWGShimServerIPv4s(paths []agentctl.TransportPath) ([]string, error) {
+	seen := map[string]struct{}{}
+	var result []string
+	var failures []string
+	for _, path := range paths {
+		addresses, err := resolveWGShimServerIPv4Candidates(path.Endpoint)
+		if err != nil {
+			failures = append(failures, err.Error())
+			continue
+		}
+		for _, address := range addresses {
+			if _, ok := seen[address]; ok {
+				continue
+			}
+			seen[address] = struct{}{}
+			result = append(result, address)
+		}
+	}
+	if len(result) == 0 {
+		if len(failures) == 0 {
+			return nil, fmt.Errorf("no transport path has an IPv4 endpoint")
+		}
+		return nil, fmt.Errorf("resolve transport path endpoints: %s", strings.Join(failures, "; "))
+	}
+	return result, nil
+}
+
 func resolveWGShimServerIPv4(endpoint string) (string, error) {
+	addresses, err := resolveWGShimServerIPv4Candidates(endpoint)
+	if err != nil {
+		return "", err
+	}
+	return addresses[0], nil
+}
+
+func resolveWGShimServerIPv4Candidates(endpoint string) ([]string, error) {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
 	if err != nil {
-		return "", fmt.Errorf("parse WGShim server endpoint: %w", err)
+		return nil, fmt.Errorf("parse WGShim server endpoint: %w", err)
 	}
 	host = strings.Trim(host, "[]")
 	if ip := net.ParseIP(host); ip != nil {
 		if v4 := ip.To4(); v4 != nil {
-			return v4.String(), nil
+			return []string{v4.String()}, nil
 		}
-		return "", fmt.Errorf("WGShim server does not resolve to IPv4: %s", host)
+		return nil, fmt.Errorf("WGShim server does not resolve to IPv4: %s", host)
 	}
 	addresses, err := net.LookupIP(host)
 	if err != nil {
-		return "", fmt.Errorf("resolve WGShim server %s: %w", host, err)
+		return nil, fmt.Errorf("resolve WGShim server %s: %w", host, err)
 	}
+	seen := map[string]struct{}{}
+	result := make([]string, 0, len(addresses))
 	for _, ip := range addresses {
-		if v4 := ip.To4(); v4 != nil {
-			return v4.String(), nil
+		v4 := ip.To4()
+		if v4 == nil {
+			continue
 		}
+		value := v4.String()
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
 	}
-	return "", fmt.Errorf("WGShim server has no IPv4 address: %s", host)
+	if len(result) == 0 {
+		return nil, fmt.Errorf("WGShim server has no IPv4 address: %s", host)
+	}
+	return result, nil
 }
