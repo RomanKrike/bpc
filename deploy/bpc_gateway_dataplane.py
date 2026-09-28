@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import os
 import subprocess
@@ -53,12 +54,20 @@ def _run_wg(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return completed
 
 
-def _valid_psk(value: str) -> bool:
+def _valid_wireguard_key(value: str) -> bool:
     try:
         raw = base64.b64decode(value.strip(), validate=True)
     except (ValueError, base64.binascii.Error):
         return False
-    return len(raw) == 32
+    return len(raw) == 32 and any(raw)
+
+
+def _valid_address(value: str) -> bool:
+    try:
+        address = ipaddress.ip_interface(value.strip())
+    except ValueError:
+        return False
+    return address.version == 4 and address.network.prefixlen == 32
 
 
 def _owned_interface(control_dir: Path, config: dict[str, Any]) -> tuple[str, Path]:
@@ -99,7 +108,12 @@ def _active_devices(control_dir: Path) -> dict[str, dict[str, str]]:
         public_key = str(value.get("wireguard_public_key", "")).strip()
         address = str(value.get("wireguard_address", "")).strip()
         psk = str(value.get("wgshim_psk", "")).strip()
-        if not device_id or not public_key or not address or not _valid_psk(psk):
+        if (
+            not device_id
+            or not _valid_wireguard_key(public_key)
+            or not _valid_address(address)
+            or not _valid_wireguard_key(psk)
+        ):
             continue
         devices[device_id] = {
             "wireguard_public_key": public_key,
