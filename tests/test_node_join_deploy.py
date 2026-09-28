@@ -87,6 +87,10 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
         ROOT / "deploy" / "bpc_gateway_snapshot.py",
         runtime / "bpc_gateway_snapshot.py",
     )
+    shutil.copy(
+        ROOT / "deploy" / "bpc_gateway_dataplane.py",
+        runtime / "bpc_gateway_dataplane.py",
+    )
     shutil.copytree(ROOT / "src" / "bpc_connect", runtime / "src" / "bpc_connect")
 
     completed = subprocess.run(
