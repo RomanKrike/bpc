@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/RomanKrike/bpc/internal/agentctl"
@@ -44,12 +43,6 @@ type transportTelemetry struct {
 	RTTMS     int64               `json:"rtt_ms"`
 	Reachable int                 `json:"reachable"`
 	Total     int                 `json:"total"`
-}
-
-type runtimeSupervisor struct {
-	mu          sync.Mutex
-	fingerprint string
-	cancel      context.CancelFunc
 }
 
 func main() {
@@ -553,64 +546,6 @@ func syncRuntimeState(
 	return writeUIStatus(state)
 }
 
-func (s *runtimeSupervisor) apply(
-	parent context.Context,
-	cfg agentctl.RuntimeConfig,
-	profile agentctl.WireGuardProfile,
-	logger *log.Logger,
-) error {
-	raw, err := json.Marshal(struct {
-		Config  agentctl.RuntimeConfig
-		Profile agentctl.WireGuardProfile
-	}{cfg, profile})
-	if err != nil {
-		return err
-	}
-	fingerprint := string(raw)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if fingerprint == s.fingerprint && s.cancel != nil {
-		return nil
-	}
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
-	}
-
-	ctx, cancel := context.WithCancel(parent)
-	s.cancel = cancel
-	s.fingerprint = fingerprint
-
-	go runWGShimLoop(ctx, cfg, logger)
-	if profile.Complete() {
-		go func() {
-			telemetry := func(stats tunnelTelemetry) {
-				if err := writeUIRuntimeStatus(stats); err != nil && ctx.Err() == nil {
-					logger.Printf("write UI tunnel telemetry: %v", err)
-				}
-			}
-			if err := runEmbeddedWireGuard(ctx, cfg, profile, logger, telemetry); err != nil && ctx.Err() == nil {
-				logger.Printf("embedded WireGuard stopped: %v", err)
-			}
-		}()
-	} else if cfg.LegacyTunnel != "" {
-		go runLegacyWireGuardLoop(ctx, cfg, logger)
-	} else {
-		logger.Printf("no provisioned WireGuard profile; control plane remains online")
-	}
-	return nil
-}
-
-func (s *runtimeSupervisor) stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
-	}
-}
-
 func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) {
 	for ctx.Err() == nil {
 		psk, err := base64.StdEncoding.DecodeString(cfg.WGShimPSK)
@@ -642,60 +577,43 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 		for _, path := range cfg.TransportPaths() {
 			servers = append(servers, path.Endpoint)
 		}
-		if len(servers) > 1 {
-			err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
-				LocalListen:     cfg.WGShimListen,
-				Servers:         servers,
-				TX:              tx,
-				RX:              rx,
-				Logger:          logger,
-				StatsInterval:   defaultLogEvery,
-				ProbeTimeout:    400 * time.Millisecond,
-				SwitchThreshold: 10 * time.Millisecond,
-				OnEndpointReport: func(report wgshim.EndpointReport) {
-					for i := range report.Paths {
-						for _, path := range cfg.TransportPaths() {
-							if path.Endpoint == report.Paths[i].Endpoint {
-								report.Paths[i].Node = path.Node
-								break
-							}
+		err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
+			LocalListen:     cfg.WGShimListen,
+			Servers:         servers,
+			TX:              tx,
+			RX:              rx,
+			Logger:          logger,
+			StatsInterval:   defaultLogEvery,
+			ProbeTimeout:    400 * time.Millisecond,
+			SwitchThreshold: 10 * time.Millisecond,
+			OnEndpointReport: func(report wgshim.EndpointReport) {
+				for i := range report.Paths {
+					for _, path := range cfg.TransportPaths() {
+						if path.Endpoint == report.Paths[i].Endpoint {
+							report.Paths[i].Node = path.Node
+							break
 						}
 					}
-					rttMS := int64(0)
-					if report.RTT > 0 {
-						rttMS = report.RTT.Milliseconds()
-						if rttMS == 0 {
-							rttMS = 1
-						}
+				}
+				rttMS := int64(0)
+				if report.RTT > 0 {
+					rttMS = report.RTT.Milliseconds()
+					if rttMS == 0 {
+						rttMS = 1
 					}
-					if writeErr := writeUITransportStatus(transportTelemetry{
-						UpdatedAt: time.Now().Unix(),
-						Endpoint:  report.Selected,
-						RTTMS:     rttMS,
-						Reachable: report.Reachable,
-						Total:     report.Total,
-						Paths:     report.Paths,
-					}); writeErr != nil && ctx.Err() == nil {
-						logger.Printf("write UI transport telemetry: %v", writeErr)
-					}
-				},
-			})
-		} else {
-			_ = writeUITransportStatus(transportTelemetry{
-				UpdatedAt: time.Now().Unix(),
-				Endpoint:  servers[0],
-				Reachable: 1,
-				Total:     1,
-			})
-			err = wgshim.RunClient(ctx, wgshim.ClientConfig{
-				LocalListen:   cfg.WGShimListen,
-				Server:        servers[0],
-				TX:            tx,
-				RX:            rx,
-				Logger:        logger,
-				StatsInterval: defaultLogEvery,
-			})
-		}
+				}
+				if writeErr := writeUITransportStatus(transportTelemetry{
+					UpdatedAt: time.Now().Unix(),
+					Endpoint:  report.Selected,
+					RTTMS:     rttMS,
+					Reachable: report.Reachable,
+					Total:     report.Total,
+					Paths:     report.Paths,
+				}); writeErr != nil && ctx.Err() == nil {
+					logger.Printf("write UI transport telemetry: %v", writeErr)
+				}
+			},
+		})
 		if ctx.Err() != nil {
 			return
 		}

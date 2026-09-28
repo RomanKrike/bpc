@@ -1,6 +1,7 @@
 import pathlib
 
-AGENT = pathlib.Path("cmd/bpc-agent/main.go").read_text(encoding="utf-8")
+AGENT = (pathlib.Path("cmd/bpc-agent/main.go").read_text(encoding="utf-8")
+         + pathlib.Path("cmd/bpc-agent/runtime.go").read_text(encoding="utf-8"))
 AGENTCTL = pathlib.Path("internal/agentctl/control.go").read_text(encoding="utf-8")
 BUILD = pathlib.Path("scripts/build-release.sh").read_text(encoding="utf-8")
 CI = pathlib.Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
