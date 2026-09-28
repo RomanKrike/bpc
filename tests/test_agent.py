@@ -8,6 +8,8 @@ CI = pathlib.Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 CONTROL = pathlib.Path("deploy/bpc-control-server.py").read_text(encoding="utf-8")
 DATAPLANE = pathlib.Path("deploy/bpc-enable-agent-dataplane.sh").read_text(encoding="utf-8")
 ENABLE_CONTROL = pathlib.Path("deploy/bpc-enable-control.sh").read_text(encoding="utf-8")
+ENABLE_CONTROL_REPLICA = pathlib.Path("deploy/bpc-enable-control-replica.sh").read_text(encoding="utf-8")
+NODE_ENROLLMENT = pathlib.Path("deploy/bpc_node_enrollment.py").read_text(encoding="utf-8")
 HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
 INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
 MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
@@ -376,6 +378,24 @@ def test_agent_has_persistent_randomized_udp_port_pool() -> None:
     assert 'WGShimServers []string' in AGENTCTL
     assert "service_owns_udp_port bpc-agent-relay.service" in HEALTH
     assert "udp-pool=" in STATUS
+
+
+def test_public_nodes_share_overlay_identity_without_leaking_private_key_to_devices() -> None:
+    assert '"wireguard_server_private_key": private_key' in ENABLE_CONTROL
+    assert 'canonical_server_private' in DATAPLANE
+    assert 'Canonical WireGuard overlay key pair is inconsistent' in DATAPLANE
+    config_method = CONTROL.split("def _config_for_device", 1)[1].split(
+        "def _wireguard_profile_for_device", 1
+    )[0]
+    assert "wireguard_server_private_key" not in config_method
+
+
+def test_controller_runtime_stages_gateway_dataplane_reconciler() -> None:
+    for script in (ENABLE_CONTROL, ENABLE_CONTROL_REPLICA):
+        assert 'release_gateway_dataplane=' in script
+        assert 'bpc_gateway_dataplane.py' in script
+    assert "reconcile_gateway_dataplane(state_dir)" in NODE_ENROLLMENT
+    assert "sync_access_firewall(state_dir / \"control\")" in NODE_ENROLLMENT
 
 
 def test_windows_pins_every_transport_path_outside_overlay() -> None:
