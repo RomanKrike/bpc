@@ -16,6 +16,17 @@ def executable(path, content):
     path.chmod(0o755)
 
 
+def run_isolated_bootstrap(env):
+    command = ["bash", str(ROOT / "install.sh"), "join", TOKEN]
+    if os.geteuid() != 0:
+        # CI's runner is unprivileged. Elevate only this subprocess, whose
+        # package/network/mutation commands are replaced by temporary stubs.
+        command = ["sudo", "-n", "env",
+                   *[f"{key}={env[key]}" for key in ("PATH", "BPC_ROOT", "BPC_STATE_DIR")],
+                   *command]
+    return subprocess.run(command, env=env, capture_output=True, text=True)
+
+
 def test_bootstrap_repeat_preserves_release_and_resumes_join(tmp_path):
     current = tmp_path / "bpc" / "current"
     current.mkdir(parents=True)
@@ -27,8 +38,7 @@ def test_bootstrap_repeat_preserves_release_and_resumes_join(tmp_path):
     env = {**os.environ, "BPC_ROOT": str(current.parent),
            "BPC_STATE_DIR": str(tmp_path / "state"),
            "PATH": f'{mockbin}:{os.environ["PATH"]}'}
-    result = subprocess.run(["bash", str(ROOT / "install.sh"), "join", TOKEN],
-                            env=env, capture_output=True, text=True)
+    result = run_isolated_bootstrap(env)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == ["join", TOKEN]
     assert (current / "VERSION").read_text() == "0.18.4"
@@ -64,11 +74,10 @@ esac
 ''')
     executable(mockbin / "tar", 'echo "unverified archive extracted" >&2; exit 99\n')
     target = tmp_path / "bpc"
-    result = subprocess.run(
-        ["bash", str(ROOT / "install.sh"), "join", TOKEN],
-        env={**os.environ, "BPC_ROOT": str(target), "BPC_STATE_DIR": str(tmp_path / "state"),
-             "PATH": f'{mockbin}:{os.environ["PATH"]}'}, capture_output=True, text=True,
-    )
+    result = run_isolated_bootstrap({
+        **os.environ, "BPC_ROOT": str(target), "BPC_STATE_DIR": str(tmp_path / "state"),
+        "PATH": f'{mockbin}:{os.environ["PATH"]}',
+    })
     assert result.returncode != 0
     assert "FAILED" in result.stdout
     assert "unverified archive extracted" not in result.stderr

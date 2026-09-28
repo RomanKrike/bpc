@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -17,6 +18,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from pathlib import Path
@@ -182,6 +184,19 @@ def normalize_controller_url(value: str) -> str:
         raise EnrollmentError("controller URL must use https://")
     if len(url) > 512:
         raise EnrollmentError("controller URL is too long")
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+        valid = (
+            parsed.hostname and parsed.username is None and parsed.password is None
+            and not parsed.query and not parsed.fragment and not parsed.path
+            and (port is None or 1 <= port <= 65535)
+            and not any(char.isspace() for char in url)
+        )
+    except ValueError as exc:
+        raise EnrollmentError("invalid controller URL") from exc
+    if not valid:
+        raise EnrollmentError("invalid controller URL")
     return url
 
 
@@ -916,7 +931,9 @@ def request_json(
                 raise error from exc
             last_error = error
             continue
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except (
+            urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException
+        ) as exc:
             last_error = EnrollmentError(
                 f"controller connection failed via {target}: {exc}"
             )
@@ -1175,7 +1192,8 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         if isinstance(response_controllers, list):
             pool = _controller_candidates(
                 selected,
-                [str(item) for item in response_controllers],
+                [*[str(item) for item in controllers],
+                 *[str(item) for item in response_controllers]],
             )
             enrollment["controllers"] = pool
 
