@@ -34,11 +34,16 @@ else:
 sys.path.insert(0, str(SOURCE_ROOT))
 
 import bpc_control_state  # noqa: E402
+from bpc_access import AccessError, sync_access_firewall  # noqa: E402
 from bpc_controller_enrollment import (  # noqa: E402
     ControllerEnrollmentError,
     activate_controller_marker,
     ensure_controller_csr,
     install_controller_enrollment,
+)
+from bpc_gateway_dataplane import (  # noqa: E402
+    GatewayDataplaneError,
+    reconcile_gateway_dataplane,
 )
 from bpc_gateway_snapshot import (  # noqa: E402
     GatewaySnapshotError,
@@ -46,11 +51,6 @@ from bpc_gateway_snapshot import (  # noqa: E402
     install_security_snapshot,
     load_valid_security_snapshot,
 )
-from bpc_gateway_dataplane import (  # noqa: E402
-    GatewayDataplaneError,
-    reconcile_gateway_dataplane,
-)
-from bpc_access import AccessError, sync_access_firewall  # noqa: E402
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
