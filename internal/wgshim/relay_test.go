@@ -252,7 +252,6 @@ func TestAdaptiveClientSelectsReachableEndpoint(t *testing.T) {
 	}
 }
 
-
 func TestResolveAdaptiveServersSkipsUnavailableEndpoint(t *testing.T) {
 	resolver := func(network, address string) (*net.UDPAddr, error) {
 		if address == "broken.example:24444" {
