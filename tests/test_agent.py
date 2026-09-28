@@ -402,6 +402,16 @@ def test_controller_runtime_stages_gateway_dataplane_reconciler() -> None:
     assert "sync_access_firewall(state_dir / \"control\")" in NODE_ENROLLMENT
 
 
+def test_windows_rehandshakes_only_after_cross_node_transport_switch() -> None:
+    assert "pathSwitches <-chan pathSwitchEvent" in TUNNEL
+    assert "case event := <-pathSwitches:" in TUNNEL
+    assert "wgDevice.IpcSet(uapi)" in TUNNEL
+    assert "replace_peers=true" in TUNNEL
+    assert "transportNodeTracker" in AGENT
+    assert "event.FromNode" in AGENT
+    assert "event.ToNode" in AGENT
+
+
 def test_windows_pins_every_transport_path_outside_overlay() -> None:
     assert "resolveWGShimServerIPv4s(cfg.TransportPaths())" in TUNNEL
     assert "for _, serverIP := range serverIPs" in TUNNEL
