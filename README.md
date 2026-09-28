@@ -67,23 +67,26 @@ are not migration targets. See [docs/architecture.md](docs/architecture.md).
 
 ## One-command Node Join
 
-Stage 2 separates software installation from Node enrollment. On the existing
-Controller, create a one-time token:
+On an existing distributed Controller, create a scoped invitation:
 
 ```bash
-bpc node token create --roles gateway,relay --name ge-02 --expires 15m
+bpc node create --name ru-02 --preset public-node --host ru-02.blinpi.ru
+bpc node create --name home-01 --preset site-router --route 192.168.88.0/24
 ```
 
-Then, on a clean Debian/Ubuntu VPS:
+Run the generated installation command as root on Debian 12/13 or Ubuntu 24.04:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/RomanKrike/bpc/main/install.sh | sudo bash
-bpc join BPC-<controller-envelope>.<one-time-secret>
+curl -fsSL https://github.com/RomanKrike/bpc/releases/latest/download/install.sh | bash -s -- join 'BPC-...'
 ```
 
-The Node generates its own Ed25519 private identity locally, sends only the
-public key, receives a Controller-assigned Node ID/credential/capabilities,
-reconciles the existing role services and starts periodic heartbeats.
+Bootstrap verifies the release checksum, creates the local identity, enrolls the
+Node and configures its assigned capabilities. Public Controller provisioning
+resumes interrupted steps and waits for Raft catch-up and voter promotion.
+Private site routers need no public endpoint; their routes are advertised through
+outbound control connections. Site-router dataplane work remains separate.
+
+Legacy `bpc node token create` and an installed `bpc join` remain supported.
 
 Useful commands:
 
@@ -96,7 +99,9 @@ bpc leave
 
 Join tokens are single-use, expiring and capability-scoped. See
 [docs/node-join.md](docs/node-join.md) for the enrollment protocol, filesystem
-permissions, replay/duplicate-identity protection and Stage 2 boundaries.
+permissions and replay/duplicate-identity protection. See
+[public Node acceptance](docs/public-node-acceptance.md) for validation commands
+and the distinction between automated process coverage and VPS acceptance.
 
 ## User and Device identity
 

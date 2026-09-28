@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.19.0
+
+### Added
+- Optional canonical Node endpoints replicated through the existing Raft state.
+- Capability presets and scoped `bpc node create` invitations for public Nodes and private site routers.
+- One-command bootstrap from checksum-verified, version-pinned release assets.
+- Resumable public Controller enrollment, non-voter catch-up and voter promotion.
+- Controller-pool enrollment failover with terminal-request error handling.
+- Three-process Controller acceptance coverage and documented VPS acceptance commands.
+
+### Fixed
+- Preserve assigned routes during initial enrollment and Controller pools across heartbeats.
+- Require healthy assigned capabilities before reporting successful bootstrap.
+- Restrict Agent firewall mutations to rules carrying explicit BPC ownership comments.
+
+### Limitations
+- VPS reboot/systemd acceptance requires external hosts; process tests do not establish it.
+- Site-router invitations advertise routes; this release does not add a new site-router dataplane.
+
 ## 0.17.1
 
 ### Fixed
