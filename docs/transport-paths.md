@@ -11,9 +11,17 @@ currently require the same WireGuard peer as the existing profile:
 ]}
 ```
 
-Do not copy independently provisioned public Node endpoints into this list and
-assume they share a WireGuard session. Independent gateway keys/sessions require
-additional overlay work. Node DNS metadata alone does not prove compatibility.
+Public Nodes now adopt one canonical cluster overlay WireGuard identity. A Node
+is eligible for automatic path discovery only when an authenticated heartbeat
+reports an active relay and the same overlay public key. The endpoint hostname
+still comes from the controller-issued Node invitation; heartbeat data supplies
+the actual local UDP port pool. Node DNS metadata alone is not treated as proof
+of overlay compatibility.
+
+Device identity, overlay address, Access policy and routed resources remain
+controller state and do not change when the selected transport path changes.
+The canonical overlay private key is replicated only in controller state and is
+never returned in Device runtime configuration.
 
 WGShim uses the existing authenticated probe wire format. Internal transport
 status includes each path's reachability, smoothed RTT and jitter, rolling probe
@@ -56,7 +64,11 @@ not TCP packets or retransmissions. Ping uses independent ICMP exchanges with a
 100 ms timeout; UDP sends every 20 ms. A dependency's PingConn readiness behavior
 requires isolated exchanges to avoid an unread queue suppressing notifications.
 
-Both relays in this test lead to ONE surviving WireGuard destination. The result
-does not prove full gateway/Node failure tolerance, NAT continuity, production
-latency, systemd restart, reboot, Windows Wintun behavior or distributed Access
-acceptance. It is not a seamless-failover claim. These are still outstanding.
+Both relays in this test lead to ONE surviving WireGuard destination. Public
+Nodes can now materialize the same Device peers/WGShim keys and share the
+canonical WireGuard static identity, but WireGuard ephemeral session state and
+Linux conntrack/NAT state are not replicated between Nodes. Therefore an
+independent gateway failover may still require an inner WireGuard re-handshake
+and may not preserve NAT-backed TCP sessions. Production multi-VPS acceptance,
+systemd restart, reboot and Windows Wintun measurements are still outstanding;
+this is not yet a zero-loss failover claim.
