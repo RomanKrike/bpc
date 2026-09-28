@@ -138,7 +138,6 @@ func TestLegacyBootstrapV2StillParses(t *testing.T) {
 	}
 }
 
-
 func TestTransportNodeTrackerOnlySignalsCrossNodeSwitch(t *testing.T) {
 	nodes := map[string]string{
 		"ru-01.example:24444": "ru-01",
