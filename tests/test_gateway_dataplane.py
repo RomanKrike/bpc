@@ -51,11 +51,12 @@ def test_reconcile_materializes_active_device_and_removes_only_owned_stale_peer(
 ) -> None:
     state, key_dir = seed_runtime(tmp_path)
     control = state / "control"
+    new_public = psk(4)
     write_json(
         control / "devices" / "new.json",
         {
             "id": "new",
-            "wireguard_public_key": "new-public",
+            "wireguard_public_key": new_public,
             "wireguard_address": "10.253.0.2/32",
             "wgshim_psk": psk(1),
             "enabled": True,
@@ -90,7 +91,14 @@ def test_reconcile_materializes_active_device_and_removes_only_owned_stale_peer(
     assert result == {"active": 1, "removed": 1}
     assert (key_dir / "new.key").read_text(encoding="ascii") == psk(1) + "\n"
     assert not (key_dir / "stale.key").exists()
-    assert ("set", "bpcag0", "peer", "new-public", "allowed-ips", "10.253.0.2/32") in calls
+    assert (
+        "set",
+        "bpcag0",
+        "peer",
+        new_public,
+        "allowed-ips",
+        "10.253.0.2/32",
+    ) in calls
     assert ("set", "bpcag0", "peer", "stale-public", "remove") in calls
 
     owned = json.loads(
