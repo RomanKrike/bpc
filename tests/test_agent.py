@@ -386,10 +386,9 @@ def test_agent_adaptive_port_selection_uses_authenticated_rtt_probes() -> None:
     assert "RunAdaptiveClient" in WGSHIM_RELAY
     assert "ProbeTimeout" in WGSHIM_RELAY
     assert "SwitchThreshold" in WGSHIM_RELAY
-    assert "30*time.Second" in WGSHIM_RELAY
-    assert "60*time.Second" in WGSHIM_RELAY
-    assert "15*time.Minute" in WGSHIM_RELAY
-    assert "45*time.Minute" in WGSHIM_RELAY
+    assert "NewPathManager" in WGSHIM_RELAY
+    assert "cfg.ProbeInterval" in WGSHIM_RELAY
+    assert "manager.ConfirmTraffic" in WGSHIM_RELAY
     assert "splitListeners" in AGENT_RELAY
     assert "wgshim.RunAdaptiveClient" in AGENT
 

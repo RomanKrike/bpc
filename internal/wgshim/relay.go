@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,6 +46,7 @@ type EndpointReport struct {
 	Reachable int
 	Total     int
 	Switched  bool
+	Paths     []PathHealth `json:"paths"`
 }
 
 type AdaptiveClientConfig struct {
@@ -58,6 +58,8 @@ type AdaptiveClientConfig struct {
 	StatsInterval    time.Duration
 	ProbeTimeout     time.Duration
 	SwitchThreshold  time.Duration
+	ProbeInterval    time.Duration
+	Policy           PathPolicy
 	OnEndpointReport func(EndpointReport)
 }
 
@@ -172,18 +174,25 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		return errors.New("adaptive client requires at least one server")
 	}
 	if cfg.ProbeTimeout <= 0 {
-		cfg.ProbeTimeout = 900 * time.Millisecond
+		cfg.ProbeTimeout = 400 * time.Millisecond
 	}
 	if cfg.SwitchThreshold <= 0 {
 		cfg.SwitchThreshold = 10 * time.Millisecond
 	}
 
+	if cfg.ProbeInterval <= 0 {
+		cfg.ProbeInterval = 250 * time.Millisecond
+	}
+	if cfg.Policy.MinimumImprovement <= 0 {
+		cfg.Policy.MinimumImprovement = cfg.SwitchThreshold
+	}
 	localAddr, err := net.ResolveUDPAddr("udp", cfg.LocalListen)
 	if err != nil {
 		return fmt.Errorf("resolve local listen address: %w", err)
 	}
 	serverAddrs := make([]*net.UDPAddr, 0, len(cfg.Servers))
 	serverNames := make([]string, 0, len(cfg.Servers))
+	serverSources := map[string]string{}
 	seen := map[string]struct{}{}
 	for _, raw := range cfg.Servers {
 		addr, err := net.ResolveUDPAddr("udp", raw)
@@ -196,7 +205,8 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		}
 		seen[key] = struct{}{}
 		serverAddrs = append(serverAddrs, addr)
-		serverNames = append(serverNames, key)
+		serverNames = append(serverNames, raw)
+		serverSources[key] = raw
 	}
 	if len(serverAddrs) == 0 {
 		return errors.New("adaptive client has no unique servers")
@@ -229,6 +239,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	var pendingMu sync.Mutex
 	probeResults := make(chan probeMeasurement, 128)
 
+	manager := NewPathManager(serverNames, cfg.Policy)
 	setSelected := func(next int, rtt time.Duration, reachable int, switched bool) {
 		selectedMu.Lock()
 		selected = next
@@ -239,6 +250,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 			Reachable: reachable,
 			Total:     len(serverNames),
 			Switched:  switched,
+			Paths:     manager.Snapshot(),
 		}
 		if cfg.OnEndpointReport != nil {
 			cfg.OnEndpointReport(report)
@@ -286,7 +298,8 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 				errCh <- fmt.Errorf("seal WireGuard packet: %w", err)
 				return
 			}
-			_, endpoint := getSelected()
+			index, endpoint := getSelected()
+			manager.MarkSent(index, time.Now())
 			if _, err := outerConn.WriteToUDP(outer, endpoint); err != nil {
 				errCh <- normalizeNetErr(runCtx, fmt.Errorf("send adaptive outer UDP: %w", err))
 				return
@@ -302,6 +315,9 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 			if err != nil {
 				errCh <- normalizeNetErr(runCtx, err)
 				return
+			}
+			if _, known := serverSources[source.String()]; !known {
+				continue
 			}
 			stats.OuterRX.Add(uint64(n))
 			packetType, inner, err := cfg.RX.OpenTyped(buf[:n])
@@ -320,7 +336,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 				if ok && source.String() == probe.endpoint {
 					select {
 					case probeResults <- probeMeasurement{
-						endpoint: probe.endpoint,
+						endpoint: serverSources[probe.endpoint],
 						rtt:      time.Since(probe.sent),
 					}:
 					default:
@@ -331,6 +347,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 			if !IsData(packetType) {
 				continue
 			}
+			manager.ConfirmTraffic(serverSources[source.String()], time.Now())
 
 			wgPeerMu.RLock()
 			peer := cloneUDPAddr(wgPeer)
@@ -348,11 +365,10 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	}()
 
 	go func() {
-		rotationDue := time.Now().Add(randomDuration(15*time.Minute, 45*time.Minute))
 		for runCtx.Err() == nil {
 			measurements := make(map[string][]time.Duration, len(serverNames))
 			expected := 0
-			samplesPerEndpoint := 2 + randomIndex(2)
+			samplesPerEndpoint := 3
 			order := make([]int, len(serverAddrs))
 			for i := range order {
 				order[i] = i
@@ -372,7 +388,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 					tokenKey := hex.EncodeToString(token)
 					pendingMu.Lock()
 					pending[tokenKey] = probePending{
-						endpoint: serverNames[i],
+						endpoint: endpoint.String(),
 						sent:     time.Now(),
 					}
 					pendingMu.Unlock()
@@ -389,7 +405,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 						delete(pending, tokenKey)
 						pendingMu.Unlock()
 					}
-					time.Sleep(randomDuration(5*time.Millisecond, 35*time.Millisecond))
+
 				}
 			}
 
@@ -424,92 +440,19 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 			}
 			pendingMu.Unlock()
 
-			type endpointScore struct {
-				index   int
-				rtt     time.Duration
-				replies int
-			}
-			scores := make([]endpointScore, 0, len(serverNames))
 			for i, name := range serverNames {
-				values := measurements[name]
-				if len(values) == 0 {
-					continue
-				}
-				sort.Slice(values, func(a, b int) bool { return values[a] < values[b] })
-				rtt := values[len(values)/2]
-				if len(values) == 2 {
-					rtt = (values[0] + values[1]) / 2
-				}
-				scores = append(scores, endpointScore{
-					index:   i,
-					rtt:     rtt,
-					replies: len(values),
-				})
+				manager.Observe(i, samplesPerEndpoint, measurements[name], now)
 			}
-			sort.Slice(scores, func(i, j int) bool {
-				if scores[i].replies != scores[j].replies {
-					return scores[i].replies > scores[j].replies
-				}
-				return scores[i].rtt < scores[j].rtt
-			})
-
-			currentIndex, _ := getSelected()
-			currentRTT := time.Duration(0)
-			currentReplies := 0
-			currentReachable := false
-			for _, score := range scores {
-				if score.index == currentIndex {
-					currentRTT = score.rtt
-					currentReplies = score.replies
-					currentReachable = true
-					break
+			next, switched := manager.Select(now)
+			health := manager.Snapshot()
+			reachable := 0
+			for _, path := range health {
+				if path.Reachable {
+					reachable++
 				}
 			}
-
-			if len(scores) > 0 {
-				next := currentIndex
-				nextRTT := currentRTT
-				switched := false
-				best := scores[0]
-
-				if !currentReachable {
-					next = best.index
-					nextRTT = best.rtt
-					switched = next != currentIndex
-				} else if best.index != currentIndex &&
-					(best.replies > currentReplies ||
-						(best.replies == currentReplies && best.rtt+cfg.SwitchThreshold < currentRTT)) {
-					next = best.index
-					nextRTT = best.rtt
-					switched = true
-				} else if time.Now().After(rotationDue) {
-					healthy := make([]endpointScore, 0, len(scores))
-					for _, score := range scores {
-						if score.replies == samplesPerEndpoint &&
-							score.rtt <= best.rtt+20*time.Millisecond {
-							healthy = append(healthy, score)
-						}
-					}
-					if len(healthy) > 1 {
-						start := randomIndex(len(healthy))
-						for offset := 0; offset < len(healthy); offset++ {
-							candidate := healthy[(start+offset)%len(healthy)]
-							if candidate.index != currentIndex {
-								next = candidate.index
-								nextRTT = candidate.rtt
-								switched = true
-								break
-							}
-						}
-					}
-					rotationDue = time.Now().Add(randomDuration(15*time.Minute, 45*time.Minute))
-				}
-				setSelected(next, nextRTT, len(scores), switched)
-			} else {
-				setSelected(currentIndex, 0, 0, false)
-			}
-
-			wait := randomDuration(30*time.Second, 60*time.Second)
+			setSelected(next, time.Duration(health[next].RTTMS*float64(time.Millisecond)), reachable, switched)
+			wait := cfg.ProbeInterval
 			select {
 			case <-runCtx.Done():
 				return

@@ -38,11 +38,12 @@ type tunnelTelemetry struct {
 }
 
 type transportTelemetry struct {
-	UpdatedAt int64  `json:"updated_at"`
-	Endpoint  string `json:"endpoint"`
-	RTTMS     int64  `json:"rtt_ms"`
-	Reachable int    `json:"reachable"`
-	Total     int    `json:"total"`
+	Paths     []wgshim.PathHealth `json:"paths,omitempty"`
+	UpdatedAt int64               `json:"updated_at"`
+	Endpoint  string              `json:"endpoint"`
+	RTTMS     int64               `json:"rtt_ms"`
+	Reachable int                 `json:"reachable"`
+	Total     int                 `json:"total"`
 }
 
 type runtimeSupervisor struct {
@@ -649,9 +650,17 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 				RX:              rx,
 				Logger:          logger,
 				StatsInterval:   defaultLogEvery,
-				ProbeTimeout:    900 * time.Millisecond,
+				ProbeTimeout:    400 * time.Millisecond,
 				SwitchThreshold: 10 * time.Millisecond,
 				OnEndpointReport: func(report wgshim.EndpointReport) {
+					for i := range report.Paths {
+						for _, path := range cfg.TransportPaths() {
+							if path.Endpoint == report.Paths[i].Endpoint {
+								report.Paths[i].Node = path.Node
+								break
+							}
+						}
+					}
 					rttMS := int64(0)
 					if report.RTT > 0 {
 						rttMS = report.RTT.Milliseconds()
@@ -665,6 +674,7 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 						RTTMS:     rttMS,
 						Reachable: report.Reachable,
 						Total:     report.Total,
+						Paths:     report.Paths,
 					}); writeErr != nil && ctx.Err() == nil {
 						logger.Printf("write UI transport telemetry: %v", writeErr)
 					}
