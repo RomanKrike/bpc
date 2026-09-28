@@ -54,6 +54,7 @@ from bpc_gateway_snapshot import (  # noqa: E402
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
+    agent_runtime_env as compatibility_agent_runtime_env,
     reconcile_transport_roles,
 )
 from bpc_connect.compat.runtime import (  # noqa: E402
@@ -1086,7 +1087,7 @@ def local_transport_runtime(
 ) -> dict[str, Any]:
     if not bool(roles.get("relay")):
         return {}
-    runtime = state_dir / "ru-node" / "agent" / "runtime.env"
+    runtime = compatibility_agent_runtime_env(state_dir)
     if not runtime.is_file():
         return {}
     ports: list[int] = []
