@@ -11,6 +11,11 @@ import (
 	"github.com/RomanKrike/bpc/internal/agentctl"
 )
 
+type pathSwitchEvent struct {
+	FromNode string
+	ToNode   string
+}
+
 type runtimeWorker struct {
 	fingerprint string
 	cancel      context.CancelFunc
@@ -56,6 +61,7 @@ type runtimeSupervisor struct {
 	mu           sync.Mutex
 	overlay      runtimeWorker
 	transport    runtimeWorker
+	pathSwitches chan pathSwitchEvent
 	runTransport func(context.Context, agentctl.RuntimeConfig, *log.Logger)
 	runOverlay   func(context.Context, agentctl.RuntimeConfig, agentctl.WireGuardProfile, *log.Logger)
 }
@@ -78,13 +84,26 @@ func (s *runtimeSupervisor) apply(parent context.Context, cfg agentctl.RuntimeCo
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.pathSwitches == nil {
+		s.pathSwitches = make(chan pathSwitchEvent, 8)
+	}
+	switches := s.pathSwitches
 	transport := s.runTransport
 	if transport == nil {
-		transport = runWGShimLoop
+		transport = func(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) {
+			runWGShimLoopWithSwitch(ctx, cfg, logger, switches)
+		}
 	}
 	overlay := s.runOverlay
 	if overlay == nil {
-		overlay = runOverlayLoop
+		overlay = func(
+			ctx context.Context,
+			cfg agentctl.RuntimeConfig,
+			profile agentctl.WireGuardProfile,
+			logger *log.Logger,
+		) {
+			runOverlayLoopWithSwitch(ctx, cfg, profile, logger, switches)
+		}
 	}
 	if err := s.transport.replace(parent, string(transportRaw), func(ctx context.Context) { transport(ctx, cfg, logger) }); err != nil {
 		return err
@@ -97,14 +116,36 @@ func (s *runtimeSupervisor) stop() {
 	_ = s.transport.stop()
 	_ = s.overlay.stop()
 }
-func runOverlayLoop(ctx context.Context, cfg agentctl.RuntimeConfig, profile agentctl.WireGuardProfile, logger *log.Logger) {
+func runOverlayLoop(
+	ctx context.Context,
+	cfg agentctl.RuntimeConfig,
+	profile agentctl.WireGuardProfile,
+	logger *log.Logger,
+) {
+	runOverlayLoopWithSwitch(ctx, cfg, profile, logger, nil)
+}
+
+func runOverlayLoopWithSwitch(
+	ctx context.Context,
+	cfg agentctl.RuntimeConfig,
+	profile agentctl.WireGuardProfile,
+	logger *log.Logger,
+	pathSwitches <-chan pathSwitchEvent,
+) {
 	if profile.Complete() {
 		telemetry := func(stats tunnelTelemetry) {
 			if err := writeUIRuntimeStatus(stats); err != nil && ctx.Err() == nil {
 				logger.Printf("write UI tunnel telemetry: %v", err)
 			}
 		}
-		if err := runEmbeddedWireGuard(ctx, cfg, profile, logger, telemetry); err != nil && ctx.Err() == nil {
+		if err := runEmbeddedWireGuard(
+			ctx,
+			cfg,
+			profile,
+			logger,
+			telemetry,
+			pathSwitches,
+		); err != nil && ctx.Err() == nil {
 			logger.Printf("embedded WireGuard stopped: %v", err)
 		}
 	} else if cfg.LegacyTunnel != "" {
