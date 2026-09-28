@@ -20,7 +20,10 @@ status includes each path's reachability, smoothed RTT and jitter, rolling probe
 loss (32 samples), last success, cumulative failures and ACTIVE/STANDBY state.
 The default selector requires an improvement of 10 ms in the Agent, five seconds
 of stability, penalizes recent failures and applies a ten-second recovery
-cooldown. Two failed rounds trigger failover. Standby probes run before failure.
+cooldown. Two fully failed rounds mark a path unreachable for health telemetry.
+If the active path loses one complete authenticated probe round while an already
+warm standby remains healthy, traffic moves to that standby immediately after
+the failed round. Standby probes run before failure.
 
 A selected new path is VERIFYING until return data arrives. If traffic was sent
 but no return data arrives within two seconds, a reachable previous path is
