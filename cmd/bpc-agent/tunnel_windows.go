@@ -26,6 +26,7 @@ func runEmbeddedWireGuard(
 	profile agentctl.WireGuardProfile,
 	logger *log.Logger,
 	reportTelemetry func(tunnelTelemetry),
+	pathSwitches <-chan pathSwitchEvent,
 ) error {
 	if err := agentctl.ValidateWireGuardProfile(profile); err != nil {
 		return err
@@ -100,6 +101,26 @@ func runEmbeddedWireGuard(
 				return nil
 			}
 			return fmt.Errorf("embedded WireGuard device stopped unexpectedly")
+		case event := <-pathSwitches:
+			// A different Public Node has the same static overlay identity but not
+			// the previous responder's ephemeral WireGuard session state. Reapply
+			// replace_peers on the existing device to discard only peer session
+			// state and force a fresh handshake without recreating Wintun, its IP,
+			// or application routes.
+			if err := wgDevice.IpcSet(uapi); err != nil {
+				logger.Printf(
+					"wireguard cross-node rehandshake failed from=%s to=%s: %v",
+					event.FromNode,
+					event.ToNode,
+					err,
+				)
+			} else {
+				logger.Printf(
+					"wireguard cross-node rehandshake armed from=%s to=%s",
+					event.FromNode,
+					event.ToNode,
+				)
+			}
 		case <-telemetryTicker.C:
 			if reportTelemetry != nil {
 				reportTelemetry(readEmbeddedTelemetry(wgDevice))
