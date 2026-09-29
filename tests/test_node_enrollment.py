@@ -474,6 +474,9 @@ def test_local_gateway_reconcile_applies_replicated_state_without_heartbeat(
         f"dataplane:{tmp_path}",
         f"access:{control}",
     ]
+    lock_path = tmp_path / "gateway-reconcile.lock"
+    assert lock_path.is_file()
+    assert oct(lock_path.stat().st_mode & 0o777) == "0o600"
 
 
 def test_local_reconcile_is_noop_for_non_gateway_node(
