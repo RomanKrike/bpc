@@ -372,17 +372,19 @@ def routing_config_for_node(
 
     graph = topology_snapshot(control_dir, now=timestamp)
     paths: list[dict[str, Any]] = []
-    if _is_public_node(local):
-        seen: set[tuple[str, str]] = set()
-        for route in graph.get("routes", []):
-            if not isinstance(route, dict):
-                continue
-            owner = str(route.get("owner_node_id", ""))
-            cidr = str(route.get("cidr", ""))
-            key = (owner, cidr)
-            if not owner or not cidr or key in seen:
-                continue
-            seen.add(key)
+    transit_paths: list[dict[str, Any]] = []
+    public_ids = sorted(_public_node_ids(graph))
+    seen_routes: set[tuple[str, str]] = set()
+    for route in graph.get("routes", []):
+        if not isinstance(route, dict):
+            continue
+        owner = str(route.get("owner_node_id", ""))
+        cidr = str(route.get("cidr", ""))
+        key = (owner, cidr)
+        if not owner or not cidr or key in seen_routes:
+            continue
+        seen_routes.add(key)
+        if _is_public_node(local):
             paths.extend(
                 candidate_paths(
                     graph,
@@ -391,12 +393,39 @@ def routing_config_for_node(
                     cidr=cidr,
                 )
             )
+        for source in public_ids:
+            for candidate in candidate_paths(
+                graph,
+                source,
+                owner,
+                cidr=cidr,
+                include_failed=True,
+            ):
+                if str(node_id) in candidate["hops"]:
+                    transit_paths.append(candidate)
+
+    overlay_subnet = ""
+    try:
+        control_config = _read_json(Path(control_dir) / "config.json")
+    except (OSError, ValueError, json.JSONDecodeError, TopologyError):
+        control_config = {}
+    try:
+        subnet = ipaddress.ip_network(
+            str(control_config.get("wireguard_subnet", "")),
+            strict=False,
+        )
+    except ValueError:
+        subnet = None
+    if subnet is not None and subnet.version == 4:
+        overlay_subnet = str(subnet)
 
     return {
         "version": 1,
         "listen_port": ROUTED_MESH_PORT,
+        "overlay_subnet": overlay_subnet,
         "links": sorted(links, key=lambda item: item["peer_node_id"]),
         "paths": paths,
+        "transit_paths": transit_paths,
         "routes": [
             {
                 "cidr": str(record["cidr"]),
@@ -778,7 +807,10 @@ def _candidate_from_links(
             maximum=100,
         )
         survival *= 1.0 - loss / 100.0
-        if str(link.get("health", "unknown")) != "healthy":
+        link_health = str(link.get("health", "unknown"))
+        if link_health == "failed":
+            health = "failed"
+        elif link_health != "healthy" and health != "failed":
             health = "degraded"
         observed = int(link.get("last_seen", 0) or 0)
         last_seen = observed if last_seen == 0 else min(last_seen, observed)
@@ -827,6 +859,7 @@ def candidate_paths(
     *,
     cidr: str,
     max_intermediate_public_nodes: int = MAX_INTERMEDIATE_PUBLIC_NODES,
+    include_failed: bool = False,
 ) -> list[dict[str, Any]]:
     source = str(source_node_id).strip()
     owner = str(owner_node_id).strip()
@@ -836,7 +869,10 @@ def candidate_paths(
     for link in topology.get("links", []):
         if not isinstance(link, dict):
             continue
-        if str(link.get("health", "unknown")) == "failed":
+        if (
+            not include_failed
+            and str(link.get("health", "unknown")) == "failed"
+        ):
             continue
         start = str(link.get("from", "")).strip()
         target = str(link.get("to", "")).strip()
