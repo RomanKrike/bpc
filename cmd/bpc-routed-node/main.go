@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -42,6 +43,7 @@ type runtimeStatus struct {
 }
 
 type kernelState struct {
+	command       func(...string) error
 	mu            sync.Mutex
 	localNodeID   string
 	interfaceID   string
@@ -83,29 +85,30 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 		desiredRoutes[config.OverlaySubnet] = struct{}{}
 	}
 
+	command := k.command
+	if command == nil {
+		command = runCommand
+	}
 	for cidr := range desiredRoutes {
 		if _, ok := k.routes[cidr]; ok {
 			continue
 		}
-		if err := runCommand(
-			"ip", "route", "replace", cidr,
-			"dev", k.interfaceID,
-			"proto", "99",
-		); err != nil {
+		// Add exclusively: replacing an existing route can steal an unmanaged
+		// route even when our newly created interface is BPC-owned.
+		if err := command("ip", "route", "add", cidr, "dev", k.interfaceID, "proto", "99"); err != nil {
 			return err
 		}
+		k.routes[cidr] = struct{}{}
 	}
 	for cidr := range k.routes {
 		if _, ok := desiredRoutes[cidr]; ok {
 			continue
 		}
-		bestEffort(
-			"ip", "route", "del", cidr,
-			"dev", k.interfaceID,
-			"proto", "99",
-		)
+		if err := command("ip", "route", "del", cidr, "dev", k.interfaceID, "proto", "99"); err != nil {
+			return err
+		}
+		delete(k.routes, cidr)
 	}
-	k.routes = desiredRoutes
 
 	desiredNoSNAT := make(map[string]struct{})
 	if config.LocalPublic && config.OverlaySubnet != "" {
@@ -354,6 +357,13 @@ func main() {
 	}
 	config := enrollment.Config.Routing
 
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		logger.Fatalf("inspect interfaces before TUN creation: %v", err)
+	}
+	if err := requireFreshInterface(*interfaceName, interfaces); err != nil {
+		logger.Fatal(err)
+	}
 	device, err := tun.CreateTUN(*interfaceName, *mtu)
 	if err != nil {
 		logger.Fatalf("create routed TUN: %v", err)
@@ -472,4 +482,18 @@ func main() {
 	if err != nil {
 		logger.Printf("routed runtime stopped: %v", err)
 	}
+}
+
+// Existing interfaces have no ownership proof for this runtime. A normal
+// process restart closes the nonpersistent TUN and removes its attached routes.
+func requireFreshInterface(name string, interfaces []net.Interface) error {
+	if name == "" {
+		return fmt.Errorf("routed interface name is required")
+	}
+	for _, iface := range interfaces {
+		if iface.Name == name {
+			return fmt.Errorf("refusing existing interface %s: BPC ownership is not proven", name)
+		}
+	}
+	return nil
 }
