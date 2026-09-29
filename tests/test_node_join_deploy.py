@@ -111,6 +111,15 @@ def test_node_runtime_allows_gateway_netlink_reconciliation() -> None:
     assert "AmbientCapabilities=CAP_NET_ADMIN" in NODE_ENROLLMENT
 
 
+def test_node_runtime_watches_replicated_gateway_state() -> None:
+    assert "bpc-gateway-reconcile.service" in NODE_ENROLLMENT
+    assert "bpc-gateway-reconcile.path" in NODE_ENROLLMENT
+    assert 'PathChanged={state_dir / "control" / "devices"}' in NODE_ENROLLMENT
+    assert 'PathChanged={state_dir / "control" / "access"}' in NODE_ENROLLMENT
+    assert 'PathChanged={state_dir / "control" / "config.json"}' in NODE_ENROLLMENT
+    assert "local-reconcile" in NODE_ENROLLMENT
+
+
 def test_joined_node_runtime_is_staged_inside_state_dir() -> None:
     assert 'runtime_version = state_dir / f"runtime-{version}"' in NODE_ENROLLMENT
     assert 'runtime_link = state_dir / "runtime"' in NODE_ENROLLMENT
