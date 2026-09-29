@@ -168,3 +168,24 @@ func TestTransportNodeTrackerOnlySignalsCrossNodeSwitch(t *testing.T) {
 		t.Fatalf("unexpected switch event: %#v", event)
 	}
 }
+
+
+func TestPublishLatestPathSwitchKeepsNewestEvent(t *testing.T) {
+	mailbox := make(chan pathSwitchEvent, 1)
+	first := pathSwitchEvent{FromNode: "ru-01", ToNode: "ru-02"}
+	latest := pathSwitchEvent{FromNode: "ru-02", ToNode: "ge-01"}
+	if replaced := publishLatestPathSwitch(mailbox, first); replaced {
+		t.Fatal("empty mailbox unexpectedly reported coalescing")
+	}
+	if replaced := publishLatestPathSwitch(mailbox, latest); !replaced {
+		t.Fatal("full mailbox did not coalesce the stale switch")
+	}
+	select {
+	case got := <-mailbox:
+		if got != latest {
+			t.Fatalf("stale switch retained: got %#v want %#v", got, latest)
+		}
+	default:
+		t.Fatal("latest path switch was lost")
+	}
+}
