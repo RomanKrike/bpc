@@ -60,6 +60,7 @@ def test_control_service_stages_self_contained_runtime_inside_canonical_state() 
         'release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"'
         in enable_control
     )
+    assert 'release_topology="${BPC_ROOT}/current/deploy/bpc_topology.py"' in enable_control
     assert (
         'release_controller_enrollment='
         '"${BPC_ROOT}/current/deploy/bpc_controller_enrollment.py"'
@@ -79,6 +80,7 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
     shutil.copy(ROOT / "deploy" / "bpc_identity.py", runtime / "bpc_identity.py")
     shutil.copy(ROOT / "deploy" / "bpc_access.py", runtime / "bpc_access.py")
     shutil.copy(ROOT / "deploy" / "bpc_control_state.py", runtime / "bpc_control_state.py")
+    shutil.copy(ROOT / "deploy" / "bpc_topology.py", runtime / "bpc_topology.py")
     shutil.copy(
         ROOT / "deploy" / "bpc_controller_enrollment.py",
         runtime / "bpc_controller_enrollment.py",
@@ -113,9 +115,12 @@ def test_node_runtime_allows_gateway_netlink_reconciliation() -> None:
         >= 2
     )
     # The long-running Node daemon still provisions roles and must not be
-    # capability-bounded to NET_ADMIN. Only the narrow local reconcile oneshot is.
-    assert NODE_ENROLLMENT.count("CapabilityBoundingSet=CAP_NET_ADMIN") == 1
-    assert NODE_ENROLLMENT.count("AmbientCapabilities=CAP_NET_ADMIN") == 1
+    # capability-bounded to NET_ADMIN. The gateway reconcile oneshot and the
+    # dedicated routed dataplane each receive the narrow NET_ADMIN capability.
+    daemon = NODE_ENROLLMENT.split("[Service]", 1)[1].split("[Install]", 1)[0]
+    assert "CapabilityBoundingSet=CAP_NET_ADMIN" not in daemon
+    assert NODE_ENROLLMENT.count("CapabilityBoundingSet=CAP_NET_ADMIN") == 2
+    assert NODE_ENROLLMENT.count("AmbientCapabilities=CAP_NET_ADMIN") == 2
 
 
 def test_node_runtime_watches_replicated_gateway_state() -> None:
