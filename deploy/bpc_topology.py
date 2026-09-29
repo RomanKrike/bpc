@@ -426,6 +426,10 @@ def routing_config_for_node(
         "overlay_subnet": overlay_subnet,
         "local_public": _is_public_node(local),
         "local_site_router": _is_site_router(local),
+        "node_names": {
+            item_id: str(node.get("name", item_id))
+            for item_id, node in sorted(nodes.items())
+        },
         "links": sorted(links, key=lambda item: item["peer_node_id"]),
         "paths": paths,
         "transit_paths": transit_paths,
@@ -959,6 +963,21 @@ def _source_node(control_dir: Path, explicit: str | None) -> str:
     raise TopologyError("source Node is unknown; pass --from-node")
 
 
+def _node_name_map(topology: dict[str, Any]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for node in topology.get("nodes", []):
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id", "")).strip()
+        if node_id:
+            result[node_id] = str(node.get("name", node_id))
+    return result
+
+
+def _display_hops(hops: Iterable[str], names: dict[str, str]) -> str:
+    return " -> ".join(names.get(str(hop), str(hop)) for hop in hops)
+
+
 def _all_candidates(
     topology: dict[str, Any],
     source: str,
@@ -999,6 +1018,7 @@ def main() -> int:
 
     args = parser.parse_args()
     graph = topology_snapshot(args.control_dir)
+    names = _node_name_map(graph)
     source = _source_node(args.control_dir, getattr(args, "from_node", None))
 
     if args.command == "path" and args.path_command == "list":
@@ -1008,7 +1028,7 @@ def main() -> int:
             return 1
         for item in candidates:
             print(
-                f"{item['id']}  {' -> '.join(item['hops'])}  "
+                f"{item['id']}  {_display_hops(item['hops'], names)}  "
                 f"health={item['health']} rtt={item['rtt_ms']:.1f}ms "
                 f"loss={item['loss_percent']:.1f}% cost={item['cost']:.1f}"
             )
@@ -1019,7 +1039,12 @@ def main() -> int:
         item = next((value for value in candidates if value["id"] == args.path_id), None)
         if item is None:
             raise TopologyError(f"path not found: {args.path_id}")
-        print(json.dumps(item, indent=2, sort_keys=True))
+        display = dict(item)
+        display["hop_names"] = [names.get(str(hop), str(hop)) for hop in item["hops"]]
+        display["owner_name"] = names.get(
+            str(item["owner_node_id"]), str(item["owner_node_id"])
+        )
+        print(json.dumps(display, indent=2, sort_keys=True))
         return 0
 
     if args.command == "route" and args.route_command == "explain":
@@ -1033,16 +1058,17 @@ def main() -> int:
         selected = choose_best_path(candidates)
         print(f"Destination: {args.destination}")
         print(f"Route: {route_record['cidr']}")
-        print(f"Owner: {route_record['owner_node_id']}")
+        owner_id = str(route_record["owner_node_id"])
+        print(f"Owner: {names.get(owner_id, owner_id)}")
         if selected is None:
             print("Selected: none (no healthy end-to-end path)")
             return 1
-        print("Selected: " + " -> ".join(selected["hops"]))
+        print("Selected: " + _display_hops(selected["hops"], names))
         alternatives = [item for item in candidates if item["id"] != selected["id"]]
         if alternatives:
             print("Alternatives:")
             for item in alternatives:
-                print("  " + " -> ".join(item["hops"]))
+                print("  " + _display_hops(item["hops"], names))
         return 0
 
     raise TopologyError("unsupported topology command")
