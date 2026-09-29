@@ -254,13 +254,12 @@ func TestMeshReplayWindowRejectsDuplicateSequence(t *testing.T) {
 	}
 }
 
-
 func TestDirectionalLinkFailsWithoutOwnProbeReplies(t *testing.T) {
 	peer := &meshPeer{
-		config: LinkConfig{ID: "home-link", PeerNodeID: "home-01", Cost: 10},
-		addr: &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: DefaultMeshPort},
+		config:       LinkConfig{ID: "home-link", PeerNodeID: "home-01", Cost: 10},
+		addr:         &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: DefaultMeshPort},
 		addressSince: time.Unix(100, 0),
-		lastAuth: time.Unix(200, 0),
+		lastAuth:     time.Unix(200, 0),
 	}
 	status := peer.status("ru-02", time.Unix(200, 0))
 	if status.Health != "failed" {
