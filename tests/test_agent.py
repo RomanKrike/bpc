@@ -549,3 +549,19 @@ def test_windows_path_pinning_preserves_existing_physical_routes() -> None:
     assert "$existing=@(Get-NetRoute -DestinationPrefix" in physical_routes
     assert "if ($existing.Count -eq 0)" in physical_routes
     assert "-PolicyStore ActiveStore" in physical_routes
+
+
+def test_live_dataplane_reconcile_preserves_wireguard_peers_and_endpoints() -> None:
+    marker = 'if [[ "${interface_live}" == "true" ]]'
+    start = DATAPLANE.index(marker)
+    live_branch = DATAPLANE[start:].split("\nelse\n", 1)[0]
+    assert 'wg set "${WG_INTERFACE}" private-key' in live_branch
+    assert 'systemctl restart "wg-quick@${WG_INTERFACE}.service"' not in live_branch
+    assert '"peer"' not in live_branch
+    assert '"remove"' not in live_branch
+
+
+def test_update_does_not_directly_restart_or_flush_agent_wireguard() -> None:
+    assert 'systemctl restart "wg-quick@' not in UPDATE
+    assert 'wg set ' not in UPDATE
+    assert 'wg-quick down' not in UPDATE
