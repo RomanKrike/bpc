@@ -508,3 +508,62 @@ def test_local_reconcile_is_noop_for_non_gateway_node(
 
     args = enrollment.argparse.Namespace(state_dir=tmp_path)
     assert enrollment.cmd_local_reconcile(args) == 0
+
+
+def test_gateway_startup_reconciles_replicated_state_before_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control = tmp_path / "control"
+    control.mkdir()
+    (control / "config.json").write_text("{}", encoding="utf-8")
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        enrollment,
+        "reconcile_local_gateway_state",
+        lambda state: calls.append(state),
+    )
+
+    assert enrollment.reconcile_startup_gateway_state(
+        tmp_path,
+        {"controller": True, "gateway": True, "relay": True},
+    )
+    assert calls == [tmp_path]
+
+
+def test_gateway_startup_reconcile_is_noop_without_gateway_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        enrollment,
+        "reconcile_local_gateway_state",
+        lambda _state: pytest.fail("unexpected startup gateway reconcile"),
+    )
+    assert not enrollment.reconcile_startup_gateway_state(
+        tmp_path,
+        {"controller": True, "relay": True},
+    )
+    assert not enrollment.reconcile_startup_gateway_state(
+        tmp_path,
+        {"gateway": True, "relay": True},
+    )
+
+
+def test_gateway_startup_reconcile_failure_is_retryable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control = tmp_path / "control"
+    control.mkdir()
+    (control / "config.json").write_text("{}", encoding="utf-8")
+
+    def fail(_state: Path) -> None:
+        raise enrollment.GatewayDataplaneError("wg interface not ready")
+
+    monkeypatch.setattr(enrollment, "reconcile_local_gateway_state", fail)
+    with pytest.raises(enrollment.EnrollmentError, match="startup dataplane"):
+        enrollment.reconcile_startup_gateway_state(
+            tmp_path,
+            {"gateway": True, "relay": True},
+        )
