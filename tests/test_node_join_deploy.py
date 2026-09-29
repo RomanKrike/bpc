@@ -106,9 +106,16 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
 
 
 def test_node_runtime_allows_gateway_netlink_reconciliation() -> None:
-    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK" in NODE_ENROLLMENT
-    assert "CapabilityBoundingSet=CAP_NET_ADMIN" in NODE_ENROLLMENT
-    assert "AmbientCapabilities=CAP_NET_ADMIN" in NODE_ENROLLMENT
+    assert (
+        NODE_ENROLLMENT.count(
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"
+        )
+        >= 2
+    )
+    # The long-running Node daemon still provisions roles and must not be
+    # capability-bounded to NET_ADMIN. Only the narrow local reconcile oneshot is.
+    assert NODE_ENROLLMENT.count("CapabilityBoundingSet=CAP_NET_ADMIN") == 1
+    assert NODE_ENROLLMENT.count("AmbientCapabilities=CAP_NET_ADMIN") == 1
 
 
 def test_node_runtime_watches_replicated_gateway_state() -> None:
