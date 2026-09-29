@@ -12,7 +12,8 @@ import (
 
 const (
 	DefaultMeshPort = 24446
-	MaxPathHops     = 4
+	// Device ingress is outside this hop list: at most two Public Nodes plus owner.
+	MaxPathHops = 3
 )
 
 type Enrollment struct {

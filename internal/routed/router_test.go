@@ -294,3 +294,10 @@ func TestDirectionalLinkFailsWithoutOwnProbeReplies(t *testing.T) {
 		t.Fatalf("fresh probe reply did not restore link: %+v", status)
 	}
 }
+
+func TestPathRejectsThreePublicNodesBeforeOwner(t *testing.T) {
+	path := Path{ID: "too-long", OwnerNodeID: "home-01", CIDR: "192.168.88.0/24", Hops: []string{"ru-02", "ru-01", "ge-01", "home-01"}}
+	if path.Validate() == nil {
+		t.Fatal("accepted three Public Nodes between Device and owner")
+	}
+}

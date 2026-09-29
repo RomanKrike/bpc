@@ -17,7 +17,8 @@ DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 DEFAULT_TELEMETRY_TTL = 90
 ROUTED_MESH_PORT = 24446
 MAX_INTERMEDIATE_PUBLIC_NODES = 2
-MAX_PATH_HOPS = 4
+# Device ingress is outside the Node frame: two Public Nodes plus owner.
+MAX_PATH_HOPS = 3
 VALID_HEALTH = {"healthy", "degraded", "failed", "unknown"}
 
 

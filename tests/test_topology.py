@@ -305,3 +305,21 @@ def test_stale_telemetry_is_not_a_healthy_link(tmp_path: Path) -> None:
     )
     graph = topology.topology_snapshot(control, now=5_400, ttl=90)
     assert graph["links"] == []
+
+
+def test_path_budget_counts_ingress_public_node() -> None:
+    graph = {
+        "nodes": [
+            {"id": name, "roles": {"gateway": True, "relay": True}}
+            for name in ("ru-02", "ru-01", "ge-01")
+        ] + [{"id": "home-01", "roles": {"site_router": True}}],
+        "links": [
+            {"from": start, "to": end, "health": "healthy", "rtt_ms": 1}
+            for start, end in (
+                ("ru-02", "ru-01"), ("ru-01", "ge-01"), ("ge-01", "home-01")
+            )
+        ],
+    }
+    assert topology.candidate_paths(
+        graph, "ru-02", "home-01", cidr="192.168.88.0/24"
+    ) == []
