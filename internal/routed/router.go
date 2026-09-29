@@ -24,7 +24,13 @@ type MeshTransport interface {
 
 type PacketWriter interface{ WritePacket(packet []byte) error }
 
+type pathAvailability struct {
+	Viable      bool
+	RecoveredAt time.Time
+}
+
 type routeSelection struct {
+	Availability   map[string]pathAvailability
 	CurrentID      string
 	LastSwitch     time.Time
 	CandidateID    string
@@ -100,6 +106,11 @@ func (r *Router) UpdateConfig(config RoutingConfig) error {
 		valid[path.ID] = struct{}{}
 	}
 	for key, state := range r.selections {
+		for id := range state.Availability {
+			if _, ok := valid[id]; !ok {
+				delete(state.Availability, id)
+			}
+		}
 		if state.CurrentID == "" {
 			continue
 		}
@@ -151,13 +162,38 @@ func (r *Router) choosePath(route Route, paths []Path, now time.Time) (Path, err
 		path  Path
 		score float64
 	}
+	key := routeKey(route)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	state := r.selections[key]
+	if state == nil {
+		state = &routeSelection{Availability: make(map[string]pathAvailability)}
+		r.selections[key] = state
+	}
 	var candidates []scored
+	observed := make(map[string]bool)
 	for _, path := range paths {
-		if score, ok := r.viablePath(path); ok {
+		observed[path.ID] = true
+		score, ok := r.viablePath(path)
+		prior, known := state.Availability[path.ID]
+		if ok && known && !prior.Viable {
+			prior.RecoveredAt = now
+		}
+		prior.Viable = ok
+		state.Availability[path.ID] = prior
+		if ok {
 			candidates = append(candidates, scored{path: path, score: score})
 		}
 	}
+	for id, prior := range state.Availability {
+		if !observed[id] {
+			prior.Viable = false
+			state.Availability[id] = prior
+		}
+	}
 	if len(candidates) == 0 {
+		state.CandidateID = ""
+		state.CandidateSince = time.Time{}
 		return Path{}, fmt.Errorf("no healthy end-to-end path to owner %s", route.OwnerNodeID)
 	}
 	sort.Slice(candidates, func(i, j int) bool {
@@ -167,15 +203,6 @@ func (r *Router) choosePath(route Route, paths []Path, now time.Time) (Path, err
 		return candidates[i].score < candidates[j].score
 	})
 	best := candidates[0]
-
-	key := routeKey(route)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	state := r.selections[key]
-	if state == nil {
-		state = &routeSelection{}
-		r.selections[key] = state
-	}
 
 	var current *scored
 	for index := range candidates {
@@ -212,7 +239,9 @@ func (r *Router) choosePath(route Route, paths []Path, now time.Time) (Path, err
 		state.CandidateSince = now
 		return current.path, nil
 	}
-	if now.Sub(state.CandidateSince) < pathStableInterval {
+	recoveredAt := state.Availability[best.path.ID].RecoveredAt
+	if (!recoveredAt.IsZero() && now.Sub(recoveredAt) < pathRecoveryCooldown) ||
+		now.Sub(state.CandidateSince) < pathStableInterval {
 		return current.path, nil
 	}
 

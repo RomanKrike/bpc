@@ -228,7 +228,7 @@ func TestPathFailoverIsImmediateButRecoveryIsSticky(t *testing.T) {
 	selected, err = router.choosePath(
 		route,
 		config.Paths,
-		candidateAt.Add(pathStableInterval+time.Second),
+		candidateAt.Add(pathRecoveryCooldown+time.Second),
 	)
 	if err != nil || selected.ID != "direct" {
 		t.Fatalf("expected direct recovery after hysteresis: %+v err=%v", selected, err)
@@ -300,4 +300,37 @@ func TestPathRejectsThreePublicNodesBeforeOwner(t *testing.T) {
 	if path.Validate() == nil {
 		t.Fatal("accepted three Public Nodes between Device and owner")
 	}
+}
+
+func TestRecoveredPathCooldownStartsAfterLongOutage(t *testing.T) {
+	config := testRoutingConfig()
+	mesh := &fakeMesh{status: map[string]LinkStatus{"home-01": {Health: "healthy"}, "ru-01": {Health: "healthy"}}}
+	router, err := NewRouter("ru-02", config, mesh, &fakeWriter{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(10000, 0)
+	check := func(at time.Time, want string) {
+		t.Helper()
+		got, err := router.choosePath(config.Routes[0], config.Paths, at)
+		if err != nil || got.ID != want {
+			t.Fatalf("at %v got %s, want %s: %v", at.Sub(start), got.ID, want, err)
+		}
+	}
+	check(start, "direct")
+	mesh.status["home-01"] = LinkStatus{Health: "failed"}
+	check(start.Add(time.Second), "multi")
+	recovered := start.Add(time.Hour)
+	mesh.status["home-01"] = LinkStatus{Health: "healthy"}
+	check(recovered, "multi")
+	check(recovered.Add(pathStableInterval+time.Second), "multi")
+	check(recovered.Add(pathRecoveryCooldown), "direct")
+	// A second failure/recovery restarts the per-path cooldown.
+	mesh.status["home-01"] = LinkStatus{Health: "failed"}
+	check(recovered.Add(11*time.Second), "multi")
+	mesh.status["home-01"] = LinkStatus{Health: "healthy"}
+	check(recovered.Add(12*time.Second), "multi")
+	// Emergency availability takes precedence over recovery stickiness.
+	mesh.status["ru-01"] = LinkStatus{Health: "failed"}
+	check(recovered.Add(13*time.Second), "direct")
 }
