@@ -16,5 +16,6 @@ def test_public_node_failover_harness_can_fault_and_restore_relay_over_ssh() -> 
     assert '"systemctl", "stop", $serviceName' in SCRIPT
     assert "systemctl start $serviceName" in SCRIPT
     assert "BatchMode=yes" in SCRIPT
+    assert "StrictHostKeyChecking=accept-new" in SCRIPT
     assert "ConnectTimeout=5" in SCRIPT
     assert "NoRestore" in SCRIPT
