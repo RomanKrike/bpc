@@ -117,6 +117,9 @@ func pathScore(path Path, status LinkStatus, ok bool) float64 {
 	score := path.Score
 	if score == 0 {
 		score = path.Cost + path.RTTMS + path.LossPercent*10
+		if path.Health == "degraded" || path.Health == "unknown" {
+			score += 1000
+		}
 	}
 	if ok {
 		score += status.RTTMS + status.LossPercent*10
