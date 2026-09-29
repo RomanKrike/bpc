@@ -40,8 +40,9 @@ type SelectedPathStatus struct {
 	CIDR           string   `json:"cidr"`
 	OwnerNodeID    string   `json:"owner_node_id"`
 	PathID         string   `json:"path_id"`
-	Hops           []string `json:"hops"`
-	Health         string   `json:"health"`
+	Hops           []string   `json:"hops"`
+	HopNames       []string   `json:"hop_names"`
+	Health         string     `json:"health"`
 	RTTMS          float64  `json:"rtt_ms"`
 	LossPercent    float64  `json:"loss_percent"`
 	Cost           float64  `json:"cost"`
@@ -341,6 +342,18 @@ func (r *Router) HandleMeshData(peerID string, raw []byte) error {
 	return r.sendFrame(frame)
 }
 
+func displayHopNames(hops []string, names map[string]string) []string {
+	result := make([]string, len(hops))
+	for index, hop := range hops {
+		if name := names[hop]; name != "" {
+			result[index] = name
+		} else {
+			result[index] = hop
+		}
+	}
+	return result
+}
+
 func (r *Router) SelectedPaths() []SelectedPathStatus {
 	config := r.configSnapshot()
 	if !config.IsPublicNode(r.localNodeID) {
@@ -371,6 +384,7 @@ func (r *Router) SelectedPaths() []SelectedPathStatus {
 			OwnerNodeID:    route.OwnerNodeID,
 			PathID:         selected.ID,
 			Hops:           append([]string(nil), selected.Hops...),
+			HopNames:       displayHopNames(selected.Hops, config.NodeNames),
 			Health:         selected.Health,
 			RTTMS:          selected.RTTMS,
 			LossPercent:    selected.LossPercent,
