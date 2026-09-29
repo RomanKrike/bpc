@@ -43,6 +43,7 @@ type runtimeStatus struct {
 
 type kernelState struct {
 	mu          sync.Mutex
+	localNodeID string
 	interfaceID string
 	routes      map[string]struct{}
 	natNoSNAT   map[string]struct{}
@@ -147,7 +148,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 	desiredForward := make(map[string]struct{})
 	if config.LocalSiteRouter && config.OverlaySubnet != "" {
 		for _, route := range config.Routes {
-			if route.OwnerNodeID == "" {
+			if route.OwnerNodeID != k.localNodeID {
 				continue
 			}
 			desiredSiteNAT[route.CIDR] = struct{}{}
@@ -374,6 +375,7 @@ func main() {
 	})
 
 	kernel := &kernelState{
+		localNodeID: enrollment.NodeID,
 		interfaceID: actualName,
 		routes:      make(map[string]struct{}),
 		natNoSNAT:   make(map[string]struct{}),
