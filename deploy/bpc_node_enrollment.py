@@ -1227,6 +1227,8 @@ def local_services(roles: dict[str, Any]) -> dict[str, str]:
     if bool(roles.get("controller")):
         services["controller"] = service_state("bpc-control.service")
         services["distributed-controller"] = service_state("bpc-controld.service")
+    if bool(roles.get("gateway")) or bool(roles.get("site_router")):
+        services["routed-mesh"] = service_state("bpc-routed-node.service")
     return services
 
 
@@ -1261,6 +1263,65 @@ def local_transport_runtime(
             ),
         }
     )
+
+
+def local_routed_links() -> list[dict[str, Any]]:
+    path = Path("/run/bpc-connect/routed-status.json")
+    if not path.is_file():
+        return []
+    try:
+        value = read_json(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    links = value.get("links", [])
+    if not isinstance(links, list):
+        return []
+    return [dict(item) for item in links if isinstance(item, dict)][:64]
+
+
+def _routed_binary() -> Path:
+    machine = os.uname().machine.lower()
+    if machine in {"x86_64", "amd64"}:
+        arch = "amd64"
+    elif machine in {"aarch64", "arm64"}:
+        arch = "arm64"
+    else:
+        raise EnrollmentError(f"unsupported routed mesh architecture: {machine}")
+    root = Path(os.environ.get("BPC_ROOT", "/opt/bpc"))
+    return root / "current" / "bin" / f"bpc-routed-node-linux-{arch}"
+
+
+def reconcile_routed_runtime(
+    state_dir: Path,
+    enrollment: dict[str, Any],
+) -> None:
+    roles = enrollment.get("roles", {})
+    config = enrollment.get("config", {})
+    routing = config.get("routing", {}) if isinstance(config, dict) else {}
+    enabled = (
+        isinstance(roles, dict)
+        and (bool(roles.get("gateway")) or bool(roles.get("site_router")))
+        and isinstance(routing, dict)
+        and int(routing.get("version", 0) or 0) > 0
+        and bool(routing.get("links"))
+    )
+    unit = Path("/etc/systemd/system/bpc-routed-node.service")
+    if not unit.is_file():
+        return
+    if enabled:
+        binary = _routed_binary()
+        if not binary.is_file():
+            raise EnrollmentError(f"routed mesh binary is missing: {binary}")
+        subprocess.run(
+            ["systemctl", "enable", "--now", "bpc-routed-node.service"],
+            check=True,
+        )
+    else:
+        subprocess.run(
+            ["systemctl", "disable", "--now", "bpc-routed-node.service"],
+            check=False,
+            capture_output=True,
+        )
 
 
 def reconcile_roles(
@@ -1412,6 +1473,58 @@ WantedBy=multi-user.target
     )
     os.chmod(reconcile_path, 0o644)
 
+    routed_binary = _routed_binary()
+    routed_unit = Path("/etc/systemd/system/bpc-routed-node.service")
+    routed_unit.write_text(
+        f"""[Unit]
+Description=BPC routed mesh dataplane
+After=network-online.target bpc-node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={routed_binary} \\
+  --enrollment {state_dir / "enrollment.json"} \\
+  --interface bpcrt0 \\
+  --status /run/bpc-connect/routed-status.json
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths={state_dir}
+ReadWritePaths=/run/bpc-connect
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
+""",
+        encoding="utf-8",
+    )
+    os.chmod(routed_unit, 0o644)
+
+    current = enrolled_state(state_dir)
+    current_roles = current.get("roles", {}) if isinstance(current, dict) else {}
+    if (
+        isinstance(current_roles, dict)
+        and (
+            bool(current_roles.get("gateway"))
+            or bool(current_roles.get("site_router"))
+        )
+    ):
+        sysctl = Path("/etc/sysctl.d/93-bpc-routed.conf")
+        sysctl.write_text("net.ipv4.ip_forward=1\\n", encoding="ascii")
+        os.chmod(sysctl, 0o644)
+        subprocess.run(["sysctl", "-q", "-p", str(sysctl)], check=True)
+
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", "bpc-node.service"], check=True)
     subprocess.run(
@@ -1502,6 +1615,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         "advertised_routes": _local_advertised_routes(state_dir),
         "services": local_services(roles),
         "transport": local_transport_runtime(state_dir, roles),
+        "links": local_routed_links(),
     }
     credential = str(enrollment["credential"])
     fanout_node_telemetry(
@@ -1570,6 +1684,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
 
     enrollment["last_heartbeat"] = int(response.get("server_time", time.time()))
     write_local_enrollment(state_dir, enrollment)
+    reconcile_routed_runtime(state_dir, enrollment)
     public_key = (state_dir / "identity" / "node.pub").read_text(
         encoding="utf-8"
     ).strip()
