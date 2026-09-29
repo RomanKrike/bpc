@@ -40,9 +40,9 @@ type SelectedPathStatus struct {
 	CIDR           string   `json:"cidr"`
 	OwnerNodeID    string   `json:"owner_node_id"`
 	PathID         string   `json:"path_id"`
-	Hops           []string   `json:"hops"`
-	HopNames       []string   `json:"hop_names"`
-	Health         string     `json:"health"`
+	Hops           []string `json:"hops"`
+	HopNames       []string `json:"hop_names"`
+	Health         string   `json:"health"`
 	RTTMS          float64  `json:"rtt_ms"`
 	LossPercent    float64  `json:"loss_percent"`
 	Cost           float64  `json:"cost"`
