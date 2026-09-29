@@ -574,7 +574,7 @@ func runWGShimLoopWithSwitch(
 	ctx context.Context,
 	cfg agentctl.RuntimeConfig,
 	logger *log.Logger,
-	pathSwitches chan<- pathSwitchEvent,
+	pathSwitches chan pathSwitchEvent,
 ) {
 	for ctx.Err() == nil {
 		psk, err := base64.StdEncoding.DecodeString(cfg.WGShimPSK)
@@ -630,16 +630,12 @@ func runWGShimLoopWithSwitch(
 						event.ToNode,
 						report.Selected,
 					)
-					if pathSwitches != nil {
-						select {
-						case pathSwitches <- event:
-						default:
-							logger.Printf(
-								"overlay path-switch notification dropped from=%s to=%s",
-								event.FromNode,
-								event.ToNode,
-							)
-						}
+					if publishLatestPathSwitch(pathSwitches, event) {
+						logger.Printf(
+							"overlay path-switch notification coalesced from=%s to=%s",
+							event.FromNode,
+							event.ToNode,
+						)
 					}
 				}
 				rttMS := int64(0)
