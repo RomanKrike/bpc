@@ -7,6 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parents[1]
 sys.path.insert(0, str(ROOT / "deploy"))
 
@@ -160,3 +162,67 @@ def test_gateway_dataplane_ownership_state_is_private(tmp_path: Path, monkeypatc
 
     mode = os.stat(state / "gateway-dataplane-managed.json").st_mode & 0o777
     assert mode == 0o600
+
+
+def test_reconcile_preserves_compatibility_site_routes(tmp_path: Path, monkeypatch) -> None:
+    state, _ = seed_runtime(tmp_path)
+    write_json(state / "control/devices/home.json", {
+        "id": "home", "role": "gateway", "advertised_routes": ["192.168.88.0/24"],
+        "wireguard_public_key": psk(4), "wireguard_address": "10.253.0.3/32",
+        "wgshim_psk": psk(1),
+    })
+    calls = []
+    monkeypatch.setattr(gateway, "_run_wg", lambda *args, **kwargs: (
+        calls.append(args) or subprocess.CompletedProcess(["wg", *args], 0, "", "")
+    ))
+    gateway.reconcile_gateway_dataplane(state)
+    assert ("set", "bpcag0", "peer", psk(4), "allowed-ips",
+            "10.253.0.3/32,192.168.88.0/24") in calls
+    assert all("endpoint" not in call and "remove" not in call for call in calls)
+
+
+def test_reconcile_removes_rotated_owned_key_and_retries_failed_removal(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    state, _ = seed_runtime(tmp_path)
+    device_path = state / "control/devices/device.json"
+    value = {"id": "device", "wireguard_public_key": psk(4),
+             "wireguard_address": "10.253.0.2/32", "wgshim_psk": psk(1)}
+    write_json(device_path, value)
+    calls = []
+    fail_remove = False
+
+    def run(*args, check=True):
+        calls.append(args)
+        if args[-1] == "remove" and fail_remove:
+            if check:
+                raise gateway.GatewayDataplaneError("temporary kernel error")
+            return subprocess.CompletedProcess(["wg", *args], 1, "", "failed")
+        return subprocess.CompletedProcess(["wg", *args], 0, "", "")
+
+    monkeypatch.setattr(gateway, "_run_wg", run)
+    gateway.reconcile_gateway_dataplane(state)
+    value["wireguard_public_key"] = psk(5)
+    write_json(device_path, value)
+    fail_remove = True
+    with pytest.raises(gateway.GatewayDataplaneError):
+        gateway.reconcile_gateway_dataplane(state)
+    owned = json.loads((state / "gateway-dataplane-managed.json").read_text())
+    assert owned["devices"]["device"]["wireguard_public_key"] == psk(4)
+    fail_remove = False
+    gateway.reconcile_gateway_dataplane(state)
+    assert ("set", "bpcag0", "peer", psk(4), "remove") in calls
+
+
+def test_reconcile_rejects_ownership_ledger_for_another_interface(tmp_path, monkeypatch):
+    state, _ = seed_runtime(tmp_path)
+    write_json(state / "gateway-dataplane-managed.json", {
+        "interface": "external0", "devices": {"old": {"wireguard_public_key": psk(4)}},
+    })
+    calls = []
+    monkeypatch.setattr(gateway, "_run_wg", lambda *args, **kwargs: (
+        calls.append(args) or subprocess.CompletedProcess(["wg", *args], 0, "", "")
+    ))
+    with pytest.raises(gateway.GatewayDataplaneError, match="another interface"):
+        gateway.reconcile_gateway_dataplane(state)
+    assert all(call[0] == "show" for call in calls)

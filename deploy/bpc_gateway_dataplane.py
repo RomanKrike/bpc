@@ -6,8 +6,17 @@ import ipaddress
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
+
+MODULE_DIR = Path(__file__).resolve().parent
+SOURCE_ROOT = MODULE_DIR / "src"
+if not (SOURCE_ROOT / "bpc_connect").is_dir():
+    SOURCE_ROOT = MODULE_DIR.parent / "src"
+sys.path.insert(0, str(SOURCE_ROOT))
+
+from bpc_connect.compat.legacy import compat_site_routes  # noqa: E402
 
 
 class GatewayDataplaneError(RuntimeError):
@@ -119,6 +128,7 @@ def _active_devices(control_dir: Path) -> dict[str, dict[str, str]]:
             "wireguard_public_key": public_key,
             "wireguard_address": address,
             "wgshim_psk": psk,
+            "allowed_ips": ",".join([address, *compat_site_routes(value)]),
         }
     return devices
 
@@ -146,6 +156,9 @@ def reconcile_gateway_dataplane(state_dir: Path) -> dict[str, int]:
     if not isinstance(previous_devices, dict):
         raise GatewayDataplaneError("invalid gateway dataplane ownership state")
 
+    if previous and previous.get("interface") != interface:
+        raise GatewayDataplaneError("gateway ownership ledger belongs to another interface")
+
     for device_id, item in wanted.items():
         _atomic_text(key_dir / f"{device_id}.key", item["wgshim_psk"] + "\n")
         _run_wg(
@@ -154,7 +167,7 @@ def reconcile_gateway_dataplane(state_dir: Path) -> dict[str, int]:
             "peer",
             item["wireguard_public_key"],
             "allowed-ips",
-            item["wireguard_address"],
+            item["allowed_ips"],
         )
 
     wanted_ids = set(wanted)
@@ -163,13 +176,14 @@ def reconcile_gateway_dataplane(state_dir: Path) -> dict[str, int]:
     }
     removed = 0
     for device_id, raw_previous in previous_devices.items():
-        if device_id in wanted_ids or not isinstance(raw_previous, dict):
+        if not isinstance(raw_previous, dict):
             continue
         old_public_key = str(raw_previous.get("wireguard_public_key", "")).strip()
         if old_public_key and old_public_key not in wanted_public_keys:
-            _run_wg("set", interface, "peer", old_public_key, "remove", check=False)
-        (key_dir / f"{device_id}.key").unlink(missing_ok=True)
-        removed += 1
+            _run_wg("set", interface, "peer", old_public_key, "remove")
+        if device_id not in wanted_ids:
+            (key_dir / f"{device_id}.key").unlink(missing_ok=True)
+            removed += 1
 
     _atomic_json(
         state_path,
