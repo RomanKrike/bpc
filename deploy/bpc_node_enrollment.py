@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import http.client
 import ipaddress
@@ -1292,6 +1293,19 @@ def _local_advertised_routes(state_dir: Path) -> list[str]:
     return list(config.advertised_routes)
 
 
+def reconcile_local_gateway_state(state_dir: Path) -> None:
+    lock_path = state_dir / "gateway-reconcile.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a+", encoding="ascii") as lock_handle:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            reconcile_gateway_dataplane(state_dir)
+            sync_access_firewall(state_dir / "control")
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
 def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any]:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict):
@@ -1358,8 +1372,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         control_config = state_dir / "control" / "config.json"
         if control_config.is_file():
             try:
-                reconcile_gateway_dataplane(state_dir)
-                sync_access_firewall(state_dir / "control")
+                reconcile_local_gateway_state(state_dir)
             except (
                 GatewayDataplaneError,
                 AccessError,
@@ -1682,8 +1695,7 @@ def cmd_local_reconcile(args: argparse.Namespace) -> int:
     if not control_config.is_file():
         return 0
     try:
-        reconcile_gateway_dataplane(args.state_dir)
-        sync_access_firewall(args.state_dir / "control")
+        reconcile_local_gateway_state(args.state_dir)
     except (
         GatewayDataplaneError,
         AccessError,
