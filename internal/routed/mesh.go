@@ -27,6 +27,7 @@ type LinkStatus struct {
 	ID          string  `json:"id"`
 	From        string  `json:"from"`
 	To          string  `json:"to"`
+	PeerName    string  `json:"peer_name"`
 	Health      string  `json:"health"`
 	RTTMS       float64 `json:"rtt_ms"`
 	LossPercent float64 `json:"loss_percent"`
@@ -160,6 +161,7 @@ func (p *meshPeer) status(localNodeID string, now time.Time) LinkStatus {
 		ID:          p.config.ID,
 		From:        localNodeID,
 		To:          p.config.PeerNodeID,
+		PeerName:    p.config.PeerName,
 		Health:      health,
 		RTTMS:       float64(lastRTT.Microseconds()) / 1000,
 		LossPercent: loss,
