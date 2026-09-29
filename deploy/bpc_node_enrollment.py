@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import fcntl
 import hashlib
 import http.client
@@ -86,7 +87,7 @@ from bpc_connect.state import StateLayout  # noqa: E402
 DEFAULT_STATE_DIR = Path("/etc/bpc-connect")
 DEFAULT_CONTROL_DIR = StateLayout.from_root(DEFAULT_STATE_DIR).control_dir
 TOKEN_PREFIX = "BPC-"
-HEARTBEAT_INTERVAL = 30
+HEARTBEAT_INTERVAL = 5
 BPC_PROTOCOL_VERSION = 1
 STATE_SCHEMA_VERSION = 1
 MAX_CLOCK_SKEW = 300
@@ -1143,21 +1144,29 @@ def fanout_node_telemetry(
     *,
     credential: str,
 ) -> None:
-    # Best effort: telemetry is expiring runtime state, never an authorization
-    # or ownership write. Canonical heartbeat errors are handled separately.
-    for target in _controller_candidates(controller_url, controller_urls):
-        try:
-            request_json(
-                target,
-                "/v1/nodes/telemetry",
-                payload,
-                credential=credential,
-                timeout=3,
-                controller_urls=[],
-            )
-        except EnrollmentError:
-            continue
+    # Best effort and parallel: health is expiring runtime state. A slow/dead
+    # Controller must not serialize the Node's normal heartbeat path.
+    targets = _controller_candidates(controller_url, controller_urls)
 
+    def send(target: str) -> None:
+        request_json(
+            target,
+            "/v1/nodes/telemetry",
+            payload,
+            credential=credential,
+            timeout=3,
+            controller_urls=[],
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(4, len(targets))
+    ) as executor:
+        futures = [executor.submit(send, target) for target in targets]
+        for future in futures:
+            try:
+                future.result()
+            except EnrollmentError:
+                continue
 
 def write_local_enrollment(state_dir: Path, value: dict[str, Any]) -> None:
     atomic_json(state_dir / "enrollment.json", value)
@@ -2149,7 +2158,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
             interval = HEARTBEAT_INTERVAL
-        time.sleep(max(10, min(interval, 300)))
+        time.sleep(max(5, min(interval, 300)))
 
 
 def build_parser() -> argparse.ArgumentParser:
