@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -37,6 +36,7 @@ type LinkStatus struct {
 }
 
 type meshPeer struct {
+	configMu    sync.RWMutex
 	config      LinkConfig
 	fingerprint [32]byte
 	tx          *wgshim.Codec
@@ -52,10 +52,12 @@ type meshPeer struct {
 	lastRTT   time.Duration
 	samples   []bool
 
-	sendSeq  atomic.Uint64
-	recvMu   sync.Mutex
-	recvHigh uint64
-	recvMask uint64
+	sendSeq     atomic.Uint64
+	recvMu      sync.Mutex
+	recvHigh    uint64
+	recvMask    uint64
+	localEpoch  [16]byte
+	remoteEpoch [16]byte
 }
 
 func (p *meshPeer) setAddress(addr *net.UDPAddr) {
@@ -158,30 +160,18 @@ func (p *meshPeer) status(localNodeID string, now time.Time) LinkStatus {
 		lastSeen = lastAuth.Unix()
 	}
 	return LinkStatus{
-		ID:          p.config.ID,
+		ID:          p.configuration().ID,
 		From:        localNodeID,
-		To:          p.config.PeerNodeID,
-		PeerName:    p.config.PeerName,
+		To:          p.configuration().PeerNodeID,
+		PeerName:    p.configuration().PeerName,
 		Health:      health,
 		RTTMS:       float64(lastRTT.Microseconds()) / 1000,
 		LossPercent: loss,
-		Cost:        p.config.Cost,
+		Cost:        p.configuration().Cost,
 		LastSeen:    lastSeen,
 		Endpoint:    endpoint,
 	}
 }
-func randomSequenceBase() uint64 {
-	var raw [8]byte
-	if _, err := rand.Read(raw[:]); err != nil {
-		return uint64(time.Now().UnixNano())
-	}
-	value := binary.BigEndian.Uint64(raw[:])
-	if value < 1<<32 {
-		value += 1 << 32
-	}
-	return value
-}
-
 func (p *meshPeer) nextSequence() uint64 {
 	return p.sendSeq.Add(1)
 }
@@ -192,6 +182,13 @@ func (p *meshPeer) acceptSequence(sequence uint64) bool {
 	}
 	p.recvMu.Lock()
 	defer p.recvMu.Unlock()
+	return p.acceptSequenceLocked(sequence)
+}
+
+func (p *meshPeer) acceptSequenceLocked(sequence uint64) bool {
+	if sequence == 0 {
+		return false
+	}
 	if p.recvHigh == 0 {
 		p.recvHigh = sequence
 		p.recvMask = 1
@@ -220,8 +217,9 @@ func (p *meshPeer) acceptSequence(sequence uint64) bool {
 }
 
 type pendingProbe struct {
-	peerID string
-	sent   time.Time
+	peerID   string
+	sent     time.Time
+	endpoint string
 }
 
 type Mesh struct {
@@ -306,7 +304,9 @@ func makePeer(localNodeID string, config LinkConfig) (*meshPeer, error) {
 		tx:          tx,
 		rx:          rx,
 	}
-	peer.sendSeq.Store(randomSequenceBase())
+	if _, err := rand.Read(peer.localEpoch[:]); err != nil {
+		return nil, fmt.Errorf("create routed session epoch: %w", err)
+	}
 	if config.PeerEndpoint != "" {
 		addr, resolveErr := net.ResolveUDPAddr("udp", config.PeerEndpoint)
 		if resolveErr != nil {
@@ -340,9 +340,11 @@ func (m *Mesh) Reconcile(links []LinkConfig) error {
 			return err
 		}
 		if previous := current[config.PeerNodeID]; previous != nil &&
-			previous.config.ID == config.ID &&
+			previous.configuration().ID == config.ID &&
 			previous.fingerprint == candidate.fingerprint {
+			previous.configMu.Lock()
 			previous.config = config
+			previous.configMu.Unlock()
 			if config.PeerEndpoint != "" {
 				addr, resolveErr := net.ResolveUDPAddr("udp", config.PeerEndpoint)
 				if resolveErr != nil {
@@ -376,7 +378,7 @@ func (m *Mesh) peerSnapshot() []*meshPeer {
 		result = append(result, peer)
 	}
 	sort.Slice(result, func(i, j int) bool {
-		return result[i].config.PeerNodeID < result[j].config.PeerNodeID
+		return result[i].configuration().PeerNodeID < result[j].configuration().PeerNodeID
 	})
 	return result
 }
@@ -390,10 +392,11 @@ func (m *Mesh) Send(peerID string, payload []byte) error {
 	if addr == nil {
 		return fmt.Errorf("routed peer %s has no learned endpoint", peerID)
 	}
-	sequence := peer.nextSequence()
-	plaintext := make([]byte, 8+len(payload))
-	binary.BigEndian.PutUint64(plaintext[:8], sequence)
-	copy(plaintext[8:], payload)
+	plaintext, err := peer.dataEnvelope(payload)
+	if err != nil {
+		return err
+	}
+
 	packet, err := peer.tx.Seal(plaintext)
 	if err != nil {
 		return fmt.Errorf("seal routed packet: %w", err)
@@ -409,7 +412,7 @@ func (m *Mesh) CanSend(peerID string) bool {
 	if peer == nil || peer.address() == nil {
 		return false
 	}
-	return peer.status(m.localNodeID, time.Now()).Health != "failed"
+	return peer.sessionReady() && peer.status(m.localNodeID, time.Now()).Health != "failed"
 }
 
 func (m *Mesh) Status() []LinkStatus {
@@ -460,43 +463,52 @@ func (m *Mesh) runReceive(ctx context.Context) error {
 			continue
 		}
 		now := time.Now()
-		matched.setAddress(addr)
-		matched.markAuth(now)
-
 		switch {
 		case wgshim.IsProbe(packetType):
-			reply, sealErr := matched.tx.SealProbeReply(plaintext)
-			if sealErr != nil {
+			if len(plaintext) != 32 {
+				continue
+			}
+			response := append(append([]byte(nil), plaintext...), matched.localEpoch[:]...)
+			reply, err := matched.tx.SealProbeReply(response)
+			if err != nil {
 				continue
 			}
 			_, _ = m.conn.WriteToUDP(reply, addr)
+			// An authenticated but replayable request cannot change endpoint or
+			// replay state. Challenge the sender before learning a new session.
+			if !matched.matchesRemoteEpoch(plaintext[:16]) || !sameUDPAddress(matched.address(), addr) {
+				m.sendProbeTo(matched, addr, now)
+			}
 		case wgshim.IsProbeReply(packetType):
-			token := hex.EncodeToString(plaintext)
+			if len(plaintext) != 48 {
+				continue
+			}
+			token := hex.EncodeToString(plaintext[:32])
 			m.pendingMu.Lock()
 			pending, ok := m.pending[token]
-			if ok {
+			if ok && pending.peerID == matched.configuration().PeerNodeID && pending.endpoint == addr.String() {
 				delete(m.pending, token)
+			} else {
+				ok = false
 			}
 			m.pendingMu.Unlock()
-			if ok && pending.peerID == matched.config.PeerNodeID {
+			if ok {
+				matched.confirmRemoteEpoch(plaintext[32:])
+				matched.setAddress(addr)
 				matched.recordProbe(true, now.Sub(pending.sent), now)
 			}
 		case wgshim.IsData(packetType):
-			if len(plaintext) < 9 {
+			payload, ok := matched.acceptDataEnvelope(plaintext)
+			if !ok {
 				continue
 			}
-			sequence := binary.BigEndian.Uint64(plaintext[:8])
-			if !matched.acceptSequence(sequence) {
-				continue
-			}
+			matched.setAddress(addr)
+			matched.markAuth(now)
 			m.onDataMu.RLock()
 			handler := m.onData
 			m.onDataMu.RUnlock()
 			if handler != nil {
-				handler(
-					matched.config.PeerNodeID,
-					append([]byte(nil), plaintext[8:]...),
-				)
+				handler(matched.configuration().PeerNodeID, payload)
 			}
 		}
 	}
@@ -520,12 +532,17 @@ func (m *Mesh) expireProbes(now time.Time) {
 }
 
 func (m *Mesh) sendProbe(peer *meshPeer, now time.Time) {
-	addr := peer.address()
+	m.sendProbeTo(peer, peer.address(), now)
+}
+
+func (m *Mesh) sendProbeTo(peer *meshPeer, addr *net.UDPAddr, now time.Time) {
 	if addr == nil {
 		return
 	}
-	tokenRaw := make([]byte, 16)
-	if _, err := rand.Read(tokenRaw); err != nil {
+	peerID := peer.configuration().PeerNodeID
+	tokenRaw := make([]byte, 32)
+	copy(tokenRaw, peer.localEpoch[:])
+	if _, err := rand.Read(tokenRaw[16:]); err != nil {
 		return
 	}
 	packet, err := peer.tx.SealProbe(tokenRaw)
@@ -534,7 +551,14 @@ func (m *Mesh) sendProbe(peer *meshPeer, now time.Time) {
 	}
 	token := hex.EncodeToString(tokenRaw)
 	m.pendingMu.Lock()
-	m.pending[token] = pendingProbe{peerID: peer.config.PeerNodeID, sent: now}
+	// Bound challenges even if captured probe requests are replayed in a flood.
+	for _, pending := range m.pending {
+		if pending.peerID == peerID {
+			m.pendingMu.Unlock()
+			return
+		}
+	}
+	m.pending[token] = pendingProbe{peerID: peerID, sent: now, endpoint: addr.String()}
 	m.pendingMu.Unlock()
 	if _, err := m.conn.WriteToUDP(packet, addr); err != nil {
 		m.pendingMu.Lock()
@@ -542,6 +566,10 @@ func (m *Mesh) sendProbe(peer *meshPeer, now time.Time) {
 		m.pendingMu.Unlock()
 		peer.recordProbe(false, 0, now)
 	}
+}
+
+func sameUDPAddress(a, b *net.UDPAddr) bool {
+	return a != nil && b != nil && a.String() == b.String()
 }
 
 func (m *Mesh) runProbes(ctx context.Context) {

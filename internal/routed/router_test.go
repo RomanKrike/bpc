@@ -254,6 +254,28 @@ func TestMeshReplayWindowRejectsDuplicateSequence(t *testing.T) {
 	}
 }
 
+func TestRouteOwnerCannotSpoofAnotherSourcePrefix(t *testing.T) {
+	cfg := testRoutingConfig()
+	frame := Frame{PathID: "direct", OwnerNodeID: "home-01", Hops: []string{"home-01", "ru-02"}, HopIndex: 1, Return: true, Payload: ipv4Packet("192.168.88.1", "10.253.0.2")}
+	if _, err := ValidateFrameForNode(frame, "ru-02", "home-01", cfg); err != nil {
+		t.Fatal(err)
+	}
+	frame.Payload = ipv4Packet("192.168.99.1", "10.253.0.2")
+	if _, err := ValidateFrameForNode(frame, "ru-02", "home-01", cfg); err == nil {
+		t.Fatal("owner spoofed another site's source address")
+	}
+	frame.Payload = ipv4Packet("10.253.0.3", "10.253.0.2")
+	if _, err := ValidateFrameForNode(frame, "ru-02", "home-01", cfg); err == nil {
+		t.Fatal("owner spoofed a Device source address")
+	}
+	frame.Return = false
+	frame.Hops = []string{"ru-02", "home-01"}
+	frame.Payload = ipv4Packet("198.51.100.7", "192.168.88.1")
+	if _, err := ValidateFrameForNode(frame, "home-01", "ru-02", cfg); err == nil {
+		t.Fatal("forwarded source outside overlay")
+	}
+}
+
 func TestDirectionalLinkFailsWithoutOwnProbeReplies(t *testing.T) {
 	peer := &meshPeer{
 		config:       LinkConfig{ID: "home-link", PeerNodeID: "home-01", Cost: 10},
