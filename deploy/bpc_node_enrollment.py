@@ -54,7 +54,9 @@ from bpc_gateway_snapshot import (  # noqa: E402
 )
 from bpc_topology import (  # noqa: E402
     TopologyError,
+    ensure_topology_links,
     merge_node_telemetry,
+    routing_config_for_node,
     validate_route_ownership,
     write_node_telemetry,
 )
@@ -903,6 +905,16 @@ def node_heartbeat(
                 target.write_bytes(operation["data"])
                 os.chmod(target, 0o600)
 
+    try:
+        ensure_topology_links(control_dir, now=timestamp)
+        routing = routing_config_for_node(
+            control_dir,
+            node_id,
+            now=timestamp,
+        )
+    except TopologyError as exc:
+        raise EnrollmentError(str(exc), 409) from exc
+
     return {
         "ok": True,
         "server_time": timestamp,
@@ -918,6 +930,7 @@ def node_heartbeat(
             "controllers": controller_public_urls(control_dir.parent),
             "role_config": dict(canonical_node.get("role_config", {})),
             "endpoints": canonical_node.get("endpoints", []),
+            "routing": routing,
         },
     }
 
