@@ -52,6 +52,12 @@ from bpc_gateway_snapshot import (  # noqa: E402
     install_security_snapshot,
     load_valid_security_snapshot,
 )
+from bpc_topology import (  # noqa: E402
+    TopologyError,
+    merge_node_telemetry,
+    validate_route_ownership,
+    write_node_telemetry,
+)
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
@@ -653,6 +659,91 @@ def authorize_node(control_dir: Path, credential: str) -> tuple[Path, dict[str, 
     return node_path, node
 
 
+def authorize_node_telemetry(
+    control_dir: Path,
+    credential: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Authorize only expiring local telemetry, without a Raft barrier."""
+    value = credential.strip()
+    if len(value) != 64:
+        raise EnrollmentError("invalid node credential", 401)
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise EnrollmentError("invalid node credential", 401) from exc
+    index = token_index(value)
+    credential_path = control_dir / "node-credentials" / f"{index}.json"
+    if not credential_path.is_file():
+        raise EnrollmentError("invalid node credential", 401)
+    mapping = read_json(credential_path)
+    node_id = str(mapping.get("node_id", ""))
+    node_path = control_dir / "nodes" / f"{node_id}.json"
+    if not node_path.is_file():
+        raise EnrollmentError("invalid node credential", 401)
+    node = read_json(node_path)
+    if bool(node.get("revoked", False)):
+        raise EnrollmentError("node has left the cluster", 403)
+    return node_path, node
+
+
+def _runtime_telemetry(
+    control_dir: Path,
+    node: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    now: int,
+) -> dict[str, Any]:
+    roles = node.get("roles", {})
+    if not isinstance(roles, dict):
+        roles = {}
+    try:
+        protocol_version = int(payload.get("protocol_version", 0) or 0)
+        schema_version = int(payload.get("state_schema_version", 0) or 0)
+    except (TypeError, ValueError):
+        protocol_version = 0
+        schema_version = 0
+    compatible = (
+        protocol_version == BPC_PROTOCOL_VERSION
+        and schema_version == STATE_SCHEMA_VERSION
+    )
+    transport = (
+        normalize_transport_runtime(payload.get("transport", {}))
+        if bool(roles.get("relay"))
+        else {}
+    )
+    return write_node_telemetry(
+        control_dir,
+        str(node["node_id"]),
+        payload=payload,
+        compatibility="compatible" if compatible else "incompatible",
+        transport=transport,
+        now=now,
+    )
+
+
+def node_telemetry(
+    control_dir: Path,
+    *,
+    credential: str,
+    payload: dict[str, Any],
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(time.time()) if now is None else int(now)
+    _, node = authorize_node_telemetry(control_dir, credential)
+    telemetry = _runtime_telemetry(
+        control_dir,
+        node,
+        payload,
+        now=timestamp,
+    )
+    return {
+        "ok": True,
+        "server_time": timestamp,
+        "node_id": str(node["node_id"]),
+        "compatibility": str(telemetry.get("compatibility", "incompatible")),
+    }
+
+
 def normalize_advertised_routes(values: object) -> list[str]:
     if values in (None, ""):
         return []
@@ -707,110 +798,128 @@ def node_heartbeat(
     timestamp = int(time.time()) if now is None else int(now)
     node_path, node = authorize_node(control_dir, credential)
     node_id = str(node["node_id"])
-    node["last_seen"] = timestamp
-    node["last_status"] = str(payload.get("status", "online"))[:64]
-    node["last_version"] = str(payload.get("version", ""))[:64]
-    protocol_version = int(payload.get("protocol_version", 0) or 0)
-    schema_version = int(payload.get("state_schema_version", 0) or 0)
-    node["protocol_version"] = protocol_version
-    node["state_schema_version"] = schema_version
-    compatible = (
-        protocol_version == BPC_PROTOCOL_VERSION
-        and schema_version == STATE_SCHEMA_VERSION
-    )
-    node["compatibility"] = "compatible" if compatible else "incompatible"
-
-    services = payload.get("services", {})
-    if isinstance(services, dict):
-        node["services"] = {
-            str(key)[:64]: str(value)[:64] for key, value in services.items()
-        }
-
     roles = node.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
-    if bool(roles.get("relay")):
-        node["transport"] = normalize_transport_runtime(payload.get("transport", {}))
-    else:
-        node.pop("transport", None)
+
+    telemetry = _runtime_telemetry(
+        control_dir,
+        node,
+        payload,
+        now=timestamp,
+    )
     advertised = (
         normalize_advertised_routes(payload.get("advertised_routes", []))
         if bool(roles.get("site_router"))
         else []
     )
-    node["advertised_routes"] = advertised
-    existing_routes = _existing_node_routes(control_dir, node_id)
+    try:
+        validate_route_ownership(control_dir, node_id, advertised)
+    except TopologyError as exc:
+        raise EnrollmentError(str(exc), 409) from exc
 
-    operations: list[dict[str, Any]] = [
-        {
-            "op": "put",
-            "path": node_path,
-            "data": json.dumps(
-                node, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8"),
-        }
-    ]
+    # Identity, capabilities, endpoints and route ownership are canonical.
+    # Liveness/service/transport/link samples are ephemeral and never enter Raft.
+    canonical_node = dict(node)
+    for key in (
+        "last_seen",
+        "last_status",
+        "last_version",
+        "protocol_version",
+        "state_schema_version",
+        "compatibility",
+        "services",
+        "transport",
+    ):
+        canonical_node.pop(key, None)
+    canonical_node["advertised_routes"] = advertised
+
+    existing_routes = _existing_node_routes(control_dir, node_id)
     wanted = set(advertised)
-    for cidr in advertised:
-        path = _route_path(control_dir, node_id, cidr)
-        route = {
-            "version": 1,
-            "cidr": cidr,
-            "node_id": node_id,
-            "updated_at": timestamp,
-        }
+    operations: list[dict[str, Any]] = []
+    if canonical_node != node:
         operations.append(
             {
                 "op": "put",
-                "path": path,
+                "path": node_path,
                 "data": json.dumps(
-                    route, sort_keys=True, separators=(",", ":")
+                    canonical_node, sort_keys=True, separators=(",", ":")
                 ).encode("utf-8"),
             }
         )
-    for cidr, path in existing_routes.items():
-        if cidr not in wanted:
-            operations.append({"op": "delete", "path": path})
 
-    if bpc_control_state.cluster_enabled(control_dir):
+    for cidr in advertised:
+        path = _route_path(control_dir, node_id, cidr)
+        rewrite = cidr not in existing_routes
+        if not rewrite:
+            try:
+                current_route = read_json(existing_routes[cidr])
+            except (OSError, ValueError, json.JSONDecodeError):
+                rewrite = True
+            else:
+                rewrite = (
+                    str(current_route.get("owner_node_id", "")) != node_id
+                    or str(current_route.get("node_id", "")) != node_id
+                    or str(current_route.get("cidr", "")) != cidr
+                )
+        if rewrite:
+            route = {
+                "version": 2,
+                "cidr": cidr,
+                "node_id": node_id,
+                "owner_node_id": node_id,
+                "updated_at": timestamp,
+            }
+            operations.append(
+                {
+                    "op": "put",
+                    "path": path,
+                    "data": json.dumps(
+                        route, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8"),
+                }
+            )
+    for cidr, route_path in existing_routes.items():
+        if cidr not in wanted:
+            operations.append({"op": "delete", "path": route_path})
+
+    if operations and bpc_control_state.cluster_enabled(control_dir):
         try:
             bpc_control_state.mutation(
                 control_dir,
-                "NodeHeartbeat",
+                "ReconcileNodeCanonicalState",
                 operations,
                 issued_at=timestamp,
             )
         except bpc_control_state.ControlStateError as exc:
             _raise_control_state(exc)
-    else:
-        atomic_json(node_path, node)
-        for operation in operations[1:]:
-            path = Path(operation["path"])
+    elif operations:
+        for operation in operations:
+            target = Path(operation["path"])
             if operation["op"] == "delete":
-                path.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
             else:
-                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                path.write_bytes(operation["data"])
-                os.chmod(path, 0o600)
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                target.write_bytes(operation["data"])
+                os.chmod(target, 0o600)
 
     return {
         "ok": True,
         "server_time": timestamp,
         "node_id": node_id,
-        "name": str(node["name"]),
+        "name": str(canonical_node["name"]),
         "roles": dict(roles),
-        "compatibility": node["compatibility"],
+        "compatibility": str(telemetry.get("compatibility", "incompatible")),
         "config": {
             "version": 1,
             "heartbeat_interval": HEARTBEAT_INTERVAL,
             "protocol_version": BPC_PROTOCOL_VERSION,
             "state_schema_version": STATE_SCHEMA_VERSION,
             "controllers": controller_public_urls(control_dir.parent),
-            "role_config": dict(node.get("role_config", {})),
-            "endpoints": node.get("endpoints", []),
+            "role_config": dict(canonical_node.get("role_config", {})),
+            "endpoints": canonical_node.get("endpoints", []),
         },
     }
-
 
 def leave_node(control_dir: Path, *, credential: str, now: int | None = None) -> dict[str, Any]:
     timestamp = int(time.time()) if now is None else int(now)
@@ -854,6 +963,10 @@ def leave_node(control_dir: Path, *, credential: str, now: int | None = None) ->
         ]
         if public_path is not None:
             operations.append({"op": "delete", "path": public_path})
+        for _, route_path in _existing_node_routes(
+            control_dir, str(node["node_id"])
+        ).items():
+            operations.append({"op": "delete", "path": route_path})
         try:
             bpc_control_state.mutation(
                 control_dir,
@@ -868,6 +981,10 @@ def leave_node(control_dir: Path, *, credential: str, now: int | None = None) ->
         credential_path.unlink(missing_ok=True)
         if public_path is not None:
             public_path.unlink(missing_ok=True)
+        for _, route_path in _existing_node_routes(
+            control_dir, str(node["node_id"])
+        ).items():
+            route_path.unlink(missing_ok=True)
     return {"ok": True, "node_id": str(node["node_id"])}
 
 
@@ -879,15 +996,8 @@ def list_nodes(control_dir: Path, now: int | None = None) -> list[dict[str, Any]
             node = read_json(path)
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        last_seen = int(node.get("last_seen", 0))
-        node["online"] = (
-            not bool(node.get("revoked", False))
-            and last_seen > 0
-            and timestamp - last_seen <= HEARTBEAT_INTERVAL * 3
-        )
-        result.append(node)
+        result.append(merge_node_telemetry(control_dir, node, now=timestamp))
     return result
-
 
 def generate_node_identity(state_dir: Path) -> str:
     identity_dir = state_dir / "identity"
@@ -1011,6 +1121,29 @@ def request_json(
     if last_error is not None:
         raise last_error
     raise EnrollmentError("all Controller endpoints failed")
+
+
+def fanout_node_telemetry(
+    controller_url: str,
+    controller_urls: list[str] | tuple[str, ...],
+    payload: dict[str, Any],
+    *,
+    credential: str,
+) -> None:
+    # Best effort: telemetry is expiring runtime state, never an authorization
+    # or ownership write. Canonical heartbeat errors are handled separately.
+    for target in _controller_candidates(controller_url, controller_urls):
+        try:
+            request_json(
+                target,
+                "/v1/nodes/telemetry",
+                payload,
+                credential=credential,
+                timeout=3,
+                controller_urls=[],
+            )
+        except EnrollmentError:
+            continue
 
 
 def write_local_enrollment(state_dir: Path, value: dict[str, Any]) -> None:
@@ -1348,19 +1481,27 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         if (ROOT / "VERSION").is_file()
         else "source"
     )
+    payload = {
+        "status": "online",
+        "version": software_version,
+        "protocol_version": BPC_PROTOCOL_VERSION,
+        "state_schema_version": STATE_SCHEMA_VERSION,
+        "advertised_routes": _local_advertised_routes(state_dir),
+        "services": local_services(roles),
+        "transport": local_transport_runtime(state_dir, roles),
+    }
+    credential = str(enrollment["credential"])
+    fanout_node_telemetry(
+        str(enrollment["controller_url"]),
+        [str(item) for item in controllers],
+        payload,
+        credential=credential,
+    )
     response = request_json(
         str(enrollment["controller_url"]),
         "/v1/nodes/heartbeat",
-        {
-            "status": "online",
-            "version": software_version,
-            "protocol_version": BPC_PROTOCOL_VERSION,
-            "state_schema_version": STATE_SCHEMA_VERSION,
-            "advertised_routes": _local_advertised_routes(state_dir),
-            "services": local_services(roles),
-            "transport": local_transport_runtime(state_dir, roles),
-        },
-        credential=str(enrollment["credential"]),
+        payload,
+        credential=credential,
         controller_urls=[str(item) for item in controllers],
     )
     selected = str(response.pop("_controller_url", enrollment["controller_url"]))
