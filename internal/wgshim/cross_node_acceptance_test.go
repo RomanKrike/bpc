@@ -356,7 +356,15 @@ warmed:
 	}
 
 	if err := exchangeUDP([]byte("before-cross-node-failover"), 5*time.Second); err != nil {
-		t.Fatalf("baseline UDP traffic failed: %v", err)
+		clientState, _ := client.IpcGet()
+		serverState, _ := responders[0].device.IpcGet()
+		t.Fatalf(
+			"baseline UDP traffic failed: %v client_uapi=%q server_uapi=%q responder_rx=%d",
+			err,
+			clientState,
+			serverState,
+			responders[0].received.Load(),
+		)
 	}
 	if responders[0].received.Load() == 0 {
 		t.Fatal("baseline traffic did not reach the first responder")
