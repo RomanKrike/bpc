@@ -32,6 +32,7 @@ type LinkStatus struct {
 	LossPercent float64 `json:"loss_percent"`
 	Cost        float64 `json:"cost"`
 	LastSeen    int64   `json:"last_seen"`
+	Endpoint    string  `json:"endpoint,omitempty"`
 }
 
 type meshPeer struct {
@@ -122,6 +123,10 @@ func (p *meshPeer) status(localNodeID string, now time.Time) LinkStatus {
 	p.addrMu.RLock()
 	hasAddress := p.addr != nil
 	addressSince := p.addressSince
+	endpoint := ""
+	if p.addr != nil {
+		endpoint = p.addr.String()
+	}
 	p.addrMu.RUnlock()
 
 	health := "unknown"
@@ -160,6 +165,7 @@ func (p *meshPeer) status(localNodeID string, now time.Time) LinkStatus {
 		LossPercent: loss,
 		Cost:        p.config.Cost,
 		LastSeen:    lastSeen,
+		Endpoint:    endpoint,
 	}
 }
 func randomSequenceBase() uint64 {
