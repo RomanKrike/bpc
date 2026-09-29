@@ -218,9 +218,10 @@ func configureEmbeddedInterface(
 					"Sort-Object RouteMetric | Select-Object -First 1; "+
 					"if ($null -eq $route) { throw 'No physical route to BPC relay %s' }; "+
 					"$nextHop=$route.NextHop; if ([string]::IsNullOrWhiteSpace($nextHop)) {$nextHop='0.0.0.0'}; "+
-					"Remove-NetRoute -DestinationPrefix '%s/32' -Confirm:$false -ErrorAction SilentlyContinue; "+
+					"$existing=@(Get-NetRoute -DestinationPrefix '%s/32' -ErrorAction SilentlyContinue); "+
+					"if ($existing.Count -eq 0) { "+
 					"New-NetRoute -InterfaceIndex $route.InterfaceIndex -DestinationPrefix '%s/32' "+
-					"-NextHop $nextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null",
+					"-NextHop $nextHop -RouteMetric 1 -PolicyStore ActiveStore -ErrorAction Stop | Out-Null };",
 				serverIP,
 				escapedName,
 				serverIP,

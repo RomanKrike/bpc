@@ -539,3 +539,13 @@ def test_access_policy_controls_client_routes_and_node_firewall() -> None:
     assert '"-j", "DROP"' in access
     assert "_subtract_denies" in access
     assert 'device.get("revoked"' in access
+
+
+def test_windows_path_pinning_preserves_existing_physical_routes() -> None:
+    start = TUNNEL.index("physicalRouteCommands :=")
+    end = TUNNEL.index("routeCommands :=", start)
+    physical_routes = TUNNEL[start:end]
+    assert "Remove-NetRoute" not in physical_routes
+    assert "$existing=@(Get-NetRoute -DestinationPrefix" in physical_routes
+    assert "if ($existing.Count -eq 0)" in physical_routes
+    assert "-PolicyStore ActiveStore" in physical_routes
