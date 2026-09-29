@@ -390,6 +390,67 @@ check_joined_node() {
   fi
 }
 
+check_routed_mesh() {
+  local enrollment="${BPC_STATE_DIR}/enrollment.json"
+  local status="/run/bpc-connect/routed-status.json"
+
+  [[ -s "${enrollment}" ]] || return 0
+  if ! python3 - "${enrollment}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+roles = value.get("roles", {})
+routing = value.get("config", {}).get("routing", {})
+required = (
+    isinstance(roles, dict)
+    and (bool(roles.get("gateway")) or bool(roles.get("site_router")))
+    and isinstance(routing, dict)
+    and int(routing.get("version", 0) or 0) > 0
+    and bool(routing.get("links"))
+)
+raise SystemExit(0 if required else 1)
+PY
+  then
+    return 0
+  fi
+
+  if ! systemctl --quiet is-active bpc-routed-node.service; then
+    fail_health "bpc-routed-node.service is not active"
+    return 1
+  fi
+  if [[ ! -d /sys/class/net/bpcrt0 ]]; then
+    fail_health "BPC routed mesh interface bpcrt0 is missing"
+    return 1
+  fi
+  if [[ ! -s "${status}" ]]; then
+    fail_health "BPC routed mesh status is missing"
+    return 1
+  fi
+  if ! python3 - "${status}" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    updated = int(value.get("updated_at", 0))
+except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+raise SystemExit(0 if updated > 0 and time.time() - updated <= 15 else 1)
+PY
+  then
+    fail_health "BPC routed mesh status is stale"
+    return 1
+  fi
+}
+
+
 check_control() {
   local control_dir="${BPC_STATE_DIR}/control"
   local runtime_env="${control_dir}/runtime.env"
@@ -460,6 +521,7 @@ fi
 
 if [[ -s "${BPC_STATE_DIR}/enrollment.json" ]]; then
   check_joined_node
+  check_routed_mesh
 elif [[ ! -s "${BPC_STATE_DIR}/node.yaml" && ! -s "${gateway_config}" ]]; then
   fail_health "canonical Node state is missing"
   exit 1
