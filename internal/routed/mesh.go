@@ -392,6 +392,14 @@ func (m *Mesh) Status() []LinkStatus {
 	return result
 }
 
+func (m *Mesh) LinkStatus(peerID string) (LinkStatus, bool) {
+	peer := m.peer(peerID)
+	if peer == nil {
+		return LinkStatus{}, false
+	}
+	return peer.status(m.localNodeID, time.Now()), true
+}
+
 func (m *Mesh) runReceive(ctx context.Context) error {
 	buf := make([]byte, 65535)
 	for {
