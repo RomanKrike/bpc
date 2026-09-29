@@ -9,6 +9,7 @@ ACCESS="${BPC_ROOT}/current/deploy/bpc_access.py"
 CLUSTER="${BPC_ROOT}/current/deploy/bpc_cluster.py"
 CLUSTER_OPS="${BPC_ROOT}/current/deploy/bpc_cluster_ops.py"
 STATE_MIGRATE="${BPC_ROOT}/current/deploy/bpc-state-migrate.py"
+TOPOLOGY="${BPC_ROOT}/current/deploy/bpc_topology.py"
 CONTROL_DIR="${BPC_STATE_DIR}/control"
 
 usage() {
@@ -36,6 +37,9 @@ Usage:
   bpc access list [--user USER | --device DEVICE]
   bpc access grant (--user USER | --device DEVICE) CIDR [CIDR ...]
   bpc access revoke (--user USER | --device DEVICE) CIDR [CIDR ...]
+  bpc path list [--from-node NODE]
+  bpc path show PATH [--from-node NODE]
+  bpc route explain IP [--from-node NODE]
   bpc state migrate
 
 Compatibility:
@@ -183,6 +187,16 @@ case "${scope}" in
         exit 2
         ;;
     esac
+    ;;
+  path)
+    require_file "${TOPOLOGY}" "BPC topology helper"
+    shift
+    exec python3 "${TOPOLOGY}" --control-dir "${CONTROL_DIR}" path "$@"
+    ;;
+  route)
+    require_file "${TOPOLOGY}" "BPC topology helper"
+    shift
+    exec python3 "${TOPOLOGY}" --control-dir "${CONTROL_DIR}" route "$@"
     ;;
   state)
     if [[ "${2:-}" != "migrate" || $# -ne 2 ]]; then
