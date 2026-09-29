@@ -16,6 +16,8 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - `BPC-MANUAL` selector for forcing any enabled primary transport during protocol testing.
 - Server-managed selective underlay routing for exact VPN/WireGuard endpoint IPv4 addresses.
 - Experimental WGShim low-latency authenticated UDP wrapper for an existing WireGuard endpoint, without Clash/Mihomo in the data path.
+- Multi-Public-Node WGShim path pool with authenticated health checks, warm standby selection and cross-node failover while preserving the Device overlay identity.
+- Independent Public Nodes can share the canonical WireGuard overlay identity and replicated Device/Access state; Windows keeps its Wintun interface and routes during path handoff.
 - Optional tokenized HTTPS subscription endpoint for the aggregate Clash profile.
 - REALITY target compatibility preflight before fresh Xray provisioning.
 - Config generator with safety validation.
