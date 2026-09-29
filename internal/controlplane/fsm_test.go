@@ -105,11 +105,10 @@ func TestSnapshotIsChecksummedAndRestoresProjection(t *testing.T) {
 	}
 }
 
-
 func siteRouterNode(id string) []byte {
 	raw, _ := json.Marshal(map[string]any{
 		"node_id": id,
-		"roles": map[string]bool{"site_router": true},
+		"roles":   map[string]bool{"site_router": true},
 	})
 	return raw
 }
