@@ -865,17 +865,17 @@ func disconnectAgent() error {
 }
 
 type uiStatus struct {
-	Version       string   `json:"version"`
-	Device        string   `json:"device"`
-	DeviceID      string   `json:"device_id"`
-	Service       string   `json:"service"`
-	Control       string   `json:"control"`
-	Relay         string   `json:"relay"`
-	RelayPool     []string `json:"relay_pool,omitempty"`
-	TunnelAddress string   `json:"tunnel_address"`
-	Routes        []string `json:"routes"`
-	UpdatedAt     int64    `json:"updated_at,omitempty"`
-	HandshakeAt   int64    `json:"handshake_at,omitempty"`
+	Version       string              `json:"version"`
+	Device        string              `json:"device"`
+	DeviceID      string              `json:"device_id"`
+	Service       string              `json:"service"`
+	Control       string              `json:"control"`
+	Relay         string              `json:"relay"`
+	RelayPool     []string            `json:"relay_pool,omitempty"`
+	TunnelAddress string              `json:"tunnel_address"`
+	Routes        []string            `json:"routes"`
+	UpdatedAt     int64               `json:"updated_at,omitempty"`
+	HandshakeAt   int64               `json:"handshake_at,omitempty"`
 	RXBytes       uint64              `json:"rx_bytes,omitempty"`
 	TXBytes       uint64              `json:"tx_bytes,omitempty"`
 	Transport     *transportTelemetry `json:"transport,omitempty"`
