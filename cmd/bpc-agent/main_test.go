@@ -169,7 +169,6 @@ func TestTransportNodeTrackerOnlySignalsCrossNodeSwitch(t *testing.T) {
 	}
 }
 
-
 func TestPublishLatestPathSwitchKeepsNewestEvent(t *testing.T) {
 	mailbox := make(chan pathSwitchEvent, 1)
 	first := pathSwitchEvent{FromNode: "ru-01", ToNode: "ru-02"}
