@@ -423,6 +423,8 @@ def routing_config_for_node(
         "version": 1,
         "listen_port": ROUTED_MESH_PORT,
         "overlay_subnet": overlay_subnet,
+        "local_public": _is_public_node(local),
+        "local_site_router": _is_site_router(local),
         "links": sorted(links, key=lambda item: item["peer_node_id"]),
         "paths": paths,
         "transit_paths": transit_paths,
