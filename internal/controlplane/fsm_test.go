@@ -104,3 +104,96 @@ func TestSnapshotIsChecksummedAndRestoresProjection(t *testing.T) {
 		t.Fatalf("unexpected restored data: %s", raw)
 	}
 }
+
+
+func siteRouterNode(id string) []byte {
+	raw, _ := json.Marshal(map[string]any{
+		"node_id": id,
+		"roles": map[string]bool{"site_router": true},
+	})
+	return raw
+}
+
+func routeOwnerRecord(owner, cidr string) []byte {
+	raw, _ := json.Marshal(map[string]any{
+		"version":       2,
+		"node_id":       owner,
+		"owner_node_id": owner,
+		"cidr":          cidr,
+	})
+	return raw
+}
+
+func TestStateMachineEnforcesRouteOwnershipAtomically(t *testing.T) {
+	_, fsm, _ := testFSM(t)
+	bootstrap := Mutation{
+		Version: CommandVersion,
+		ID:      "routes-bootstrap",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/nodes/home-01.json", Data: siteRouterNode("home-01")},
+			{Op: "put", Path: "control/nodes/home-02.json", Data: siteRouterNode("home-02")},
+			{Op: "put", Path: "control/routes/home-01-a.json", Data: routeOwnerRecord("home-01", "192.168.88.0/24")},
+		},
+	}
+	if result := applyForTest(t, fsm, bootstrap); !result.OK {
+		t.Fatalf("bootstrap route ownership failed: %+v", result)
+	}
+
+	// The same owner may advertise another, even overlapping, canonical prefix.
+	sameOwner := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "same-owner",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/routes/home-01-b.json", Data: routeOwnerRecord("home-01", "192.168.88.0/25")},
+		},
+	})
+	if !sameOwner.OK {
+		t.Fatalf("same-owner route was rejected: %+v", sameOwner)
+	}
+
+	conflict := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "cross-owner",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/routes/home-02-a.json", Data: routeOwnerRecord("home-02", "192.168.88.128/25")},
+		},
+	})
+	if !conflict.Conflict {
+		t.Fatalf("overlapping different-owner route was accepted: %+v", conflict)
+	}
+
+	defaultRoute := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "default-route",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/routes/default.json", Data: routeOwnerRecord("home-01", "0.0.0.0/0")},
+		},
+	})
+	if !defaultRoute.Conflict {
+		t.Fatalf("site-router default route was accepted: %+v", defaultRoute)
+	}
+}
+
+func TestStateMachineRejectsRouteOwnerWithoutSiteRouterCapability(t *testing.T) {
+	_, fsm, _ := testFSM(t)
+	nodeRaw, _ := json.Marshal(map[string]any{
+		"node_id": "ru-01",
+		"roles":   map[string]bool{"gateway": true, "relay": true},
+	})
+	result := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "bad-owner",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/nodes/ru-01.json", Data: nodeRaw},
+			{Op: "put", Path: "control/routes/ru-01.json", Data: routeOwnerRecord("ru-01", "192.168.88.0/24")},
+		},
+	})
+	if !result.Conflict {
+		t.Fatalf("non-site-router route owner was accepted: %+v", result)
+	}
+}
