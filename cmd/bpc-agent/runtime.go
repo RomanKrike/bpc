@@ -16,6 +16,27 @@ type pathSwitchEvent struct {
 	ToNode   string
 }
 
+// Cross-node switches are edge-triggered for the transport but level-triggered
+// for the overlay: only the newest selected Public Node matters. Keep a
+// one-element mailbox and replace a stale notification instead of dropping the
+// newest rehandshake request during a rapid failover/recovery burst.
+func publishLatestPathSwitch(ch chan pathSwitchEvent, event pathSwitchEvent) bool {
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- event:
+		return false
+	default:
+	}
+	select {
+	case <-ch:
+	default:
+	}
+	ch <- event
+	return true
+}
+
 type runtimeWorker struct {
 	fingerprint string
 	cancel      context.CancelFunc
@@ -85,7 +106,7 @@ func (s *runtimeSupervisor) apply(parent context.Context, cfg agentctl.RuntimeCo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.pathSwitches == nil {
-		s.pathSwitches = make(chan pathSwitchEvent, 8)
+		s.pathSwitches = make(chan pathSwitchEvent, 1)
 	}
 	switches := s.pathSwitches
 	transport := s.runTransport
