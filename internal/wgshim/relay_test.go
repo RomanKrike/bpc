@@ -259,7 +259,7 @@ func TestResolveAdaptiveServersSkipsUnavailableEndpoint(t *testing.T) {
 		}
 		return net.ResolveUDPAddr(network, address)
 	}
-	addrs, names, sources, err := resolveAdaptiveServers(
+	addrs, names, sources, unresolved, err := resolveAdaptiveServers(
 		[]string{"broken.example:24444", "127.0.0.1:24445"},
 		resolver,
 		nil,
@@ -267,8 +267,16 @@ func TestResolveAdaptiveServersSkipsUnavailableEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(addrs) != 1 || len(names) != 1 {
-		t.Fatalf("unexpected resolved set: addrs=%v names=%v", addrs, names)
+	if len(addrs) != 1 || len(names) != 1 || len(unresolved) != 1 {
+		t.Fatalf(
+			"unexpected resolved set: addrs=%v names=%v unresolved=%v",
+			addrs,
+			names,
+			unresolved,
+		)
+	}
+	if unresolved[0] != "broken.example:24444" {
+		t.Fatalf("wrong unresolved endpoint: %q", unresolved[0])
 	}
 	if names[0] != "127.0.0.1:24445" {
 		t.Fatalf("wrong surviving endpoint: %q", names[0])
@@ -282,11 +290,36 @@ func TestResolveAdaptiveServersFailsOnlyWhenAllUnavailable(t *testing.T) {
 	resolver := func(string, string) (*net.UDPAddr, error) {
 		return nil, errors.New("synthetic DNS failure")
 	}
-	if _, _, _, err := resolveAdaptiveServers(
+	if _, _, _, _, err := resolveAdaptiveServers(
 		[]string{"ru-01.example:24444", "ru-02.example:24444"},
 		resolver,
 		nil,
 	); err == nil {
 		t.Fatal("all unavailable endpoints must fail startup")
+	}
+}
+
+
+func TestWaitForAdaptiveServerRecovery(t *testing.T) {
+	attempts := 0
+	resolver := func(network, address string) (*net.UDPAddr, error) {
+		attempts++
+		if attempts < 2 {
+			return nil, errors.New("synthetic DNS failure")
+		}
+		return net.ResolveUDPAddr(network, "127.0.0.1:24445")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if !waitForAdaptiveServerRecovery(
+		ctx,
+		[]string{"ru-02.example:24444"},
+		5*time.Millisecond,
+		resolver,
+	) {
+		t.Fatal("recovered standby endpoint was not detected")
+	}
+	if attempts < 2 {
+		t.Fatalf("resolver was not retried: attempts=%d", attempts)
 	}
 }
