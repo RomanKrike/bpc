@@ -58,8 +58,9 @@ type AdaptiveClientConfig struct {
 	StatsInterval    time.Duration
 	ProbeTimeout     time.Duration
 	SwitchThreshold  time.Duration
-	ProbeInterval    time.Duration
-	Policy           PathPolicy
+	ProbeInterval       time.Duration
+	ResolveRetryInterval time.Duration
+	Policy              PathPolicy
 	OnEndpointReport func(EndpointReport)
 }
 
@@ -79,14 +80,16 @@ func resolveAdaptiveServers(
 	servers []string,
 	resolver adaptiveUDPResolver,
 	logger *log.Logger,
-) ([]*net.UDPAddr, []string, map[string]string, error) {
+) ([]*net.UDPAddr, []string, map[string]string, []string, error) {
 	serverAddrs := make([]*net.UDPAddr, 0, len(servers))
 	serverNames := make([]string, 0, len(servers))
 	serverSources := make(map[string]string, len(servers))
+	unresolved := make([]string, 0, len(servers))
 	seen := map[string]struct{}{}
 	for _, raw := range servers {
 		addr, err := resolver("udp", raw)
 		if err != nil {
+			unresolved = append(unresolved, raw)
 			if logger != nil {
 				logger.Printf("adaptive endpoint unavailable endpoint=%s error=%v", raw, err)
 			}
@@ -105,12 +108,40 @@ func resolveAdaptiveServers(
 		serverSources[key] = raw
 	}
 	if len(serverAddrs) == 0 {
-		return nil, nil, nil, fmt.Errorf(
+		return nil, nil, nil, unresolved, fmt.Errorf(
 			"adaptive client has no resolvable servers (%d configured)",
 			len(servers),
 		)
 	}
-	return serverAddrs, serverNames, serverSources, nil
+	return serverAddrs, serverNames, serverSources, unresolved, nil
+}
+
+func waitForAdaptiveServerRecovery(
+	ctx context.Context,
+	unresolved []string,
+	interval time.Duration,
+	resolver adaptiveUDPResolver,
+) bool {
+	if len(unresolved) == 0 {
+		return false
+	}
+	if interval <= 0 {
+		interval = 5 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+			for _, raw := range unresolved {
+				if _, err := resolver("udp", raw); err == nil {
+					return true
+				}
+			}
+		}
+	}
 }
 
 func RunClient(ctx context.Context, cfg ClientConfig) error {
@@ -206,7 +237,21 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	return <-errCh
 }
 
+var errAdaptiveEndpointPoolChanged = errors.New("adaptive endpoint pool changed")
+
 func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
+	for {
+		err := runAdaptiveClientOnce(ctx, cfg)
+		if ctx.Err() != nil || !errors.Is(err, errAdaptiveEndpointPoolChanged) {
+			return err
+		}
+		if cfg.Logger != nil {
+			cfg.Logger.Printf("adaptive endpoint DNS recovered; rebuilding path pool")
+		}
+	}
+}
+
+func runAdaptiveClientOnce(ctx context.Context, cfg AdaptiveClientConfig) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -223,6 +268,9 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	if cfg.ProbeInterval <= 0 {
 		cfg.ProbeInterval = 250 * time.Millisecond
 	}
+	if cfg.ResolveRetryInterval <= 0 {
+		cfg.ResolveRetryInterval = 5 * time.Second
+	}
 	if cfg.Policy.MinimumImprovement <= 0 {
 		cfg.Policy.MinimumImprovement = cfg.SwitchThreshold
 	}
@@ -230,7 +278,7 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	if err != nil {
 		return fmt.Errorf("resolve local listen address: %w", err)
 	}
-	serverAddrs, serverNames, serverSources, err := resolveAdaptiveServers(
+	serverAddrs, serverNames, serverSources, unresolved, err := resolveAdaptiveServers(
 		cfg.Servers,
 		net.ResolveUDPAddr,
 		cfg.Logger,
@@ -271,13 +319,17 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		selectedMu.Lock()
 		selected = next
 		selectedMu.Unlock()
+		paths := manager.Snapshot()
+		for _, endpoint := range unresolved {
+			paths = append(paths, PathHealth{Endpoint: endpoint, State: "FAILED"})
+		}
 		report := EndpointReport{
 			Selected:  serverNames[next],
 			RTT:       rtt,
 			Reachable: reachable,
-			Total:     len(serverNames),
+			Total:     len(serverNames) + len(unresolved),
 			Switched:  switched,
-			Paths:     manager.Snapshot(),
+			Paths:     paths,
 		}
 		if cfg.OnEndpointReport != nil {
 			cfg.OnEndpointReport(report)
@@ -305,7 +357,23 @@ func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 		_ = outerConn.Close()
 	}()
 
-	errCh := make(chan error, 3)
+	errCh := make(chan error, 4)
+	if len(unresolved) > 0 {
+		go func() {
+			if !waitForAdaptiveServerRecovery(
+				runCtx,
+				unresolved,
+				cfg.ResolveRetryInterval,
+				net.ResolveUDPAddr,
+			) {
+				return
+			}
+			select {
+			case errCh <- errAdaptiveEndpointPoolChanged:
+			case <-runCtx.Done():
+			}
+		}()
+	}
 
 	go func() {
 		buf := make([]byte, 65535)
