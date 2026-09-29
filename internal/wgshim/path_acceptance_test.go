@@ -58,11 +58,13 @@ func (m *trafficMeasurement) receive(fault time.Time) {
 // relay endpoints, not mocked packets. Both relays terminate at the SAME live
 // overlay destination. It does not establish independent gateway/NAT HA, VPS
 // reboot behavior or Windows Wintun acceptance.
-func TestWireGuardPathFailoverTraffic(t *testing.T) { runTrafficAcceptance(t, false) }
+func TestWireGuardPathFailoverTraffic(t *testing.T) { runTrafficAcceptance(t, false, false) }
 
-func TestIndependentNodesPreserveRoutedTCP(t *testing.T) { runTrafficAcceptance(t, true) }
+func TestIndependentNodesPreserveRoutedTCP(t *testing.T) { runTrafficAcceptance(t, true, false) }
 
-func runTrafficAcceptance(t *testing.T, independent bool) {
+func TestIndependentNodesMakeBeforeBreak(t *testing.T) { runTrafficAcceptance(t, true, true) }
+
+func runTrafficAcceptance(t *testing.T, independent, planned bool) {
 	if testing.Short() {
 		t.Skip("real transport acceptance")
 	}
@@ -154,11 +156,29 @@ func runTrafficAcceptance(t *testing.T, independent bool) {
 			_ = RunMultiServer(relayCtx, MultiServerConfig{Listen: endpoint, Target: targets[i], LoadPeers: func() (map[string]MultiServerPeer, error) { return map[string]MultiServerPeer{"device": peer}, nil }})
 		}()
 	}
+	var slowOld *acceptanceProbeProxy
+	if planned {
+		slowOld = newAcceptanceProbeProxy(t, endpoints[0], codec(rxKey), 0)
+		defer slowOld.Close()
+		endpoints[0] = slowOld.conn.LocalAddr().String()
+		slowHandshake := newAcceptanceProbeProxy(t, endpoints[1], codec(rxKey), 800*time.Millisecond)
+		defer slowHandshake.Close()
+		endpoints[1] = slowHandshake.conn.LocalAddr().String()
+	}
 	local := reserve()
 	reports := make(chan EndpointReport, 100)
 	go func() {
-		_ = RunAdaptiveClient(ctx, AdaptiveClientConfig{LocalListen: local, Servers: endpoints, TX: codec(txKey), RX: codec(rxKey), OnEndpointReport: func(r EndpointReport) {
-			if independent && r.Switched {
+		_ = RunAdaptiveClient(ctx, AdaptiveClientConfig{WireGuardHandoff: true, LocalListen: local, Servers: endpoints, TX: codec(txKey), RX: codec(rxKey), OnEndpointReport: func(r EndpointReport) {
+			if independent && r.Switched && r.PreserveSession {
+				var key device.NoisePublicKey
+				raw, _ := hex.DecodeString(serverPub)
+				copy(key[:], raw)
+				if peer := client.LookupPeer(key); peer != nil {
+					if e := peer.SendHandshakeInitiation(false); e != nil {
+						t.Error(e)
+					}
+				}
+			} else if independent && r.Switched {
 				if e := client.IpcSet(fmt.Sprintf("replace_peers=true\npublic_key=%s\nendpoint=%s\nallowed_ip=%s/32\npersistent_keepalive_interval=1\n", serverPub, local, serverIP)); e != nil {
 					t.Error(e)
 				}
@@ -399,15 +419,25 @@ warmed:
 	faultMu.Lock()
 	fault = time.Now()
 	faultMu.Unlock()
-	stops[0]()
-	if independent {
-		server.Close()
+	var originalPeer *device.Peer
+	var peerKey device.NoisePublicKey
+	if planned {
+		raw, _ := hex.DecodeString(serverPub)
+		copy(peerKey[:], raw)
+		originalPeer = client.LookupPeer(peerKey)
+		slowOld.slow.Store(true)
+	} else {
+		stops[0]()
+		if independent {
+			server.Close()
+		}
 	}
 	var switched time.Time
-	deadline := time.After(5 * time.Second)
+	deadline := time.After(12 * time.Second)
 	for switched.IsZero() {
 		select {
 		case r := <-reports:
+
 			if r.Selected == endpoints[1] {
 				switched = time.Now()
 			}
@@ -438,6 +468,26 @@ warmed:
 	}
 	stopTraffic()
 	traffic.Wait()
+	if planned && metrics["udp"].MaxGapMS >= 600 {
+		t.Fatalf("healthy old path stopped carrying data during the 800ms handshake delay: %.1fms", metrics["udp"].MaxGapMS)
+	}
+	if planned && (originalPeer == nil || client.LookupPeer(peerKey) != originalPeer) {
+		t.Fatal("planned handoff destroyed the existing WireGuard peer")
+	}
+	if planned {
+		confirmed := false
+		for len(reports) > 0 {
+			r := <-reports
+			for _, p := range r.Paths {
+				if p.Endpoint == endpoints[1] && p.State == "ACTIVE" {
+					confirmed = true
+				}
+			}
+		}
+		if !confirmed {
+			t.Fatal("new responder did not confirm transport data")
+		}
+	}
 	for name, m := range metrics {
 		m.Lost = m.Sent - m.Received
 		m.Survived = m.Error == "" && m.Received > postSwitch[name]
@@ -449,7 +499,12 @@ warmed:
 	if stableUAPI() != overlayBefore || overlayAddressAfter != overlayAddressBefore {
 		t.Fatal("overlay identity or routes changed during failover")
 	}
-	report := map[string]any{"topology": "two WGShim relays, one unchanged WireGuard destination, localhost", "failover_ms": float64(switched.Sub(fault)) / float64(time.Millisecond), "overlay_ip_before": overlayAddressBefore, "overlay_ip_after": overlayAddressAfter, "wireguard_identity_and_routes_unchanged": true, "traffic": metrics, "gateway_failure_tested": independent}
+	report := map[string]any{"topology": "two WGShim relays, one unchanged WireGuard destination, localhost", "failover_ms": float64(switched.Sub(fault)) / float64(time.Millisecond), "overlay_ip_before": overlayAddressBefore, "overlay_ip_after": overlayAddressAfter, "wireguard_identity_and_routes_unchanged": true, "traffic": metrics, "gateway_failure_tested": independent && !planned, "planned_migration": planned}
+	if planned {
+		report["selection_delay_ms"] = report["failover_ms"]
+		delete(report, "failover_ms")
+		report["injected_handshake_delay_ms"] = 800
+	}
 	if independent {
 		report["topology"] = "two independent WireGuard gateways, shared routed destination, no NAT"
 	}
@@ -458,6 +513,9 @@ warmed:
 	envName := "BPC_PATH_REPORT"
 	if independent {
 		envName = "BPC_ROUTED_PATH_REPORT"
+	}
+	if planned {
+		envName = "BPC_MIGRATION_REPORT"
 	}
 	if file := os.Getenv(envName); file != "" {
 		if e := os.WriteFile(file, append(raw, '\n'), 0600); e != nil {

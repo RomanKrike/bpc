@@ -12,8 +12,9 @@ import (
 )
 
 type pathSwitchEvent struct {
-	FromNode string
-	ToNode   string
+	PreserveSession bool
+	FromNode        string
+	ToNode          string
 }
 
 // Cross-node switches are edge-triggered for the transport but level-triggered
