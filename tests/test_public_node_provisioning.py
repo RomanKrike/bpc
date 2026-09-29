@@ -220,3 +220,113 @@ def test_controller_discovers_paths_only_from_live_matching_public_nodes(tmp_pat
     encoded = json.dumps(paths)
     assert "wrong.example" not in encoded
     assert "inactive.example" not in encoded
+
+
+def test_public_node_path_failure_preserves_device_access_and_routes(tmp_path):
+    """Path availability is transport state; Controller identity/policy must not move with it."""
+    import bpc_access
+    from test_node_join_api import control_server
+
+    overlay = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    control = tmp_path
+    key_dir = tmp_path / "agent" / "wgshim-keys"
+    config = {
+        "config_version": 7,
+        "wgshim_server": "ru-01.example:24444",
+        "wgshim_servers": ["ru-01.example:24444", "ru-02.example:24444"],
+        "wgshim_listen": "127.0.0.1:24443",
+        "wgshim_target": "127.0.0.1:51820",
+        "padding_min": 0,
+        "padding_max": 32,
+        "wireguard_interface": "bpcag0",
+        "wireguard_subnet": "10.253.0.0/24",
+        "wireguard_server_address": "10.253.0.1/24",
+        "wireguard_server_public_key": overlay,
+        "wireguard_mtu": 1420,
+        "wireguard_keepalive": 25,
+        "wireguard_allowed_ips": ["10.253.0.1/32"],
+        "wgshim_key_dir": str(key_dir),
+    }
+    (control / "config.json").write_text(json.dumps(config), encoding="utf-8")
+
+    device = {
+        "id": "device-roman",
+        "device_id": "device-roman",
+        "user_id": "user-roman",
+        "name": "pc004",
+        "wireguard_public_key": "device-wg-key",
+        "wireguard_address": "10.253.0.2/32",
+        "wgshim_psk": "transport-secret",
+        "enabled": True,
+        "revoked": False,
+        "revoked_at": None,
+    }
+    device_path = control / "devices" / "device-roman.json"
+    device_path.parent.mkdir()
+    device_path.write_text(json.dumps(device, sort_keys=True), encoding="utf-8")
+    bpc_access.set_access(
+        control,
+        "user",
+        "user-roman",
+        "allow",
+        ["192.168.88.0/24", "10.77.0.0/16"],
+        now=100,
+    )
+    access_path = control / "access" / "user-user-roman.json"
+
+    nodes = control / "nodes"
+    nodes.mkdir()
+    now = int(time.time())
+
+    def write_node(name, host, port, *, active=True):
+        (nodes / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "node_id": name,
+                    "name": name,
+                    "last_seen": now,
+                    "roles": {"gateway": True, "relay": True},
+                    "services": {
+                        "gateway": "active" if active else "inactive",
+                        "relay": "active" if active else "inactive",
+                    },
+                    "endpoints": [{"host": host, "public": True, "enabled": True}],
+                    "transport": {
+                        "udp_ports": [port],
+                        "overlay_public_key": overlay,
+                    },
+                },
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
+
+    write_node("ru-01", "ru-01.example", 31001)
+    write_node("ru-02", "ru-02.example", 32001)
+
+    handler = object.__new__(control_server.ControlHandler)
+    handler.server = SimpleNamespace(state_dir=str(control))
+
+    device_before = device_path.read_bytes()
+    access_before = access_path.read_bytes()
+    before = handler._config_for_device(json.loads(device_before))
+    assert {path["node"] for path in before["paths"]} >= {"ru-01", "ru-02"}
+    assert before["wireguard"]["address"] == "10.253.0.2/32"
+    assert before["wireguard"]["allowed_ips"] == [
+        "10.253.0.1/32",
+        "10.77.0.0/16",
+        "192.168.88.0/24",
+    ]
+
+    # Model complete loss of the currently-active Public Node. Selection itself
+    # is client-side; the Controller should only stop advertising the failed
+    # authenticated Node path, never re-issue Device/Access/overlay identity.
+    write_node("ru-01", "ru-01.example", 31001, active=False)
+    after = handler._config_for_device(json.loads(device_path.read_bytes()))
+
+    assert any(path["node"] == "ru-02" for path in after["paths"])
+    assert device_path.read_bytes() == device_before
+    assert access_path.read_bytes() == access_before
+    assert after["wireguard"]["address"] == before["wireguard"]["address"]
+    assert after["wireguard"]["peer_public_key"] == before["wireguard"]["peer_public_key"]
+    assert after["wireguard"]["allowed_ips"] == before["wireguard"]["allowed_ips"]
