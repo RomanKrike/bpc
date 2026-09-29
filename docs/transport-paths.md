@@ -107,9 +107,12 @@ Both pre-existing TCP sockets survived without reconnecting: the stream had a
 maximum 3,632 ms response gap and the RDP-like exchange an 855 ms gap. The largest
 UDP response gap was 681 ms. These are single-run localhost observations, not
 latency guarantees. TCP counts represent application messages, not packet loss.
-The overlay address and WireGuard profile remained unchanged. The topology has
-no controller-issued Device or Access object, so it does not independently prove
-those control-plane identities remain unchanged on live Nodes.
+The overlay address and WireGuard profile remained unchanged. Separate
+Controller-side acceptance now changes Public Node availability while asserting
+that the controller-issued Device record, Access record, overlay address,
+canonical peer key and Access-derived AllowedIPs remain unchanged. Together the
+tests cover the transport handoff and the control-plane identity invariants,
+while real VPS timing remains an operational measurement.
 
 ### Real Windows / Public Node measurement
 
@@ -158,6 +161,49 @@ Both relays in this older measurement lead to ONE surviving WireGuard
 destination; use the independent Public Node acceptance above for the
 two-responder case. Linux conntrack/NAT state is still not replicated between
 Nodes, so flows that depend on gateway-local state may not survive an independent
-gateway failure. Production multi-VPS acceptance, systemd restart, reboot and
-Windows Wintun measurements are still outstanding; this is not yet a zero-loss
-failover claim.
+gateway failure. Production multi-VPS and Windows Wintun measurements are still
+operational acceptance rather than CI guarantees; this is not a zero-loss claim.
+
+## Restart, update and reboot regression
+
+A Public Node reboot recreates the BPC WireGuard kernel interface. Dynamic peer
+endpoints are therefore kernel state and cannot literally survive a host reboot.
+The Node runtime now reconciles replicated Device peers and Access state
+immediately after starting its transport roles and before the first remote
+heartbeat. This removes Controller availability from the reboot recovery path;
+continuous client traffic can then relearn the peer endpoint through the restored
+peer.
+
+Routine dataplane reconciliation and update keep an already-live BPC-owned
+WireGuard interface in place. They update the interface private key, listen port,
+MTU/address when necessary and do not restart `wg-quick` or remove peers on the
+live path. Restarting only `bpc-control.service` or
+`bpc-agent-relay.service` likewise does not recreate the WireGuard interface.
+
+Use the root-only operational harness on a Public Node:
+
+```bash
+sudo ./scripts/acceptance-node-restart-regression.sh control
+sudo ./scripts/acceptance-node-restart-regression.sh transport
+sudo ./scripts/acceptance-node-restart-regression.sh update
+```
+
+Each stage snapshots canonical Node identity, overlay identity, Device
+identity/address material, Access, routes, WireGuard peer set, AllowedIPs and
+learned endpoint presence before and after the action. A JSON report is written
+to `/tmp/bpc-restart-regression.json` by default.
+
+A real reboot is intentionally two-phase:
+
+```bash
+sudo ./scripts/acceptance-node-restart-regression.sh prepare-reboot
+sudo reboot
+# keep continuous client/BPC traffic running while the Node comes back
+sudo ./scripts/acceptance-node-restart-regression.sh verify-reboot
+```
+
+The reboot verifier waits for the BPC WireGuard/Node/relay services, gives the
+startup local reconcile a bounded window to restore peers, and then checks the
+same identity/policy invariants. Endpoint presence after reboot assumes client
+traffic is active so WireGuard has a packet from which to relearn the remote
+endpoint.
