@@ -9,8 +9,9 @@ import json
 import os
 import secrets
 import time
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 DEFAULT_TELEMETRY_TTL = 90
@@ -133,7 +134,7 @@ def _link_pair(a: str, b: str) -> tuple[str, str]:
 def topology_link_id(a: str, b: str) -> str:
     left, right = _link_pair(a, b)
     return hashlib.sha256(
-        f"{left}\0{right}".encode("utf-8")
+        f"{left}\0{right}".encode()
     ).hexdigest()[:32]
 
 
@@ -518,7 +519,7 @@ def normalize_links(
         link_id = str(item.get("id", "")).strip()
         if not link_id:
             link_id = hashlib.sha256(
-                f"{node_id}\0{target}".encode("utf-8")
+                f"{node_id}\0{target}".encode()
             ).hexdigest()[:24]
         key = (node_id, target)
         if key in seen:
@@ -818,7 +819,7 @@ def _candidate_from_links(
         last_seen = observed if last_seen == 0 else min(last_seen, observed)
     loss_percent = (1.0 - survival) * 100.0
     path_id = hashlib.sha256(
-        f"{owner}\0{cidr}\0{'|'.join(hops)}".encode("utf-8")
+        f"{owner}\0{cidr}\0{'|'.join(hops)}".encode()
     ).hexdigest()[:24]
     return {
         "id": path_id,
