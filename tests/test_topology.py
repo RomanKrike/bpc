@@ -229,6 +229,7 @@ def test_topology_enumerates_direct_and_multi_hop_without_loops(tmp_path: Path) 
     hop_sets = [item["hops"] for item in paths]
     assert [ru02_id, home_id] in hop_sets
     assert [ru02_id, ru01_id, home_id] in hop_sets
+    assert any(len(hops) == 3 and hops[0] == ru02_id and hops[-1] == home_id for hops in hop_sets)
     assert all(len(hops) == len(set(hops)) for hops in hop_sets)
     assert all(len(hops) <= topology.MAX_PATH_HOPS for hops in hop_sets)
 
