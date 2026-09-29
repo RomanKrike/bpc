@@ -224,8 +224,8 @@ def test_controller_discovers_paths_only_from_live_matching_public_nodes(tmp_pat
 
 def test_public_node_path_failure_preserves_device_access_and_routes(tmp_path):
     """Path availability is transport state; Controller identity/policy must not move with it."""
-    from test_node_join_api import control_server
     import bpc_access
+    from test_node_join_api import control_server
 
     overlay = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
     control = tmp_path
