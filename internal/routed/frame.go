@@ -220,7 +220,7 @@ func ValidateFrameForNode(
 		return Path{}, fmt.Errorf("hop list does not match controller-approved path")
 	}
 
-	_, destination, err := ParseIPv4Endpoints(frame.Payload)
+	source, destination, err := ParseIPv4Endpoints(frame.Payload)
 	if err != nil {
 		return Path{}, err
 	}
@@ -232,7 +232,15 @@ func ValidateFrameForNode(
 		if err != nil || !overlay.Contains(destination) {
 			return Path{}, fmt.Errorf("return packet destination is outside overlay")
 		}
+		owned, ok := config.RouteFor(source)
+		if !ok || owned.OwnerNodeID != frame.OwnerNodeID || owned.CIDR != path.CIDR {
+			return Path{}, fmt.Errorf("return packet source is outside the route owner's approved CIDR")
+		}
 		return path, nil
+	}
+	overlay, err := netip.ParsePrefix(config.OverlaySubnet)
+	if err != nil || !overlay.Contains(source) {
+		return Path{}, fmt.Errorf("forward packet source is outside overlay")
 	}
 
 	prefix, err := netip.ParsePrefix(path.CIDR)
