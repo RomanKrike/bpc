@@ -402,6 +402,12 @@ def test_controller_runtime_stages_gateway_dataplane_reconciler() -> None:
     assert "sync_access_firewall(state_dir / \"control\")" in NODE_ENROLLMENT
 
 
+def test_status_json_exposes_transport_path_telemetry() -> None:
+    assert 'Transport     *transportTelemetry `json:"transport,omitempty"`' in AGENT
+    assert "uiTransportStatusPath()" in AGENT
+    assert "payload.Transport = &transportStatus" in AGENT
+
+
 def test_windows_rehandshakes_only_after_cross_node_transport_switch() -> None:
     assert "pathSwitches <-chan pathSwitchEvent" in TUNNEL
     assert "case event := <-pathSwitches:" in TUNNEL
