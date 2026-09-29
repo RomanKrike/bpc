@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.2
+
+### Fixed
+- Preserve the existing WireGuard peer and data path during healthy cross-node migration; initiate a new handshake before ending the old data overlap. Emergency failover still immediately rehandshakes when the old Node has failed.
+- Handshake replies and WGShim probes no longer confirm overlay data readiness in the Agent.
+
+### Acceptance
+- Two independent gateways, shared routed destination, no NAT: the planned migration test injects an 800 ms handshake-response delay and verifies ongoing traffic through the old gateway.
+- Recorded race-enabled run: both persistent TCP flows survived, no ICMP/UDP loss, maximum UDP gap 204 ms and TCP stream gap 206 ms. The five-second selection stability interval is separate from application interruption.
+- Real Windows/VPS and NAT-dependent session continuity remain unverified; this release does not claim seamless production failover.
+
 ## 0.20.1
 
 ### Fixed

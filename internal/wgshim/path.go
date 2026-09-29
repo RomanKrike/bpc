@@ -253,3 +253,18 @@ func (m *PathManager) MarkSent(index int, now time.Time) {
 		m.migrationStarted = now
 	}
 }
+
+// MigrationFallback returns the still-working previous endpoint while the new
+// path is unconfirmed. Failed paths must never delay emergency handoff.
+func (m *PathManager) MigrationFallback() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.migratingFrom < 0 {
+		return -1
+	}
+	p := m.paths[m.migratingFrom]
+	if !p.Reachable || p.ConsecutiveFailures > 0 {
+		return -1
+	}
+	return m.migratingFrom
+}

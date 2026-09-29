@@ -1,0 +1,44 @@
+{
+  "gateway_failure_tested": false,
+  "overlay_ip_after": "10.253.0.2",
+  "overlay_ip_before": "10.253.0.2",
+  "planned_migration": true,
+  "topology": "two independent WireGuard gateways, shared routed destination, no NAT",
+  "traffic": {
+    "ping": {
+      "unit": "ICMP_exchanges",
+      "sent": 417,
+      "received": 417,
+      "lost": 0,
+      "max_gap_ms": 205.353795,
+      "survived": true
+    },
+    "rdp_like_tcp": {
+      "unit": "application_messages",
+      "sent": 175,
+      "received": 175,
+      "lost": 0,
+      "max_gap_ms": 194.235601,
+      "survived": true
+    },
+    "tcp_stream": {
+      "unit": "application_messages",
+      "sent": 434,
+      "received": 434,
+      "lost": 0,
+      "max_gap_ms": 206.312933,
+      "survived": true
+    },
+    "udp": {
+      "unit": "datagrams",
+      "sent": 465,
+      "received": 465,
+      "lost": 0,
+      "max_gap_ms": 203.910088,
+      "survived": true
+    }
+  },
+  "wireguard_identity_and_routes_unchanged": true,
+  "selection_delay_ms": 5415.962205,
+  "injected_handshake_delay_ms": 800
+}

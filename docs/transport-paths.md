@@ -24,11 +24,20 @@ The canonical overlay private key is replicated only in controller state and is
 never returned in Device runtime configuration.
 
 A UDP-port switch inside one Public Node leaves the embedded WireGuard peer
-untouched. A switch between different Public Nodes keeps the Wintun interface,
-overlay address and routes alive, but reapplies the peer with
-`replace_peers=true` so wireguard-go discards the responder-specific ephemeral
-session state and can immediately establish a fresh handshake through the newly
-selected Node.
+untouched. Cross-node migration keeps Wintun, its address and routes alive.
+For a healthy old path the Agent initiates a new WireGuard handshake without
+removing the existing peer or ephemeral session. During verification, WGShim
+sends encrypted WireGuard data to both responders and sends handshakes only to
+the selected new responder. Only the responder with the matching ephemeral key
+can accept those data packets; WireGuard replay protection prevents duplicate
+application delivery. Return transport data from the new path ends the overlap.
+Handshake replies and WGShim probes alone do not end it.
+
+An already-failed old path uses the immediate `replace_peers=true` rehandshake.
+There is no working old session to preserve in that case. WireGuard's existing
+handshake rate limit remains enforced. If a recent rekey prevents immediate
+planned negotiation, the bounded verification timeout can roll selection back;
+BPC does not bypass the crypto implementation's rate limits.
 
 WGShim uses the existing authenticated probe wire format. Internal transport
 status includes each path's reachability, smoothed RTT and jitter, rolling probe
@@ -113,6 +122,28 @@ that the controller-issued Device record, Access record, overlay address,
 canonical peer key and Access-derived AllowedIPs remain unchanged. Together the
 tests cover the transport handoff and the control-plane identity invariants,
 while real VPS timing remains an operational measurement.
+
+### Healthy make-before-break acceptance
+
+```bash
+BPC_MIGRATION_REPORT=/tmp/bpc-migration-report.json go test -race ./internal/wgshim \
+  -run TestIndependentNodesMakeBeforeBreak -count=1 -v
+```
+
+Two independent gateway responders reach a shared routed application stack.
+The test raises the old path's authenticated probe RTT while leaving its data
+path working, then delays the new responder's handshake reply by 800 ms.
+The existing peer must remain intact, the new responder must confirm transport
+data, and the UDP response gap must stay below 600 ms during negotiation. Existing
+TCP sockets are never reopened. This specifically tests overlap, unlike an
+emergency failure test where the old gateway is already unavailable.
+
+[Recorded race-enabled measurement](acceptance/healthy-migration-localhost.json):
+no lost ICMP exchanges or UDP datagrams; both existing TCP sockets survived.
+The largest UDP response gap was 204 ms and the TCP stream gap 206 ms. Selection
+waited 5.42 seconds, including the configured five-second stability interval;
+that is a decision delay, not an application outage. This is a localhost test
+with an injected handshake delay, not a claim of zero-loss VPS migration.
 
 ### Real Windows / Public Node measurement
 

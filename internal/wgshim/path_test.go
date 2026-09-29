@@ -47,7 +47,13 @@ func TestPathSelectorHysteresisAndStableDuration(t *testing.T) {
 	if m.Snapshot()[1].State != "VERIFYING" {
 		t.Fatal("probe incorrectly confirms traffic")
 	}
+	if m.MigrationFallback() != 0 {
+		t.Fatal("healthy old path lost before new traffic confirmation")
+	}
 	m.ConfirmTraffic("ru-02", now.Add(6*time.Second))
+	if m.MigrationFallback() != -1 {
+		t.Fatal("overlap continued after new path confirmation")
+	}
 	if m.Snapshot()[1].State != "ACTIVE" || m.Snapshot()[0].State != "STANDBY" {
 		t.Fatal("old path not retained")
 	}
@@ -64,6 +70,9 @@ func TestPathFailureUsesWarmStandbyAndRecoveryCooldown(t *testing.T) {
 	}
 	if active, changed := m.Select(now); !changed || active != 1 {
 		t.Fatal("warm standby not selected after complete active probe failure")
+	}
+	if m.MigrationFallback() != -1 {
+		t.Fatal("failed old path incorrectly requested session preservation")
 	}
 	m.ConfirmTraffic("ru-02", now)
 	m.Observe(0, 1, []time.Duration{time.Millisecond}, now.Add(time.Second))
@@ -92,5 +101,18 @@ func TestPathMigrationRollsBackUnconfirmedTrafficButNotIdle(t *testing.T) {
 	m.MarkSent(1, now.Add(time.Minute))
 	if active, changed := m.Select(now.Add(time.Minute + 3*time.Second)); !changed || active != 0 {
 		t.Fatal("blackhole migration not rolled back")
+	}
+}
+
+func TestOnlyWireGuardDataConfirmsMigration(t *testing.T) {
+	for _, kind := range []byte{1, 2, 3, 4} {
+		packet := make([]byte, 148)
+		packet[0] = kind
+		if isWireGuardTransportData(packet) != (kind == 4) {
+			t.Fatalf("wrong packet classification: %d", kind)
+		}
+	}
+	if isWireGuardTransportData([]byte{4, 0, 0, 0}) {
+		t.Fatal("truncated data confirmed migration")
 	}
 }
