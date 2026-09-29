@@ -50,18 +50,18 @@ type EndpointReport struct {
 }
 
 type AdaptiveClientConfig struct {
-	LocalListen      string
-	Servers          []string
-	TX               *Codec
-	RX               *Codec
-	Logger           *log.Logger
-	StatsInterval    time.Duration
-	ProbeTimeout     time.Duration
-	SwitchThreshold  time.Duration
-	ProbeInterval       time.Duration
+	LocalListen          string
+	Servers              []string
+	TX                   *Codec
+	RX                   *Codec
+	Logger               *log.Logger
+	StatsInterval        time.Duration
+	ProbeTimeout         time.Duration
+	SwitchThreshold      time.Duration
+	ProbeInterval        time.Duration
 	ResolveRetryInterval time.Duration
-	Policy              PathPolicy
-	OnEndpointReport func(EndpointReport)
+	Policy               PathPolicy
+	OnEndpointReport     func(EndpointReport)
 }
 
 type probePending struct {
@@ -237,16 +237,49 @@ func RunClient(ctx context.Context, cfg ClientConfig) error {
 	return <-errCh
 }
 
-var errAdaptiveEndpointPoolChanged = errors.New("adaptive endpoint pool changed")
+type adaptiveEndpointPoolChangedError struct {
+	preferred string
+}
+
+func (e *adaptiveEndpointPoolChangedError) Error() string {
+	return "adaptive endpoint pool changed"
+}
+
+func preferAdaptiveServer(servers []string, preferred string) []string {
+	if preferred == "" || len(servers) < 2 || servers[0] == preferred {
+		return append([]string(nil), servers...)
+	}
+	result := make([]string, 0, len(servers))
+	for _, server := range servers {
+		if server == preferred {
+			result = append(result, server)
+			break
+		}
+	}
+	for _, server := range servers {
+		if server != preferred {
+			result = append(result, server)
+		}
+	}
+	if len(result) != len(servers) {
+		return append([]string(nil), servers...)
+	}
+	return result
+}
 
 func RunAdaptiveClient(ctx context.Context, cfg AdaptiveClientConfig) error {
 	for {
 		err := runAdaptiveClientOnce(ctx, cfg)
-		if ctx.Err() != nil || !errors.Is(err, errAdaptiveEndpointPoolChanged) {
+		var changed *adaptiveEndpointPoolChangedError
+		if ctx.Err() != nil || !errors.As(err, &changed) {
 			return err
 		}
+		cfg.Servers = preferAdaptiveServer(cfg.Servers, changed.preferred)
 		if cfg.Logger != nil {
-			cfg.Logger.Printf("adaptive endpoint DNS recovered; rebuilding path pool")
+			cfg.Logger.Printf(
+				"adaptive endpoint DNS recovered; rebuilding path pool preferred=%s",
+				changed.preferred,
+			)
 		}
 	}
 }
@@ -368,8 +401,13 @@ func runAdaptiveClientOnce(ctx context.Context, cfg AdaptiveClientConfig) error 
 			) {
 				return
 			}
+			index, _ := getSelected()
+			preferred := ""
+			if index >= 0 && index < len(serverNames) {
+				preferred = serverNames[index]
+			}
 			select {
-			case errCh <- errAdaptiveEndpointPoolChanged:
+			case errCh <- &adaptiveEndpointPoolChangedError{preferred: preferred}:
 			case <-runCtx.Done():
 			}
 		}()
