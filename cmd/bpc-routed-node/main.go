@@ -120,7 +120,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 		comment := "bpc-routed-nonat:" + k.interfaceID + ":" + cidr
 		check := []string{
 			"iptables", "-t", "nat", "-C", "POSTROUTING",
-			"-s", previousOverlay,
+			"-s", config.OverlaySubnet,
 			"-d", cidr,
 			"-m", "comment", "--comment", comment,
 			"-j", "ACCEPT",
@@ -253,7 +253,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 			"iptables", "-D", "FORWARD",
 			"-o", k.interfaceID,
 			"-s", cidr,
-			"-d", config.OverlaySubnet,
+			"-d", previousOverlay,
 			"-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED",
 			"-m", "comment", "--comment", outComment,
 			"-j", "ACCEPT",
