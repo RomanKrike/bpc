@@ -805,6 +805,7 @@ def _candidate_from_links(
     cost = sum(float(link.get("cost", 0) or 0) for link in links)
     survival = 1.0
     health = "healthy"
+    uncertainty_penalty = 0.0
     last_seen = 0
     for link in links:
         loss = _bounded_float(
@@ -817,8 +818,10 @@ def _candidate_from_links(
         link_health = str(link.get("health", "unknown"))
         if link_health == "failed":
             health = "failed"
+            uncertainty_penalty += 1_000_000.0
         elif link_health != "healthy" and health != "failed":
             health = "degraded"
+            uncertainty_penalty += 1_000.0
         observed = int(link.get("last_seen", 0) or 0)
         last_seen = observed if last_seen == 0 else min(last_seen, observed)
     loss_percent = (1.0 - survival) * 100.0
@@ -834,7 +837,10 @@ def _candidate_from_links(
         "rtt_ms": round(rtt, 3),
         "loss_percent": round(loss_percent, 3),
         "cost": round(cost, 3),
-        "score": round(cost + rtt + loss_percent * 10.0, 3),
+        "score": round(
+            cost + rtt + loss_percent * 10.0 + uncertainty_penalty,
+            3,
+        ),
         "last_seen": last_seen,
     }
 
@@ -934,7 +940,13 @@ def choose_best_path(
     ]
     if not healthy:
         return None
-    healthy.sort(key=lambda item: (float(item.get("score", 0)), str(item.get("id", ""))))
+    healthy.sort(
+        key=lambda item: (
+            0 if str(item.get("health", "")) == "healthy" else 1,
+            float(item.get("score", 0)),
+            str(item.get("id", "")),
+        )
+    )
     best = healthy[0]
     if current_path_id:
         current = next(
