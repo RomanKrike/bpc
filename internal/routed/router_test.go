@@ -204,9 +204,9 @@ func TestPathFailoverIsImmediateButRecoveryIsSticky(t *testing.T) {
 	}
 
 	mesh.status["home-01"] = LinkStatus{
-		To:      "home-01",
-		Health:  "healthy",
-		RTTMS:   5,
+		To:          "home-01",
+		Health:      "healthy",
+		RTTMS:       5,
 		LossPercent: 0,
 	}
 	selected, err = router.choosePath(
