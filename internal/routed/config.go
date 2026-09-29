@@ -25,15 +25,16 @@ type Enrollment struct {
 }
 
 type RoutingConfig struct {
-	Version         int          `json:"version"`
-	ListenPort      int          `json:"listen_port"`
-	OverlaySubnet   string       `json:"overlay_subnet"`
-	LocalPublic     bool         `json:"local_public"`
-	LocalSiteRouter bool         `json:"local_site_router"`
-	Links           []LinkConfig `json:"links"`
-	Paths           []Path       `json:"paths"`
-	TransitPaths    []Path       `json:"transit_paths"`
-	Routes          []Route      `json:"routes"`
+	Version         int               `json:"version"`
+	ListenPort      int               `json:"listen_port"`
+	OverlaySubnet   string            `json:"overlay_subnet"`
+	LocalPublic     bool              `json:"local_public"`
+	LocalSiteRouter bool              `json:"local_site_router"`
+	NodeNames       map[string]string `json:"node_names"`
+	Links           []LinkConfig      `json:"links"`
+	Paths           []Path            `json:"paths"`
+	TransitPaths    []Path            `json:"transit_paths"`
+	Routes          []Route           `json:"routes"`
 }
 
 type LinkConfig struct {
