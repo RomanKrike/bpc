@@ -49,9 +49,17 @@ standbys; changing selection does not recreate the overlay interface.
 The Agent supervises transport and overlay separately. Controller metadata does
 not restart either. Changing the configured path pool currently restarts the
 transport listener, while preserving the overlay. Switching within an existing
-pool keeps both running. Cross-node rehandshake notifications use a one-element
-latest-value mailbox: rapid failover/recovery can coalesce obsolete intermediate
-events, but the newest selected Public Node is not silently dropped.
+pool keeps both running. If one configured hostname cannot be resolved at
+startup, resolvable paths continue operating and the missing path is reported as
+failed. DNS is retried periodically; when it recovers, WGShim rebuilds only the
+transport path pool while preserving the current active endpoint as the initial
+choice. The recovered Node therefore returns as a standby instead of silently
+stealing an established cross-node session. The WireGuard overlay is not
+recreated.
+
+Cross-node rehandshake notifications use a one-element latest-value mailbox:
+rapid failover/recovery can coalesce obsolete intermediate events, but the newest
+selected Public Node is not silently dropped.
 
 Replicated Device and Access state is applied to gateway dataplanes both during
 Node heartbeat and through a local systemd path watcher. Changes under
