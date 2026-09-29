@@ -66,7 +66,6 @@ from bpc_node_enrollment import (
     node_heartbeat,
     node_telemetry,
 )
-
 from bpc_topology import merge_node_telemetry  # noqa: E402
 
 from bpc_connect.compat.device import (
