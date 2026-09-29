@@ -81,8 +81,7 @@ case "${scope}" in
   status)
     require_file "${ENROLL}" "BPC Node enrollment helper"
     shift
-    python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" status || true
-    exec "${BPC_ROOT}/current/deploy/bpc-node.sh" status
+    exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" status
     ;;
   leave)
     require_file "${ENROLL}" "BPC Node enrollment helper"
