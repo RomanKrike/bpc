@@ -58,7 +58,11 @@ func (m *trafficMeasurement) receive(fault time.Time) {
 // relay endpoints, not mocked packets. Both relays terminate at the SAME live
 // overlay destination. It does not establish independent gateway/NAT HA, VPS
 // reboot behavior or Windows Wintun acceptance.
-func TestWireGuardPathFailoverTraffic(t *testing.T) {
+func TestWireGuardPathFailoverTraffic(t *testing.T) { runTrafficAcceptance(t, false) }
+
+func TestIndependentNodesPreserveRoutedTCP(t *testing.T) { runTrafficAcceptance(t, true) }
+
+func runTrafficAcceptance(t *testing.T, independent bool) {
 	if testing.Short() {
 		t.Skip("real transport acceptance")
 	}
@@ -96,7 +100,14 @@ func TestWireGuardPathFailoverTraffic(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := device.NewDevice(clientTun, &acceptanceBind{}, device.NewLogger(device.LogLevelError, "client "))
-	server := device.NewDevice(serverTun, &acceptanceBind{}, device.NewLogger(device.LogLevelError, "server "))
+	serverInput := serverTun
+	var lan *acceptanceLAN
+	if independent {
+		lan = newAcceptanceLAN(serverTun)
+		defer lan.Close()
+		serverInput = lan.ports[0]
+	}
+	server := device.NewDevice(serverInput, &acceptanceBind{}, device.NewLogger(device.LogLevelError, "server "))
 	defer client.Close()
 	defer server.Close()
 	target := reserve()
@@ -106,6 +117,20 @@ func TestWireGuardPathFailoverTraffic(t *testing.T) {
 	}
 	if err = server.Up(); err != nil {
 		t.Fatal(err)
+	}
+	targets := []string{target, target}
+	if independent {
+		target2 := reserve()
+		targets[1] = target2
+		_, port2, _ := net.SplitHostPort(target2)
+		standby := device.NewDevice(lan.ports[1], &acceptanceBind{}, device.NewLogger(device.LogLevelError, "standby "))
+		defer standby.Close()
+		if e := standby.IpcSet(fmt.Sprintf("private_key=%s\nlisten_port=%s\npublic_key=%s\nallowed_ip=%s/32\n", serverKey, port2, clientPub, clientIP)); e != nil {
+			t.Fatal(e)
+		}
+		if e := standby.Up(); e != nil {
+			t.Fatal(e)
+		}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -126,13 +151,19 @@ func TestWireGuardPathFailoverTraffic(t *testing.T) {
 		stops[i] = stop
 		peer := MultiServerPeer{Fingerprint: "test-device", RX: codec(txKey), TX: codec(rxKey)}
 		go func() {
-			_ = RunMultiServer(relayCtx, MultiServerConfig{Listen: endpoint, Target: target, LoadPeers: func() (map[string]MultiServerPeer, error) { return map[string]MultiServerPeer{"device": peer}, nil }})
+			_ = RunMultiServer(relayCtx, MultiServerConfig{Listen: endpoint, Target: targets[i], LoadPeers: func() (map[string]MultiServerPeer, error) { return map[string]MultiServerPeer{"device": peer}, nil }})
 		}()
 	}
 	local := reserve()
 	reports := make(chan EndpointReport, 100)
 	go func() {
 		_ = RunAdaptiveClient(ctx, AdaptiveClientConfig{LocalListen: local, Servers: endpoints, TX: codec(txKey), RX: codec(rxKey), OnEndpointReport: func(r EndpointReport) {
+			if independent && r.Switched {
+				if e := client.IpcSet(fmt.Sprintf("replace_peers=true\npublic_key=%s\nendpoint=%s\nallowed_ip=%s/32\npersistent_keepalive_interval=1\n", serverPub, local, serverIP)); e != nil {
+					t.Error(e)
+				}
+			}
+
 			select {
 			case reports <- r:
 			default:
@@ -369,6 +400,9 @@ warmed:
 	fault = time.Now()
 	faultMu.Unlock()
 	stops[0]()
+	if independent {
+		server.Close()
+	}
 	var switched time.Time
 	deadline := time.After(5 * time.Second)
 	for switched.IsZero() {
@@ -415,10 +449,17 @@ warmed:
 	if stableUAPI() != overlayBefore || overlayAddressAfter != overlayAddressBefore {
 		t.Fatal("overlay identity or routes changed during failover")
 	}
-	report := map[string]any{"topology": "two WGShim relays, one unchanged WireGuard destination, localhost", "failover_ms": float64(switched.Sub(fault)) / float64(time.Millisecond), "overlay_ip_before": overlayAddressBefore, "overlay_ip_after": overlayAddressAfter, "wireguard_identity_and_routes_unchanged": true, "traffic": metrics, "gateway_failure_tested": false}
+	report := map[string]any{"topology": "two WGShim relays, one unchanged WireGuard destination, localhost", "failover_ms": float64(switched.Sub(fault)) / float64(time.Millisecond), "overlay_ip_before": overlayAddressBefore, "overlay_ip_after": overlayAddressAfter, "wireguard_identity_and_routes_unchanged": true, "traffic": metrics, "gateway_failure_tested": independent}
+	if independent {
+		report["topology"] = "two independent WireGuard gateways, shared routed destination, no NAT"
+	}
 	raw, _ := json.MarshalIndent(report, "", "  ")
 	t.Log(string(raw))
-	if file := os.Getenv("BPC_PATH_REPORT"); file != "" {
+	envName := "BPC_PATH_REPORT"
+	if independent {
+		envName = "BPC_ROUTED_PATH_REPORT"
+	}
+	if file := os.Getenv(envName); file != "" {
 		if e := os.WriteFile(file, append(raw, '\n'), 0600); e != nil {
 			t.Fatal(e)
 		}

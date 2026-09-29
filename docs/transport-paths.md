@@ -88,6 +88,29 @@ It does not prove preservation of an already-established TCP flow whose remote
 endpoint or NAT/conntrack state lives on the failed VPS. BPC does not currently
 replicate Linux conntrack/NAT state between Public Nodes.
 
+### Persistent flows through independent gateways
+
+```bash
+BPC_ROUTED_PATH_REPORT=/tmp/bpc-routed-report.json go test ./internal/wgshim \
+  -run TestIndependentNodesPreserveRoutedTCP -count=1 -v
+```
+
+This test stops both the active relay and its independent WireGuard responder.
+Both gateways reach one surviving destination TCP/IP stack outside either Node.
+The test LAN returns packets through the most recent ingress gateway; this is an
+explicit routing assumption, not a production route-convergence measurement.
+No NAT or WireGuard ephemeral state is copied between gateways.
+
+[Recorded measurement](acceptance/independent-routed-failover-localhost.json):
+selection changed in 649 ms; 6 ICMP exchanges and 33 UDP datagrams were lost.
+Both pre-existing TCP sockets survived without reconnecting: the stream had a
+maximum 3,632 ms response gap and the RDP-like exchange an 855 ms gap. The largest
+UDP response gap was 681 ms. These are single-run localhost observations, not
+latency guarantees. TCP counts represent application messages, not packet loss.
+The overlay address and WireGuard profile remained unchanged. The topology has
+no controller-issued Device or Access object, so it does not independently prove
+those control-plane identities remain unchanged on live Nodes.
+
 ### Real Windows / Public Node measurement
 
 The repository includes `scripts/acceptance-public-node-failover.ps1`. On an
