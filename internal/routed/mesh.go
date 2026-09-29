@@ -40,8 +40,9 @@ type meshPeer struct {
 	tx          *wgshim.Codec
 	rx          *wgshim.Codec
 
-	addrMu sync.RWMutex
-	addr   *net.UDPAddr
+	addrMu       sync.RWMutex
+	addr         *net.UDPAddr
+	addressSince time.Time
 
 	metricMu  sync.Mutex
 	lastAuth  time.Time
@@ -61,9 +62,22 @@ func (p *meshPeer) setAddress(addr *net.UDPAddr) {
 	}
 	copyAddr := *addr
 	copyAddr.IP = append(net.IP(nil), addr.IP...)
+	now := time.Now()
+
 	p.addrMu.Lock()
+	changed := p.addr == nil || !p.addr.IP.Equal(copyAddr.IP) || p.addr.Port != copyAddr.Port
 	p.addr = &copyAddr
+	if changed {
+		p.addressSince = now
+	}
 	p.addrMu.Unlock()
+
+	if changed {
+		p.metricMu.Lock()
+		p.lastReply = time.Time{}
+		p.samples = nil
+		p.metricMu.Unlock()
+	}
 }
 
 func (p *meshPeer) address() *net.UDPAddr {
@@ -105,13 +119,20 @@ func (p *meshPeer) status(localNodeID string, now time.Time) LinkStatus {
 	samples := append([]bool(nil), p.samples...)
 	p.metricMu.Unlock()
 
+	p.addrMu.RLock()
+	hasAddress := p.addr != nil
+	addressSince := p.addressSince
+	p.addrMu.RUnlock()
+
 	health := "unknown"
-	if p.address() != nil {
-		health = "degraded"
-		if !lastAuth.IsZero() && now.Sub(lastAuth) > linkFailAfter {
-			health = "failed"
-		} else if !lastReply.IsZero() && now.Sub(lastReply) <= linkFailAfter {
+	if hasAddress {
+		switch {
+		case !lastReply.IsZero() && now.Sub(lastReply) <= linkFailAfter:
 			health = "healthy"
+		case !addressSince.IsZero() && now.Sub(addressSince) <= linkFailAfter:
+			health = "degraded"
+		default:
+			health = "failed"
 		}
 	}
 	loss := 0.0
@@ -125,7 +146,9 @@ func (p *meshPeer) status(localNodeID string, now time.Time) LinkStatus {
 		loss = float64(failed) * 100 / float64(len(samples))
 	}
 	lastSeen := int64(0)
-	if !lastAuth.IsZero() {
+	if !lastReply.IsZero() {
+		lastSeen = lastReply.Unix()
+	} else if !lastAuth.IsZero() {
 		lastSeen = lastAuth.Unix()
 	}
 	return LinkStatus{
@@ -139,7 +162,6 @@ func (p *meshPeer) status(localNodeID string, now time.Time) LinkStatus {
 		LastSeen:    lastSeen,
 	}
 }
-
 func randomSequenceBase() uint64 {
 	var raw [8]byte
 	if _, err := rand.Read(raw[:]); err != nil {
