@@ -323,3 +323,36 @@ func TestWaitForAdaptiveServerRecovery(t *testing.T) {
 		t.Fatalf("resolver was not retried: attempts=%d", attempts)
 	}
 }
+
+
+func TestPreferAdaptiveServerPreservesActiveAcrossDNSPoolRebuild(t *testing.T) {
+	servers := []string{
+		"ru-01.example:24444",
+		"ru-02.example:24444",
+		"ge-01.example:24444",
+	}
+	got := preferAdaptiveServer(servers, "ru-02.example:24444")
+	want := []string{
+		"ru-02.example:24444",
+		"ru-01.example:24444",
+		"ge-01.example:24444",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected server count: got=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("active endpoint was not preserved: got=%v want=%v", got, want)
+		}
+	}
+	if servers[0] != "ru-01.example:24444" {
+		t.Fatal("input server order was mutated")
+	}
+
+	missing := preferAdaptiveServer(servers, "missing.example:24444")
+	for i := range servers {
+		if missing[i] != servers[i] {
+			t.Fatalf("missing preferred endpoint changed order: got=%v", missing)
+		}
+	}
+}
