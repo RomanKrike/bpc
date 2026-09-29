@@ -1219,8 +1219,60 @@ WantedBy=multi-user.target
 """
     unit.write_text(content, encoding="utf-8")
     os.chmod(unit, 0o644)
+
+    reconcile_service = Path("/etc/systemd/system/bpc-gateway-reconcile.service")
+    reconcile_service.write_text(
+        f"""[Unit]
+Description=BPC Gateway replicated-state reconcile
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {runtime_entrypoint} \\
+  --state-dir {state_dir} local-reconcile
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={state_dir}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+""",
+        encoding="utf-8",
+    )
+    os.chmod(reconcile_service, 0o644)
+
+    reconcile_path = Path("/etc/systemd/system/bpc-gateway-reconcile.path")
+    reconcile_path.write_text(
+        f"""[Unit]
+Description=Watch replicated BPC Gateway state
+
+[Path]
+PathChanged={state_dir / "control" / "devices"}
+PathChanged={state_dir / "control" / "access"}
+PathChanged={state_dir / "control" / "config.json"}
+Unit=bpc-gateway-reconcile.service
+
+[Install]
+WantedBy=multi-user.target
+""",
+        encoding="utf-8",
+    )
+    os.chmod(reconcile_path, 0o644)
+
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", "bpc-node.service"], check=True)
+    subprocess.run(
+        ["systemctl", "enable", "--now", "bpc-gateway-reconcile.path"],
+        check=True,
+    )
     subprocess.run(["systemctl", "restart", "bpc-node.service"], check=True)
 
 
@@ -1621,6 +1673,32 @@ def cmd_join(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_local_reconcile(args: argparse.Namespace) -> int:
+    enrollment = enrolled_state(args.state_dir)
+    if enrollment is None:
+        raise EnrollmentError("node is not joined")
+    roles = enrollment.get("roles", {})
+    if not isinstance(roles, dict) or not bool(roles.get("gateway")):
+        return 0
+    control_config = args.state_dir / "control" / "config.json"
+    if not control_config.is_file():
+        return 0
+    try:
+        reconcile_gateway_dataplane(args.state_dir)
+        sync_access_firewall(args.state_dir / "control")
+    except (
+        GatewayDataplaneError,
+        AccessError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise EnrollmentError(
+            f"Gateway dataplane reconciliation failed: {exc}"
+        ) from exc
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     enrollment = enrolled_state(args.state_dir)
     if enrollment is None:
@@ -1787,6 +1865,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status")
     sub.add_parser("runtime-install")
+    sub.add_parser("local-reconcile")
 
     leave = sub.add_parser("leave")
     leave.add_argument("--force", action="store_true")
@@ -1816,6 +1895,8 @@ def main(argv: list[str] | None = None) -> int:
             install_runtime_service(args.state_dir)
             print("BPC Node runtime service installed.")
             return 0
+        if args.command == "local-reconcile":
+            return cmd_local_reconcile(args)
         if args.command == "leave":
             return cmd_leave(args)
         if args.command == "daemon":
