@@ -47,9 +47,9 @@ type kernelState struct {
 	interfaceID   string
 	overlaySubnet string
 	routes        map[string]struct{}
-	natNoSNAT   map[string]struct{}
-	siteNAT     map[string]struct{}
-	forward     map[string]struct{}
+	natNoSNAT     map[string]struct{}
+	siteNAT       map[string]struct{}
+	forward       map[string]struct{}
 }
 
 func runCommand(args ...string) error {
