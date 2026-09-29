@@ -55,6 +55,7 @@ func startIndependentResponder(
 	serverKey string,
 	clientPublic string,
 	serverIP netip.Addr,
+	clientIP netip.Addr,
 ) (*independentResponder, string) {
 	t.Helper()
 	tunDevice, stack, err := netstack.CreateNetTUN([]netip.Addr{serverIP}, nil, 1280)
@@ -77,7 +78,7 @@ func startIndependentResponder(
 		serverKey,
 		port,
 		clientPublic,
-		serverIP,
+		clientIP,
 	)); err != nil {
 		wgDevice.Close()
 		t.Fatal(err)
@@ -193,6 +194,7 @@ func TestIndependentPublicNodeFailover(t *testing.T) {
 			serverKey,
 			clientPublic,
 			serverIP,
+			clientIP,
 		)
 		defer responders[i].close()
 	}
