@@ -80,6 +80,29 @@ It does not prove preservation of an already-established TCP flow whose remote
 endpoint or NAT/conntrack state lives on the failed VPS. BPC does not currently
 replicate Linux conntrack/NAT state between Public Nodes.
 
+### Real Windows / Public Node measurement
+
+The repository includes `scripts/acceptance-public-node-failover.ps1`. On an
+installed Windows Agent it samples live transport telemetry and ICMP while an
+active Public Node relay is stopped over SSH. The relay is restored automatically
+unless `-NoRestore` is supplied.
+
+Example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\acceptance-public-node-failover.ps1 `
+  -FaultSshHost ru-01.example `
+  -FaultSshUser root `
+  -Target 10.253.0.1 `
+  -ReportPath .\bpc-public-node-failover.json
+```
+
+The JSON report records the selected Node/endpoint timeline, switch delay,
+success/failure counts, the largest gap between successful pings and overlay
+address/routes before and after the handoff. The default acceptance bound is
+1500 ms. A routed LAN address can be used as `-Target` to measure application
+reachability beyond the overlay responder itself.
+
 ## Measured relay-path acceptance
 
 Run:
