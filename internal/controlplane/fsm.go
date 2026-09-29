@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -111,6 +112,112 @@ func sha256Hex(value []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+type routeOwnershipRecord struct {
+	CIDR        string `json:"cidr"`
+	NodeID      string `json:"node_id"`
+	OwnerNodeID string `json:"owner_node_id"`
+}
+
+type routeOwnerNodeRecord struct {
+	NodeID  string          `json:"node_id"`
+	Revoked bool            `json:"revoked"`
+	Roles   map[string]bool `json:"roles"`
+}
+
+type validatedRouteOwnership struct {
+	path   string
+	owner  string
+	prefix netip.Prefix
+}
+
+func resultingPrefixRecords(
+	canonical *bolt.Bucket,
+	prefix string,
+	ops []Operation,
+) map[string][]byte {
+	result := make(map[string][]byte)
+	cursor := canonical.Cursor()
+	for key, value := cursor.Seek([]byte(prefix)); key != nil && strings.HasPrefix(string(key), prefix); key, value = cursor.Next() {
+		result[string(key)] = append([]byte(nil), value...)
+	}
+	for _, op := range ops {
+		if !strings.HasPrefix(op.Path, prefix) {
+			continue
+		}
+		switch op.Op {
+		case "put":
+			result[op.Path] = append([]byte(nil), op.Data...)
+		case "delete":
+			delete(result, op.Path)
+		}
+	}
+	return result
+}
+
+func validateRouteOwnershipInvariant(
+	canonical *bolt.Bucket,
+	ops []Operation,
+) string {
+	routes := resultingPrefixRecords(canonical, "control/routes/", ops)
+	nodes := resultingPrefixRecords(canonical, "control/nodes/", ops)
+	validated := make([]validatedRouteOwnership, 0, len(routes))
+
+	for path, raw := range routes {
+		var record routeOwnershipRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return "invalid route ownership record: " + path
+		}
+		owner := strings.TrimSpace(record.OwnerNodeID)
+		if owner == "" {
+			owner = strings.TrimSpace(record.NodeID)
+		}
+		if owner == "" || (record.NodeID != "" && strings.TrimSpace(record.NodeID) != owner) {
+			return "route owner identity mismatch: " + path
+		}
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(record.CIDR))
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
+			return "invalid or default route ownership: " + path
+		}
+		prefix = prefix.Masked()
+
+		nodeRaw, ok := nodes["control/nodes/"+owner+".json"]
+		if !ok {
+			return "route owner Node does not exist: " + owner
+		}
+		var node routeOwnerNodeRecord
+		if err := json.Unmarshal(nodeRaw, &node); err != nil {
+			return "invalid route owner Node record: " + owner
+		}
+		if strings.TrimSpace(node.NodeID) != owner || node.Revoked || !node.Roles["site_router"] {
+			return "route owner is not an active site_router: " + owner
+		}
+		validated = append(validated, validatedRouteOwnership{
+			path: path, owner: owner, prefix: prefix,
+		})
+	}
+
+	sort.Slice(validated, func(i, j int) bool {
+		return validated[i].path < validated[j].path
+	})
+	for i := 0; i < len(validated); i++ {
+		for j := i + 1; j < len(validated); j++ {
+			if validated[i].owner == validated[j].owner {
+				continue
+			}
+			if validated[i].prefix.Overlaps(validated[j].prefix) {
+				return fmt.Sprintf(
+					"route ownership conflict: %s owned by %s overlaps %s owned by %s",
+					validated[i].prefix,
+					validated[i].owner,
+					validated[j].prefix,
+					validated[j].owner,
+				)
+			}
+		}
+	}
+	return ""
+}
+
 func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	var command Mutation
 	if err := json.Unmarshal(log.Data, &command); err != nil {
@@ -157,6 +264,9 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 					break
 				}
 			}
+		}
+		if conflict == "" {
+			conflict = validateRouteOwnershipInvariant(canonical, normalized)
 		}
 		if conflict != "" {
 			revision = decodeU64(meta.Get(keyRevision))
