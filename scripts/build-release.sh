@@ -65,6 +65,10 @@ rm -f "${WINTUN_ZIP}"
     -o "${staging}/bin/bpc-controld-linux-amd64" ./cmd/bpc-controld
   CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-controld-linux-arm64" ./cmd/bpc-controld
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+    -o "${staging}/bin/bpc-routed-node-linux-amd64" ./cmd/bpc-routed-node
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+    -o "${staging}/bin/bpc-routed-node-linux-arm64" ./cmd/bpc-routed-node
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-wgshim-windows-amd64.exe" ./cmd/bpc-wgshim
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
@@ -72,7 +76,8 @@ rm -f "${WINTUN_ZIP}"
 )
 chmod 0755 "${staging}/bin/bpc-wgshim-linux-amd64" "${staging}/bin/bpc-wgshim-linux-arm64" \
   "${staging}/bin/bpc-agent-relay-linux-amd64" "${staging}/bin/bpc-agent-relay-linux-arm64" \
-  "${staging}/bin/bpc-controld-linux-amd64" "${staging}/bin/bpc-controld-linux-arm64"
+  "${staging}/bin/bpc-controld-linux-amd64" "${staging}/bin/bpc-controld-linux-arm64" \
+  "${staging}/bin/bpc-routed-node-linux-amd64" "${staging}/bin/bpc-routed-node-linux-arm64"
 cp "${staging}/bin/"* "${OUT_DIR}/"
 
 versioned="${OUT_DIR}/bpc-connect-${VERSION}-deploy.tar.gz"
