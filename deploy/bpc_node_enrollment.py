@@ -2019,26 +2019,106 @@ def cmd_local_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _display_routed_hops(
+    hops: object,
+    names: dict[str, str],
+) -> str:
+    if not isinstance(hops, list):
+        return ""
+    return " → ".join(names.get(str(item), str(item)) for item in hops)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     enrollment = enrolled_state(args.state_dir)
     if enrollment is None:
-        print("Enrollment: not joined")
+        print("BPC: Not connected")
         return 1
+
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
-    print("Enrollment: joined")
-    print(f"Node: {enrollment.get('name')} ({enrollment.get('node_id')})")
-    print(f"Controller: {enrollment.get('controller_url')}")
-    print(
-        "Roles: "
-        + (", ".join(sorted(role for role, value in roles.items() if value)) or "none")
+    config = enrollment.get("config", {})
+    if not isinstance(config, dict):
+        config = {}
+    routing = config.get("routing", {})
+    if not isinstance(routing, dict):
+        routing = {}
+    raw_names = routing.get("node_names", {})
+    names = (
+        {str(key): str(value) for key, value in raw_names.items()}
+        if isinstance(raw_names, dict)
+        else {}
     )
-    print(f"Last heartbeat: {enrollment.get('last_heartbeat', 0)}")
-    for service, state in sorted(local_services(roles).items()):
-        print(f"  {service}: {state}")
-    return 0
 
+    status_path = Path(
+        os.environ.get(
+            "BPC_ROUTED_STATUS",
+            "/run/bpc-connect/routed-status.json",
+        )
+    )
+    routed_status: dict[str, Any] = {}
+    if status_path.is_file():
+        try:
+            routed_status = read_json(status_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            routed_status = {}
+
+    selected_paths = routed_status.get("selected_paths", [])
+    if not isinstance(selected_paths, list):
+        selected_paths = []
+    selected = next(
+        (item for item in selected_paths if isinstance(item, dict)),
+        None,
+    )
+
+    routed_required = bool(roles.get("gateway")) or bool(roles.get("site_router"))
+    routed_service = service_state("bpc-routed-node.service")
+    if routed_required and routing.get("links") and routed_service != "active":
+        print("BPC: Degraded")
+    else:
+        print("BPC: Connected")
+
+    if selected is not None:
+        hops = selected.get("hops", [])
+        print("")
+        print("Active path:")
+        print(f"  {_display_routed_hops(hops, names)}")
+        try:
+            latency = float(selected.get("rtt_ms", 0) or 0)
+        except (TypeError, ValueError):
+            latency = 0.0
+        print("")
+        print("Latency:")
+        print(f"  {latency:.1f} ms")
+
+        standby_ids = selected.get("standby_path_ids", [])
+        all_paths = routing.get("paths", [])
+        if isinstance(standby_ids, list) and isinstance(all_paths, list):
+            path_by_id = {
+                str(item.get("id", "")): item
+                for item in all_paths
+                if isinstance(item, dict)
+            }
+            standby = [
+                path_by_id.get(str(path_id))
+                for path_id in standby_ids
+                if str(path_id) in path_by_id
+            ]
+            if standby:
+                print("")
+                print("Standby:")
+                for path in standby:
+                    if path is None:
+                        continue
+                    print(
+                        "  "
+                        + _display_routed_hops(path.get("hops", []), names)
+                    )
+    else:
+        print(f"Node: {enrollment.get('name')}")
+        if routed_required:
+            print(f"Routed mesh: {routed_service}")
+    return 0
 
 def cmd_leave(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
@@ -2064,6 +2144,11 @@ def cmd_leave(args: argparse.Namespace) -> int:
             raise
         print(f"WARNING: controller leave failed: {exc}", file=sys.stderr)
 
+    subprocess.run(
+        ["systemctl", "disable", "--now", "bpc-routed-node.service"],
+        check=False,
+        capture_output=True,
+    )
     subprocess.run(
         ["systemctl", "disable", "--now", "bpc-node.service"],
         check=False,
