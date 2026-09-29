@@ -49,7 +49,36 @@ standbys; changing selection does not recreate the overlay interface.
 The Agent supervises transport and overlay separately. Controller metadata does
 not restart either. Changing the configured path pool currently restarts the
 transport listener, while preserving the overlay. Switching within an existing
-pool keeps both running.
+pool keeps both running. Cross-node rehandshake notifications use a one-element
+latest-value mailbox: rapid failover/recovery can coalesce obsolete intermediate
+events, but the newest selected Public Node is not silently dropped.
+
+Replicated Device and Access state is applied to gateway dataplanes both during
+Node heartbeat and through a local systemd path watcher. Changes under
+`control/devices`, `control/access` or `control/config.json` therefore do not
+wait for the normal heartbeat interval before the standby Node updates its
+WireGuard peers, WGShim keys and Access firewall. The BPC Node systemd sandbox
+explicitly permits AF_NETLINK with CAP_NET_ADMIN for these local reconciliations.
+
+## Independent Public Node acceptance
+
+`TestIndependentPublicNodeFailover` uses two independent userspace WireGuard
+responders. They share the same canonical static overlay identity and Device peer
+material, but they do not share ephemeral WireGuard session state. Each responder
+sits behind its own WGShim relay.
+
+The test warms both authenticated paths, establishes traffic through the first
+responder, stops that Public Node path, then performs the same cross-node
+`replace_peers=true` rehandshake used by the Windows Agent. CI requires the path
+switch to occur within 1.5 seconds. It verifies that the client overlay identity
+and AllowedIPs are unchanged, an already-open UDP application socket continues
+through the second responder, and a new TCP connection succeeds after the
+handoff.
+
+This proves independent responder handoff in the userspace acceptance topology.
+It does not prove preservation of an already-established TCP flow whose remote
+endpoint or NAT/conntrack state lives on the failed VPS. BPC does not currently
+replicate Linux conntrack/NAT state between Public Nodes.
 
 ## Measured relay-path acceptance
 
@@ -71,11 +100,10 @@ not TCP packets or retransmissions. Ping uses independent ICMP exchanges with a
 100 ms timeout; UDP sends every 20 ms. A dependency's PingConn readiness behavior
 requires isolated exchanges to avoid an unread queue suppressing notifications.
 
-Both relays in this test lead to ONE surviving WireGuard destination. Public
-Nodes can now materialize the same Device peers/WGShim keys and share the
-canonical WireGuard static identity. Cross-node selection explicitly triggers a
-fresh inner WireGuard handshake without recreating the client interface.
-Linux conntrack/NAT state is still not replicated between Nodes, so flows that
-depend on gateway-local NAT may not survive an independent gateway failure.
-Production multi-VPS acceptance, systemd restart, reboot and Windows Wintun
-measurements are still outstanding; this is not yet a zero-loss failover claim.
+Both relays in this older measurement lead to ONE surviving WireGuard
+destination; use the independent Public Node acceptance above for the
+two-responder case. Linux conntrack/NAT state is still not replicated between
+Nodes, so flows that depend on gateway-local state may not survive an independent
+gateway failure. Production multi-VPS acceptance, systemd restart, reboot and
+Windows Wintun measurements are still outstanding; this is not yet a zero-loss
+failover claim.
