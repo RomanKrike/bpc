@@ -85,7 +85,14 @@ def test_enrollment_end_to_end_join_heartbeat_list_leave(tmp_path: Path) -> None
         payload={
             "status": "online",
             "version": "0.15.0",
+            "protocol_version": 1,
+            "state_schema_version": 1,
             "services": {"gateway": "active", "relay": "active"},
+            "transport": {
+                "udp_ports": [24444, 24445, 24444, 80],
+                "tcp_port": 24444,
+                "overlay_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            },
         },
         now=1_020,
     )
@@ -99,6 +106,12 @@ def test_enrollment_end_to_end_join_heartbeat_list_leave(tmp_path: Path) -> None
     assert nodes[0]["online"] is True
     assert nodes[0]["last_seen"] == 1_020
     assert nodes[0]["services"] == {"gateway": "active", "relay": "active"}
+    assert nodes[0]["transport"] == {
+        "udp_ports": [24444, 24445],
+        "tcp_port": 24444,
+        "overlay_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    }
+    assert nodes[0]["compatibility"] == "compatible"
 
     left = enrollment.leave_node(
         control,
@@ -422,3 +435,76 @@ def test_public_nodes_have_independent_canonical_endpoints(tmp_path):
         )
         assert response["config"]["endpoints"] == expected
     assert len(enrollment.list_nodes(control)) == 3
+
+
+def test_local_gateway_reconcile_applies_replicated_state_without_heartbeat(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enrollment.write_local_enrollment(
+        tmp_path,
+        {
+            "version": 1,
+            "controller_url": "https://controller.example:8444",
+            "node_id": "gateway-node",
+            "name": "ru-02",
+            "credential": "a" * 64,
+            "roles": {"gateway": True, "relay": True},
+            "config": {},
+        },
+    )
+    control = tmp_path / "control"
+    control.mkdir(parents=True)
+    (control / "config.json").write_text("{}", encoding="utf-8")
+    calls: list[str] = []
+    monkeypatch.setattr(
+        enrollment,
+        "reconcile_gateway_dataplane",
+        lambda state: calls.append(f"dataplane:{state}"),
+    )
+    monkeypatch.setattr(
+        enrollment,
+        "sync_access_firewall",
+        lambda state: calls.append(f"access:{state}"),
+    )
+
+    args = enrollment.argparse.Namespace(state_dir=tmp_path)
+    assert enrollment.cmd_local_reconcile(args) == 0
+    assert calls == [
+        f"dataplane:{tmp_path}",
+        f"access:{control}",
+    ]
+    lock_path = tmp_path / "gateway-reconcile.lock"
+    assert lock_path.is_file()
+    assert oct(lock_path.stat().st_mode & 0o777) == "0o600"
+
+
+def test_local_reconcile_is_noop_for_non_gateway_node(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    enrollment.write_local_enrollment(
+        tmp_path,
+        {
+            "version": 1,
+            "controller_url": "https://controller.example:8444",
+            "node_id": "relay-node",
+            "name": "relay-01",
+            "credential": "a" * 64,
+            "roles": {"relay": True},
+            "config": {},
+        },
+    )
+    monkeypatch.setattr(
+        enrollment,
+        "reconcile_gateway_dataplane",
+        lambda _state: pytest.fail("non-gateway reconciled dataplane"),
+    )
+    monkeypatch.setattr(
+        enrollment,
+        "sync_access_firewall",
+        lambda _state: pytest.fail("non-gateway reconciled Access"),
+    )
+
+    args = enrollment.argparse.Namespace(state_dir=tmp_path)
+    assert enrollment.cmd_local_reconcile(args) == 0

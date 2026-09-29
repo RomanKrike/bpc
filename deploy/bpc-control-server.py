@@ -57,6 +57,7 @@ from bpc_identity import (
     load_device as identity_load_device,
 )
 from bpc_node_enrollment import (
+    HEARTBEAT_INTERVAL,
     EnrollmentError,
     authorize_node,
     enroll_node,
@@ -556,6 +557,117 @@ class ControlHandler(BaseHTTPRequestHandler):
                 raise ValueError(f"control config is missing {name}")
         return value
 
+    def _discovered_transport_paths(
+        self,
+        global_config: dict[str, Any],
+    ) -> list[dict[str, str]]:
+        overlay_key = str(global_config["wireguard_server_public_key"]).strip()
+        candidates: list[tuple[str, str, list[int]]] = []
+        now = int(time.time())
+        for path in sorted((self._root() / "nodes").glob("*.json")):
+            try:
+                node = read_json(path)
+            except (OSError, ValueError, json.JSONDecodeError):
+                continue
+            roles = node.get("roles", {})
+            services = node.get("services", {})
+            transport = node.get("transport", {})
+            if (
+                bool(node.get("revoked", False))
+                or not isinstance(roles, dict)
+                or not bool(roles.get("gateway"))
+                or not bool(roles.get("relay"))
+                or not isinstance(services, dict)
+                or services.get("relay") != "active"
+                or int(node.get("last_seen", 0) or 0) <= now - HEARTBEAT_INTERVAL * 3
+                or not isinstance(transport, dict)
+                or str(transport.get("overlay_public_key", "")).strip() != overlay_key
+            ):
+                continue
+            ports = [
+                int(item)
+                for item in transport.get("udp_ports", [])
+                if isinstance(item, int) and 1024 <= item <= 65535
+            ]
+            if not ports:
+                continue
+            endpoints = node.get("endpoints", [])
+            if not isinstance(endpoints, list):
+                continue
+            for endpoint in endpoints:
+                if (
+                    isinstance(endpoint, dict)
+                    and bool(endpoint.get("public", True))
+                    and bool(endpoint.get("enabled", True))
+                ):
+                    host = str(endpoint.get("host", "")).strip().lower()
+                    if host:
+                        candidates.append(
+                            (str(node.get("name", node.get("node_id", ""))), host, ports)
+                        )
+
+        result: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        def add(node: str, endpoint: str) -> None:
+            key = endpoint.lower()
+            if key in seen or len(result) >= 16:
+                return
+            seen.add(key)
+            result.append(
+                {
+                    "node": node,
+                    "endpoint": endpoint,
+                    "peer_public_key": overlay_key,
+                }
+            )
+
+        # Reserve path capacity for distinct Public Nodes before filling the
+        # remaining slots with extra compatibility/randomized ports. Legacy
+        # endpoints that match an authenticated Node hostname inherit that Node
+        # label so changing ports on one VPS does not look like cross-node failover.
+        node_by_host = {host: node for node, host, _ in candidates}
+
+        def compatibility_node(endpoint: str) -> str:
+            host, separator, _ = endpoint.rpartition(":")
+            if not separator:
+                return "compat-primary"
+            return node_by_host.get(host.strip("[]").lower(), "compat-primary")
+
+        compatibility = global_config.get(
+            "wgshim_servers",
+            [global_config["wgshim_server"]],
+        )
+        if not isinstance(compatibility, list):
+            compatibility = [global_config["wgshim_server"]]
+        primary = str(global_config["wgshim_server"]).strip()
+        add(compatibility_node(primary), primary)
+        for node, host, ports in candidates:
+            if ports:
+                add(node, f"{host}:{ports[0]}")
+        for endpoint in compatibility:
+            if isinstance(endpoint, str) and endpoint.strip():
+                value = endpoint.strip()
+                add(compatibility_node(value), value)
+
+        # Round-robin additional ports across Nodes after every healthy Public
+        # Node had a chance to claim one path.
+        depth = 1
+        while len(result) < 16:
+            added = False
+            for node, host, ports in candidates:
+                if depth >= len(ports):
+                    continue
+                before = len(result)
+                add(node, f"{host}:{ports[depth]}")
+                added = added or len(result) != before
+                if len(result) >= 16:
+                    break
+            if not added:
+                break
+            depth += 1
+        return result
+
     def _config_for_device(self, device: dict[str, Any]) -> dict[str, Any]:
         global_config = self._global_config()
         config = {
@@ -577,6 +689,13 @@ class ControlHandler(BaseHTTPRequestHandler):
             "controllers": controller_public_urls(self._root().parent),
             "wireguard": self._wireguard_profile_for_device(device),
         }
+        # An explicit operator path pool remains an override. Otherwise authenticated
+        # Public Node heartbeats can advertise ports only after proving they use
+        # the canonical overlay WireGuard identity.
+        if "paths" in global_config:
+            config["paths"] = global_config["paths"]
+        else:
+            config["paths"] = self._discovered_transport_paths(global_config)
         apply_compat_transport_hint(device, config)
         return config
 

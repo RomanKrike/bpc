@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import http.client
 import ipaddress
@@ -34,11 +35,16 @@ else:
 sys.path.insert(0, str(SOURCE_ROOT))
 
 import bpc_control_state  # noqa: E402
+from bpc_access import AccessError, sync_access_firewall  # noqa: E402
 from bpc_controller_enrollment import (  # noqa: E402
     ControllerEnrollmentError,
     activate_controller_marker,
     ensure_controller_csr,
     install_controller_enrollment,
+)
+from bpc_gateway_dataplane import (  # noqa: E402
+    GatewayDataplaneError,
+    reconcile_gateway_dataplane,
 )
 from bpc_gateway_snapshot import (  # noqa: E402
     GatewaySnapshotError,
@@ -50,6 +56,9 @@ from bpc_gateway_snapshot import (  # noqa: E402
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
     reconcile_transport_roles,
+)
+from bpc_connect.compat.runtime import (  # noqa: E402
+    agent_runtime_env as compatibility_agent_runtime_env,
 )
 from bpc_connect.compat.runtime import (  # noqa: E402
     default_role_config as compatibility_role_config,
@@ -287,6 +296,47 @@ def normalize_roles(values: list[str] | tuple[str, ...]) -> list[str]:
     if not roles:
         raise EnrollmentError("at least one role is required")
     return sorted(roles)
+
+
+def normalize_transport_runtime(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    raw_ports = raw.get("udp_ports", [])
+    if not isinstance(raw_ports, list):
+        return {}
+    ports: list[int] = []
+    seen: set[int] = set()
+    for raw_port in raw_ports[:16]:
+        try:
+            port = int(raw_port)
+        except (TypeError, ValueError):
+            continue
+        if 1024 <= port <= 65535 and port not in seen:
+            seen.add(port)
+            ports.append(port)
+    try:
+        tcp_port = int(raw.get("tcp_port", 0) or 0)
+    except (TypeError, ValueError):
+        tcp_port = 0
+    if not 1024 <= tcp_port <= 65535:
+        tcp_port = 0
+    overlay_public_key = str(raw.get("overlay_public_key", "")).strip()
+    if overlay_public_key:
+        try:
+            decoded = base64.b64decode(overlay_public_key, validate=True)
+        except (ValueError, base64.binascii.Error):
+            overlay_public_key = ""
+        else:
+            if len(decoded) != 32:
+                overlay_public_key = ""
+    result: dict[str, Any] = {}
+    if ports:
+        result["udp_ports"] = ports
+    if tcp_port:
+        result["tcp_port"] = tcp_port
+    if overlay_public_key:
+        result["overlay_public_key"] = overlay_public_key
+    return result
 
 
 def normalize_node_name(value: str | None, fallback: str = "bpc-node") -> str:
@@ -679,6 +729,10 @@ def node_heartbeat(
     roles = node.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
+    if bool(roles.get("relay")):
+        node["transport"] = normalize_transport_runtime(payload.get("transport", {}))
+    else:
+        node.pop("transport", None)
     advertised = (
         normalize_advertised_routes(payload.get("advertised_routes", []))
         if bool(roles.get("site_router"))
@@ -1030,6 +1084,39 @@ def local_services(roles: dict[str, Any]) -> dict[str, str]:
     return services
 
 
+def local_transport_runtime(
+    state_dir: Path,
+    roles: dict[str, Any],
+) -> dict[str, Any]:
+    if not bool(roles.get("relay")):
+        return {}
+    runtime = compatibility_agent_runtime_env(state_dir)
+    if not runtime.is_file():
+        return {}
+    ports: list[int] = []
+    raw_ports = read_env_value(runtime, "AGENT_WGSHIM_PORTS")
+    for raw in raw_ports.split(","):
+        try:
+            port = int(raw.strip())
+        except ValueError:
+            continue
+        if 1024 <= port <= 65535 and port not in ports:
+            ports.append(port)
+    try:
+        tcp_port = int(read_env_value(runtime, "AGENT_WGSHIM_TCP_PORT") or "0")
+    except ValueError:
+        tcp_port = 0
+    return normalize_transport_runtime(
+        {
+            "udp_ports": ports,
+            "tcp_port": tcp_port,
+            "overlay_public_key": read_env_value(
+                runtime, "AGENT_WG_SERVER_PUBLIC_KEY"
+            ),
+        }
+    )
+
+
 def reconcile_roles(
     state_dir: Path,
     roles: dict[str, Any],
@@ -1124,15 +1211,67 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictNamespaces=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
 """
     unit.write_text(content, encoding="utf-8")
     os.chmod(unit, 0o644)
+
+    reconcile_service = Path("/etc/systemd/system/bpc-gateway-reconcile.service")
+    reconcile_service.write_text(
+        f"""[Unit]
+Description=BPC Gateway replicated-state reconcile
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {runtime_entrypoint} \\
+  --state-dir {state_dir} local-reconcile
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths={state_dir}
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+""",
+        encoding="utf-8",
+    )
+    os.chmod(reconcile_service, 0o644)
+
+    reconcile_path = Path("/etc/systemd/system/bpc-gateway-reconcile.path")
+    reconcile_path.write_text(
+        f"""[Unit]
+Description=Watch replicated BPC Gateway state
+
+[Path]
+PathChanged={state_dir / "control" / "devices"}
+PathChanged={state_dir / "control" / "access"}
+PathChanged={state_dir / "control" / "config.json"}
+Unit=bpc-gateway-reconcile.service
+
+[Install]
+WantedBy=multi-user.target
+""",
+        encoding="utf-8",
+    )
+    os.chmod(reconcile_path, 0o644)
+
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", "bpc-node.service"], check=True)
+    subprocess.run(
+        ["systemctl", "enable", "--now", "bpc-gateway-reconcile.path"],
+        check=True,
+    )
     subprocess.run(["systemctl", "restart", "bpc-node.service"], check=True)
 
 
@@ -1152,6 +1291,19 @@ def _local_advertised_routes(state_dir: Path) -> list[str]:
     except (OSError, ValueError):
         return []
     return list(config.advertised_routes)
+
+
+def reconcile_local_gateway_state(state_dir: Path) -> None:
+    lock_path = state_dir / "gateway-reconcile.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a+", encoding="ascii") as lock_handle:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            reconcile_gateway_dataplane(state_dir)
+            sync_access_firewall(state_dir / "control")
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any]:
@@ -1176,6 +1328,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
             "state_schema_version": STATE_SCHEMA_VERSION,
             "advertised_routes": _local_advertised_routes(state_dir),
             "services": local_services(roles),
+            "transport": local_transport_runtime(state_dir, roles),
         },
         credential=str(enrollment["credential"]),
         controller_urls=[str(item) for item in controllers],
@@ -1216,6 +1369,20 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
             raise EnrollmentError(str(exc)) from exc
         enrollment["security_revision"] = int(installed.get("revision", 0))
         enrollment["security_expires_at"] = int(installed.get("expires_at", 0))
+        control_config = state_dir / "control" / "config.json"
+        if control_config.is_file():
+            try:
+                reconcile_local_gateway_state(state_dir)
+            except (
+                GatewayDataplaneError,
+                AccessError,
+                OSError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise EnrollmentError(
+                    f"Gateway dataplane reconciliation failed: {exc}"
+                ) from exc
 
     enrollment["last_heartbeat"] = int(response.get("server_time", time.time()))
     write_local_enrollment(state_dir, enrollment)
@@ -1517,6 +1684,31 @@ def cmd_join(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_local_reconcile(args: argparse.Namespace) -> int:
+    enrollment = enrolled_state(args.state_dir)
+    if enrollment is None:
+        raise EnrollmentError("node is not joined")
+    roles = enrollment.get("roles", {})
+    if not isinstance(roles, dict) or not bool(roles.get("gateway")):
+        return 0
+    control_config = args.state_dir / "control" / "config.json"
+    if not control_config.is_file():
+        return 0
+    try:
+        reconcile_local_gateway_state(args.state_dir)
+    except (
+        GatewayDataplaneError,
+        AccessError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise EnrollmentError(
+            f"Gateway dataplane reconciliation failed: {exc}"
+        ) from exc
+    return 0
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     enrollment = enrolled_state(args.state_dir)
     if enrollment is None:
@@ -1683,6 +1875,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status")
     sub.add_parser("runtime-install")
+    sub.add_parser("local-reconcile")
 
     leave = sub.add_parser("leave")
     leave.add_argument("--force", action="store_true")
@@ -1712,6 +1905,8 @@ def main(argv: list[str] | None = None) -> int:
             install_runtime_service(args.state_dir)
             print("BPC Node runtime service installed.")
             return 0
+        if args.command == "local-reconcile":
+            return cmd_local_reconcile(args)
         if args.command == "leave":
             return cmd_leave(args)
         if args.command == "daemon":

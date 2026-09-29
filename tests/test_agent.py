@@ -1,12 +1,19 @@
 import pathlib
 
-AGENT = pathlib.Path("cmd/bpc-agent/main.go").read_text(encoding="utf-8")
+AGENT = (pathlib.Path("cmd/bpc-agent/main.go").read_text(encoding="utf-8")
+         + pathlib.Path("cmd/bpc-agent/runtime.go").read_text(encoding="utf-8"))
 AGENTCTL = pathlib.Path("internal/agentctl/control.go").read_text(encoding="utf-8")
 BUILD = pathlib.Path("scripts/build-release.sh").read_text(encoding="utf-8")
 CI = pathlib.Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
 CONTROL = pathlib.Path("deploy/bpc-control-server.py").read_text(encoding="utf-8")
 DATAPLANE = pathlib.Path("deploy/bpc-enable-agent-dataplane.sh").read_text(encoding="utf-8")
 ENABLE_CONTROL = pathlib.Path("deploy/bpc-enable-control.sh").read_text(encoding="utf-8")
+ENABLE_CONTROL_REPLICA = pathlib.Path(
+    "deploy/bpc-enable-control-replica.sh"
+).read_text(encoding="utf-8")
+NODE_ENROLLMENT = pathlib.Path("deploy/bpc_node_enrollment.py").read_text(
+    encoding="utf-8"
+)
 HEALTH = pathlib.Path("deploy/bpc-healthcheck.sh").read_text(encoding="utf-8")
 INSTALL = pathlib.Path("install.sh").read_text(encoding="utf-8")
 MIGRATE = pathlib.Path("deploy/bpc-migrate.sh").read_text(encoding="utf-8")
@@ -377,6 +384,47 @@ def test_agent_has_persistent_randomized_udp_port_pool() -> None:
     assert "udp-pool=" in STATUS
 
 
+def test_public_nodes_share_overlay_identity_without_leaking_private_key_to_devices() -> None:
+    assert '"wireguard_server_private_key": private_key' in ENABLE_CONTROL
+    assert 'canonical_server_private' in DATAPLANE
+    assert 'Canonical WireGuard overlay key pair is inconsistent' in DATAPLANE
+    config_method = CONTROL.split("def _config_for_device", 1)[1].split(
+        "def _wireguard_profile_for_device", 1
+    )[0]
+    assert "wireguard_server_private_key" not in config_method
+
+
+def test_controller_runtime_stages_gateway_dataplane_reconciler() -> None:
+    for script in (ENABLE_CONTROL, ENABLE_CONTROL_REPLICA):
+        assert 'release_gateway_dataplane=' in script
+        assert 'bpc_gateway_dataplane.py' in script
+    assert "reconcile_gateway_dataplane(state_dir)" in NODE_ENROLLMENT
+    assert "sync_access_firewall(state_dir / \"control\")" in NODE_ENROLLMENT
+
+
+def test_status_json_exposes_transport_path_telemetry() -> None:
+    assert 'Transport     *transportTelemetry `json:"transport,omitempty"`' in AGENT
+    assert "uiTransportStatusPath()" in AGENT
+    assert "payload.Transport = &transportStatus" in AGENT
+
+
+def test_windows_rehandshakes_only_after_cross_node_transport_switch() -> None:
+    assert "pathSwitches <-chan pathSwitchEvent" in TUNNEL
+    assert "case event := <-pathSwitches:" in TUNNEL
+    assert "wgDevice.IpcSet(uapi)" in TUNNEL
+    assert "replace_peers=true" in TUNNEL
+    assert "transportNodeTracker" in AGENT
+    assert "event.FromNode" in AGENT
+    assert "event.ToNode" in AGENT
+
+
+def test_windows_pins_every_transport_path_outside_overlay() -> None:
+    assert "resolveWGShimServerIPv4s(cfg.TransportPaths())" in TUNNEL
+    assert "for _, serverIP := range serverIPs" in TUNNEL
+    assert "physicalRouteCommands" in TUNNEL
+    assert "cfg.TransportPaths()[0]" not in TUNNEL
+
+
 def test_agent_adaptive_port_selection_uses_authenticated_rtt_probes() -> None:
     assert "packetProbe" in WGSHIM_CODEC
     assert "packetProbeReply" in WGSHIM_CODEC
@@ -386,10 +434,9 @@ def test_agent_adaptive_port_selection_uses_authenticated_rtt_probes() -> None:
     assert "RunAdaptiveClient" in WGSHIM_RELAY
     assert "ProbeTimeout" in WGSHIM_RELAY
     assert "SwitchThreshold" in WGSHIM_RELAY
-    assert "30*time.Second" in WGSHIM_RELAY
-    assert "60*time.Second" in WGSHIM_RELAY
-    assert "15*time.Minute" in WGSHIM_RELAY
-    assert "45*time.Minute" in WGSHIM_RELAY
+    assert "NewPathManager" in WGSHIM_RELAY
+    assert "cfg.ProbeInterval" in WGSHIM_RELAY
+    assert "manager.ConfirmTraffic" in WGSHIM_RELAY
     assert "splitListeners" in AGENT_RELAY
     assert "wgshim.RunAdaptiveClient" in AGENT
 
@@ -492,3 +539,13 @@ def test_access_policy_controls_client_routes_and_node_firewall() -> None:
     assert '"-j", "DROP"' in access
     assert "_subtract_denies" in access
     assert 'device.get("revoked"' in access
+
+
+def test_windows_path_pinning_preserves_existing_physical_routes() -> None:
+    start = TUNNEL.index("physicalRouteCommands :=")
+    end = TUNNEL.index("routeCommands :=", start)
+    physical_routes = TUNNEL[start:end]
+    assert "Remove-NetRoute" not in physical_routes
+    assert "$existing=@(Get-NetRoute -DestinationPrefix" in physical_routes
+    assert "if ($existing.Count -eq 0)" in physical_routes
+    assert "-PolicyStore ActiveStore" in physical_routes

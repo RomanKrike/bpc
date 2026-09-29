@@ -3,6 +3,7 @@ package wgshim
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"net"
 	"testing"
 	"time"
@@ -248,5 +249,108 @@ func TestAdaptiveClientSelectsReachableEndpoint(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("adaptive server did not stop")
+	}
+}
+
+func TestResolveAdaptiveServersSkipsUnavailableEndpoint(t *testing.T) {
+	resolver := func(network, address string) (*net.UDPAddr, error) {
+		if address == "broken.example:24444" {
+			return nil, errors.New("synthetic DNS failure")
+		}
+		return net.ResolveUDPAddr(network, address)
+	}
+	addrs, names, sources, unresolved, err := resolveAdaptiveServers(
+		[]string{"broken.example:24444", "127.0.0.1:24445"},
+		resolver,
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addrs) != 1 || len(names) != 1 || len(unresolved) != 1 {
+		t.Fatalf(
+			"unexpected resolved set: addrs=%v names=%v unresolved=%v",
+			addrs,
+			names,
+			unresolved,
+		)
+	}
+	if unresolved[0] != "broken.example:24444" {
+		t.Fatalf("wrong unresolved endpoint: %q", unresolved[0])
+	}
+	if names[0] != "127.0.0.1:24445" {
+		t.Fatalf("wrong surviving endpoint: %q", names[0])
+	}
+	if got := sources[addrs[0].String()]; got != names[0] {
+		t.Fatalf("source mapping mismatch: got %q want %q", got, names[0])
+	}
+}
+
+func TestResolveAdaptiveServersFailsOnlyWhenAllUnavailable(t *testing.T) {
+	resolver := func(string, string) (*net.UDPAddr, error) {
+		return nil, errors.New("synthetic DNS failure")
+	}
+	if _, _, _, _, err := resolveAdaptiveServers(
+		[]string{"ru-01.example:24444", "ru-02.example:24444"},
+		resolver,
+		nil,
+	); err == nil {
+		t.Fatal("all unavailable endpoints must fail startup")
+	}
+}
+
+func TestWaitForAdaptiveServerRecovery(t *testing.T) {
+	attempts := 0
+	resolver := func(network, address string) (*net.UDPAddr, error) {
+		attempts++
+		if attempts < 2 {
+			return nil, errors.New("synthetic DNS failure")
+		}
+		return net.ResolveUDPAddr(network, "127.0.0.1:24445")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	if !waitForAdaptiveServerRecovery(
+		ctx,
+		[]string{"ru-02.example:24444"},
+		5*time.Millisecond,
+		resolver,
+	) {
+		t.Fatal("recovered standby endpoint was not detected")
+	}
+	if attempts < 2 {
+		t.Fatalf("resolver was not retried: attempts=%d", attempts)
+	}
+}
+
+func TestPreferAdaptiveServerPreservesActiveAcrossDNSPoolRebuild(t *testing.T) {
+	servers := []string{
+		"ru-01.example:24444",
+		"ru-02.example:24444",
+		"ge-01.example:24444",
+	}
+	got := preferAdaptiveServer(servers, "ru-02.example:24444")
+	want := []string{
+		"ru-02.example:24444",
+		"ru-01.example:24444",
+		"ge-01.example:24444",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("unexpected server count: got=%v want=%v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("active endpoint was not preserved: got=%v want=%v", got, want)
+		}
+	}
+	if servers[0] != "ru-01.example:24444" {
+		t.Fatal("input server order was mutated")
+	}
+
+	missing := preferAdaptiveServer(servers, "missing.example:24444")
+	for i := range servers {
+		if missing[i] != servers[i] {
+			t.Fatalf("missing preferred endpoint changed order: got=%v", missing)
+		}
 	}
 }

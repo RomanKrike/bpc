@@ -5,6 +5,7 @@ BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 RU_DIR="${BPC_STATE_DIR}/ru-node"
 AGENT_DIR="${RU_DIR}/agent"
+CONTROL_DIR="${BPC_STATE_DIR}/control"
 KEY_DIR="${AGENT_DIR}/wgshim-keys"
 WG_INTERFACE="${BPC_AGENT_WG_INTERFACE:-bpcag0}"
 WG_PORT="${BPC_AGENT_WG_PORT:-51821}"
@@ -299,7 +300,51 @@ os.replace(tmp, path)
 PY
 install -m 0755 "${relay_binary}" /usr/local/bin/bpc-agent-relay
 
-if [[ ! -s "${AGENT_DIR}/server.key" ]]; then
+canonical_server_private=""
+canonical_server_public=""
+if [[ -s "${CONTROL_DIR}/config.json" ]]; then
+  canonical_server_private="$(python3 - "${CONTROL_DIR}/config.json" <<'PY'
+import base64
+import json
+import sys
+from pathlib import Path
+
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+private_key = str(value.get("wireguard_server_private_key", "")).strip()
+if private_key:
+    try:
+        raw = base64.b64decode(private_key, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise SystemExit(f"invalid canonical WireGuard private key: {exc}") from exc
+    if len(raw) != 32:
+        raise SystemExit("invalid canonical WireGuard private key length")
+    print(private_key)
+PY
+)"
+  canonical_server_public="$(python3 - "${CONTROL_DIR}/config.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(str(value.get("wireguard_server_public_key", "")).strip())
+PY
+)"
+fi
+
+if [[ -n "${canonical_server_private}" ]]; then
+  umask 077
+  printf '%s\n' "${canonical_server_private}" > "${AGENT_DIR}/server.key.tmp"
+  wg pubkey < "${AGENT_DIR}/server.key.tmp" > "${AGENT_DIR}/server.pub.tmp"
+  derived_public="$(tr -d '\r\n' < "${AGENT_DIR}/server.pub.tmp")"
+  if [[ -n "${canonical_server_public}" && "${canonical_server_public}" != "${derived_public}" ]]; then
+    rm -f "${AGENT_DIR}/server.key.tmp" "${AGENT_DIR}/server.pub.tmp"
+    echo "Canonical WireGuard overlay key pair is inconsistent" >&2
+    exit 4
+  fi
+  mv "${AGENT_DIR}/server.key.tmp" "${AGENT_DIR}/server.key"
+  mv "${AGENT_DIR}/server.pub.tmp" "${AGENT_DIR}/server.pub"
+elif [[ ! -s "${AGENT_DIR}/server.key" ]]; then
   umask 077
   wg genkey > "${AGENT_DIR}/server.key"
   wg pubkey < "${AGENT_DIR}/server.key" > "${AGENT_DIR}/server.pub"

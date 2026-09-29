@@ -16,6 +16,7 @@ func runEmbeddedWireGuard(
 	agentctl.WireGuardProfile,
 	*log.Logger,
 	func(tunnelTelemetry),
+	<-chan pathSwitchEvent,
 ) error {
 	return errors.New("embedded WireGuard is available on Windows only")
 }

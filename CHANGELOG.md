@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.20.0
+
+### Added
+- Multi-Public-Node runtime paths for one Device overlay across multiple BPC Public Nodes.
+- Authenticated path health probing with ACTIVE/STANDBY selection, RTT/loss telemetry, hysteresis and warm standby failover.
+- Shared canonical WireGuard overlay identity across eligible Public Nodes while keeping Device identity, overlay IP, Access and routes independent of the selected Node.
+- Cross-node WireGuard rehandshake without recreating the Windows Wintun interface or client overlay routes.
+- Automatic recovery of temporarily unresolvable Public Node DNS names without restarting the Agent or overlay.
+- Event-driven gateway dataplane reconciliation for replicated Device, Access and config state.
+- Windows `status-json` transport telemetry and a reusable PowerShell failover acceptance harness.
+- Independent-gateway acceptance coverage, including persistent routed TCP and RDP-like flows across a complete active gateway failure.
+
+### Changed
+- Active-path failure can switch to a healthy warm standby after the first fully missed authenticated probe round.
+- Cross-node rehandshake events use latest-value coalescing so rapid transitions cannot silently lose the newest selected Node.
+- Recovered DNS paths return as standby while preserving the current active endpoint.
+- Windows endpoint pinning preserves pre-existing physical host routes instead of replacing them.
+- Gateway reconciliation preserves compatibility site routes and safely reconciles rotated BPC-owned WireGuard peers.
+- Gateway heartbeat and path-triggered reconciliation are serialized to avoid concurrent WireGuard/firewall mutations.
+
+### Fixed
+- A DNS failure for one configured Public Node no longer prevents startup when another path is usable.
+- All Public Node endpoint addresses are pinned outside the Windows overlay so standby traffic cannot loop into the tunnel.
+- Gateway systemd reconciliation has the required netlink access while the narrow oneshot is capability-bounded to `CAP_NET_ADMIN`.
+- Failed removal of a rotated owned WireGuard peer no longer advances the ownership ledger prematurely.
+
+### Acceptance
+- CI exercises two independent WireGuard gateways sharing only the canonical static overlay identity.
+- Recorded localhost routed-gateway acceptance selected the standby in about 649 ms while keeping overlay IP and WireGuard identity/routes unchanged.
+- In that routed, non-NAT topology, an existing RDP-like TCP flow and an existing TCP stream survived the gateway failure without application reconnect; UDP and ICMP experienced bounded loss/gaps during handoff.
+
+### Limitations
+- Real Windows + multi-VPS timing still depends on the deployed network, ISP path and host scheduling; the repository includes a measurement harness rather than claiming a fixed production failover time.
+- Linux NAT/conntrack state is not replicated between Public Nodes. Established flows that depend on failed-node NAT state are not guaranteed to survive.
+- Public Node reboot/systemd failure acceptance on the actual production hosts remains an operational validation step rather than a CI guarantee.
+
 ## 0.19.0
 
 ### Added

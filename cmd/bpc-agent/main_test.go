@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/RomanKrike/bpc/internal/agentctl"
+	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
 func testBootstrap(t *testing.T, device string) agentctl.Bootstrap {
@@ -134,5 +135,56 @@ func TestLegacyBootstrapV2StillParses(t *testing.T) {
 	}
 	if err := agentctl.ValidateBootstrap(*got); err != nil {
 		t.Fatalf("legacy bootstrap rejected: %v", err)
+	}
+}
+
+func TestTransportNodeTrackerOnlySignalsCrossNodeSwitch(t *testing.T) {
+	nodes := map[string]string{
+		"ru-01.example:24444": "ru-01",
+		"ru-01.example:24445": "ru-01",
+		"ru-02.example:24444": "ru-02",
+	}
+	tracker := &transportNodeTracker{}
+	if _, changed := tracker.observe(
+		wgshim.EndpointReport{Selected: "ru-01.example:24444"},
+		nodes,
+	); changed {
+		t.Fatal("initial path must not request a rehandshake")
+	}
+	if _, changed := tracker.observe(
+		wgshim.EndpointReport{Selected: "ru-01.example:24445", Switched: true},
+		nodes,
+	); changed {
+		t.Fatal("same-node port switch must not request a rehandshake")
+	}
+	event, changed := tracker.observe(
+		wgshim.EndpointReport{Selected: "ru-02.example:24444", Switched: true},
+		nodes,
+	)
+	if !changed {
+		t.Fatal("cross-node switch did not request a rehandshake")
+	}
+	if event.FromNode != "ru-01" || event.ToNode != "ru-02" {
+		t.Fatalf("unexpected switch event: %#v", event)
+	}
+}
+
+func TestPublishLatestPathSwitchKeepsNewestEvent(t *testing.T) {
+	mailbox := make(chan pathSwitchEvent, 1)
+	first := pathSwitchEvent{FromNode: "ru-01", ToNode: "ru-02"}
+	latest := pathSwitchEvent{FromNode: "ru-02", ToNode: "ge-01"}
+	if replaced := publishLatestPathSwitch(mailbox, first); replaced {
+		t.Fatal("empty mailbox unexpectedly reported coalescing")
+	}
+	if replaced := publishLatestPathSwitch(mailbox, latest); !replaced {
+		t.Fatal("full mailbox did not coalesce the stale switch")
+	}
+	select {
+	case got := <-mailbox:
+		if got != latest {
+			t.Fatalf("stale switch retained: got %#v want %#v", got, latest)
+		}
+	default:
+		t.Fatal("latest path switch was lost")
 	}
 }

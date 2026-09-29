@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -139,3 +141,82 @@ def test_public_join_uses_invitation_hostname(tmp_path, monkeypatch, presented, 
 def test_join_does_not_claim_ready_for_unhealthy_capability(state):
     with pytest.raises(enrollment.EnrollmentError, match="not ready"):
         enrollment.require_role_health({"controller": True}, {"controller": state})
+
+
+
+def test_controller_discovers_paths_only_from_live_matching_public_nodes(tmp_path):
+    from test_node_join_api import control_server
+
+    overlay = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    config = {
+        "wireguard_server_public_key": overlay,
+        "wgshim_server": "ru-01.example:24444",
+    }
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    nodes = tmp_path / "nodes"
+    nodes.mkdir()
+    now = int(time.time())
+
+    def node(name, host, ports, key=overlay, *, active=True):
+        (nodes / f"{name}.json").write_text(
+            json.dumps(
+                {
+                    "node_id": name,
+                    "name": name,
+                    "last_seen": now,
+                    "roles": {"gateway": True, "relay": True},
+                    "services": {"relay": "active" if active else "inactive"},
+                    "endpoints": [{"host": host, "public": True, "enabled": True}],
+                    "transport": {
+                        "udp_ports": ports,
+                        "overlay_public_key": key,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    node("ru-01", "ru-01.example", [31001, 31002])
+    node("ru-02", "ru-02.example", [32001, 32002])
+    node(
+        "wrong-key",
+        "wrong.example",
+        [33001],
+        key="AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+    )
+    node("inactive", "inactive.example", [34001], active=False)
+
+    handler = object.__new__(control_server.ControlHandler)
+    handler.server = SimpleNamespace(state_dir=str(tmp_path))
+    paths = handler._discovered_transport_paths(config)
+
+    assert paths[:5] == [
+        {
+            "node": "ru-01",
+            "endpoint": "ru-01.example:24444",
+            "peer_public_key": overlay,
+        },
+        {
+            "node": "ru-01",
+            "endpoint": "ru-01.example:31001",
+            "peer_public_key": overlay,
+        },
+        {
+            "node": "ru-02",
+            "endpoint": "ru-02.example:32001",
+            "peer_public_key": overlay,
+        },
+        {
+            "node": "ru-01",
+            "endpoint": "ru-01.example:31002",
+            "peer_public_key": overlay,
+        },
+        {
+            "node": "ru-02",
+            "endpoint": "ru-02.example:32002",
+            "peer_public_key": overlay,
+        },
+    ]
+    encoded = json.dumps(paths)
+    assert "wrong.example" not in encoded
+    assert "inactive.example" not in encoded

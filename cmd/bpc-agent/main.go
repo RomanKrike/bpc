@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/RomanKrike/bpc/internal/agentctl"
@@ -38,17 +37,12 @@ type tunnelTelemetry struct {
 }
 
 type transportTelemetry struct {
-	UpdatedAt int64  `json:"updated_at"`
-	Endpoint  string `json:"endpoint"`
-	RTTMS     int64  `json:"rtt_ms"`
-	Reachable int    `json:"reachable"`
-	Total     int    `json:"total"`
-}
-
-type runtimeSupervisor struct {
-	mu          sync.Mutex
-	fingerprint string
-	cancel      context.CancelFunc
+	Paths     []wgshim.PathHealth `json:"paths,omitempty"`
+	UpdatedAt int64               `json:"updated_at"`
+	Endpoint  string              `json:"endpoint"`
+	RTTMS     int64               `json:"rtt_ms"`
+	Reachable int                 `json:"reachable"`
+	Total     int                 `json:"total"`
 }
 
 func main() {
@@ -552,65 +546,36 @@ func syncRuntimeState(
 	return writeUIStatus(state)
 }
 
-func (s *runtimeSupervisor) apply(
-	parent context.Context,
-	cfg agentctl.RuntimeConfig,
-	profile agentctl.WireGuardProfile,
-	logger *log.Logger,
-) error {
-	raw, err := json.Marshal(struct {
-		Config  agentctl.RuntimeConfig
-		Profile agentctl.WireGuardProfile
-	}{cfg, profile})
-	if err != nil {
-		return err
-	}
-	fingerprint := string(raw)
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if fingerprint == s.fingerprint && s.cancel != nil {
-		return nil
-	}
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
-	}
-
-	ctx, cancel := context.WithCancel(parent)
-	s.cancel = cancel
-	s.fingerprint = fingerprint
-
-	go runWGShimLoop(ctx, cfg, logger)
-	if profile.Complete() {
-		go func() {
-			telemetry := func(stats tunnelTelemetry) {
-				if err := writeUIRuntimeStatus(stats); err != nil && ctx.Err() == nil {
-					logger.Printf("write UI tunnel telemetry: %v", err)
-				}
-			}
-			if err := runEmbeddedWireGuard(ctx, cfg, profile, logger, telemetry); err != nil && ctx.Err() == nil {
-				logger.Printf("embedded WireGuard stopped: %v", err)
-			}
-		}()
-	} else if cfg.LegacyTunnel != "" {
-		go runLegacyWireGuardLoop(ctx, cfg, logger)
-	} else {
-		logger.Printf("no provisioned WireGuard profile; control plane remains online")
-	}
-	return nil
+type transportNodeTracker struct {
+	current string
 }
 
-func (s *runtimeSupervisor) stop() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.cancel != nil {
-		s.cancel()
-		s.cancel = nil
+func (t *transportNodeTracker) observe(
+	report wgshim.EndpointReport,
+	nodeByEndpoint map[string]string,
+) (pathSwitchEvent, bool) {
+	node := nodeByEndpoint[report.Selected]
+	if node == "" {
+		return pathSwitchEvent{}, false
 	}
+	previous := t.current
+	t.current = node
+	if !report.Switched || previous == "" || previous == node {
+		return pathSwitchEvent{}, false
+	}
+	return pathSwitchEvent{FromNode: previous, ToNode: node}, true
 }
 
 func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) {
+	runWGShimLoopWithSwitch(ctx, cfg, logger, nil)
+}
+
+func runWGShimLoopWithSwitch(
+	ctx context.Context,
+	cfg agentctl.RuntimeConfig,
+	logger *log.Logger,
+	pathSwitches chan pathSwitchEvent,
+) {
 	for ctx.Err() == nil {
 		psk, err := base64.StdEncoding.DecodeString(cfg.WGShimPSK)
 		if err != nil || len(psk) != 32 {
@@ -637,55 +602,61 @@ func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.
 			logger.Printf("create RX codec: %v", err)
 			return
 		}
-		servers := append([]string(nil), cfg.WGShimServers...)
-		if len(servers) == 0 {
-			servers = []string{cfg.WGShimServer}
+		paths := cfg.TransportPaths()
+		servers := make([]string, 0, len(paths))
+		nodeByEndpoint := make(map[string]string, len(paths))
+		for _, path := range paths {
+			servers = append(servers, path.Endpoint)
+			nodeByEndpoint[path.Endpoint] = path.Node
 		}
-		if len(servers) > 1 {
-			err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
-				LocalListen:     cfg.WGShimListen,
-				Servers:         servers,
-				TX:              tx,
-				RX:              rx,
-				Logger:          logger,
-				StatsInterval:   defaultLogEvery,
-				ProbeTimeout:    900 * time.Millisecond,
-				SwitchThreshold: 10 * time.Millisecond,
-				OnEndpointReport: func(report wgshim.EndpointReport) {
-					rttMS := int64(0)
-					if report.RTT > 0 {
-						rttMS = report.RTT.Milliseconds()
-						if rttMS == 0 {
-							rttMS = 1
-						}
+		tracker := &transportNodeTracker{}
+		err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
+			LocalListen:     cfg.WGShimListen,
+			Servers:         servers,
+			TX:              tx,
+			RX:              rx,
+			Logger:          logger,
+			StatsInterval:   defaultLogEvery,
+			ProbeTimeout:    400 * time.Millisecond,
+			SwitchThreshold: 10 * time.Millisecond,
+			OnEndpointReport: func(report wgshim.EndpointReport) {
+				for i := range report.Paths {
+					report.Paths[i].Node = nodeByEndpoint[report.Paths[i].Endpoint]
+				}
+				if event, changedNode := tracker.observe(report, nodeByEndpoint); changedNode {
+					logger.Printf(
+						"transport Public Node switched from=%s to=%s endpoint=%s",
+						event.FromNode,
+						event.ToNode,
+						report.Selected,
+					)
+					if publishLatestPathSwitch(pathSwitches, event) {
+						logger.Printf(
+							"overlay path-switch notification coalesced from=%s to=%s",
+							event.FromNode,
+							event.ToNode,
+						)
 					}
-					if writeErr := writeUITransportStatus(transportTelemetry{
-						UpdatedAt: time.Now().Unix(),
-						Endpoint:  report.Selected,
-						RTTMS:     rttMS,
-						Reachable: report.Reachable,
-						Total:     report.Total,
-					}); writeErr != nil && ctx.Err() == nil {
-						logger.Printf("write UI transport telemetry: %v", writeErr)
+				}
+				rttMS := int64(0)
+				if report.RTT > 0 {
+					rttMS = report.RTT.Milliseconds()
+					if rttMS == 0 {
+						rttMS = 1
 					}
-				},
-			})
-		} else {
-			_ = writeUITransportStatus(transportTelemetry{
-				UpdatedAt: time.Now().Unix(),
-				Endpoint:  cfg.WGShimServer,
-				Reachable: 1,
-				Total:     1,
-			})
-			err = wgshim.RunClient(ctx, wgshim.ClientConfig{
-				LocalListen:   cfg.WGShimListen,
-				Server:        cfg.WGShimServer,
-				TX:            tx,
-				RX:            rx,
-				Logger:        logger,
-				StatsInterval: defaultLogEvery,
-			})
-		}
+				}
+				if writeErr := writeUITransportStatus(transportTelemetry{
+					UpdatedAt: time.Now().Unix(),
+					Endpoint:  report.Selected,
+					RTTMS:     rttMS,
+					Reachable: report.Reachable,
+					Total:     report.Total,
+					Paths:     report.Paths,
+				}); writeErr != nil && ctx.Err() == nil {
+					logger.Printf("write UI transport telemetry: %v", writeErr)
+				}
+			},
+		})
 		if ctx.Err() != nil {
 			return
 		}
@@ -894,19 +865,20 @@ func disconnectAgent() error {
 }
 
 type uiStatus struct {
-	Version       string   `json:"version"`
-	Device        string   `json:"device"`
-	DeviceID      string   `json:"device_id"`
-	Service       string   `json:"service"`
-	Control       string   `json:"control"`
-	Relay         string   `json:"relay"`
-	RelayPool     []string `json:"relay_pool,omitempty"`
-	TunnelAddress string   `json:"tunnel_address"`
-	Routes        []string `json:"routes"`
-	UpdatedAt     int64    `json:"updated_at,omitempty"`
-	HandshakeAt   int64    `json:"handshake_at,omitempty"`
-	RXBytes       uint64   `json:"rx_bytes,omitempty"`
-	TXBytes       uint64   `json:"tx_bytes,omitempty"`
+	Version       string              `json:"version"`
+	Device        string              `json:"device"`
+	DeviceID      string              `json:"device_id"`
+	Service       string              `json:"service"`
+	Control       string              `json:"control"`
+	Relay         string              `json:"relay"`
+	RelayPool     []string            `json:"relay_pool,omitempty"`
+	TunnelAddress string              `json:"tunnel_address"`
+	Routes        []string            `json:"routes"`
+	UpdatedAt     int64               `json:"updated_at,omitempty"`
+	HandshakeAt   int64               `json:"handshake_at,omitempty"`
+	RXBytes       uint64              `json:"rx_bytes,omitempty"`
+	TXBytes       uint64              `json:"tx_bytes,omitempty"`
+	Transport     *transportTelemetry `json:"transport,omitempty"`
 }
 
 func uiStatusPath() (string, error) {
@@ -1041,6 +1013,14 @@ func printStatusJSON() error {
 				payload.HandshakeAt = runtimeStatus.HandshakeAt
 				payload.RXBytes = runtimeStatus.RXBytes
 				payload.TXBytes = runtimeStatus.TXBytes
+			}
+		}
+	}
+	if transportPath, transportErr := uiTransportStatusPath(); transportErr == nil {
+		if transportRaw, readErr := os.ReadFile(transportPath); readErr == nil {
+			var transportStatus transportTelemetry
+			if json.Unmarshal(transportRaw, &transportStatus) == nil {
+				payload.Transport = &transportStatus
 			}
 		}
 	}

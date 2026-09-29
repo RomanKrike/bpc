@@ -87,6 +87,10 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
         ROOT / "deploy" / "bpc_gateway_snapshot.py",
         runtime / "bpc_gateway_snapshot.py",
     )
+    shutil.copy(
+        ROOT / "deploy" / "bpc_gateway_dataplane.py",
+        runtime / "bpc_gateway_dataplane.py",
+    )
     shutil.copytree(ROOT / "src" / "bpc_connect", runtime / "src" / "bpc_connect")
 
     completed = subprocess.run(
@@ -99,6 +103,28 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
 
     assert completed.returncode == 0, completed.stderr
     assert "BPC Agent control plane" in completed.stdout
+
+
+def test_node_runtime_allows_gateway_netlink_reconciliation() -> None:
+    assert (
+        NODE_ENROLLMENT.count(
+            "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK"
+        )
+        >= 2
+    )
+    # The long-running Node daemon still provisions roles and must not be
+    # capability-bounded to NET_ADMIN. Only the narrow local reconcile oneshot is.
+    assert NODE_ENROLLMENT.count("CapabilityBoundingSet=CAP_NET_ADMIN") == 1
+    assert NODE_ENROLLMENT.count("AmbientCapabilities=CAP_NET_ADMIN") == 1
+
+
+def test_node_runtime_watches_replicated_gateway_state() -> None:
+    assert "bpc-gateway-reconcile.service" in NODE_ENROLLMENT
+    assert "bpc-gateway-reconcile.path" in NODE_ENROLLMENT
+    assert 'PathChanged={state_dir / "control" / "devices"}' in NODE_ENROLLMENT
+    assert 'PathChanged={state_dir / "control" / "access"}' in NODE_ENROLLMENT
+    assert 'PathChanged={state_dir / "control" / "config.json"}' in NODE_ENROLLMENT
+    assert "local-reconcile" in NODE_ENROLLMENT
 
 
 def test_joined_node_runtime_is_staged_inside_state_dir() -> None:
