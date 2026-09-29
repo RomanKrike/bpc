@@ -119,6 +119,13 @@ def device_view(value):
         "revoked": bool(value.get("revoked", False)),
     }
 
+def stable_policy_view(value):
+    return {
+        key: nested
+        for key, nested in value.items()
+        if key not in {"created_at", "updated_at", "last_seen"}
+    }
+
 node_public = ""
 node_pub_path = root / "identity" / "node.pub"
 if node_pub_path.is_file():
@@ -154,8 +161,8 @@ payload = {
     "node_public_key": node_public,
     "overlay_public_key": overlay_public,
     "devices": records(control / "devices", device_view),
-    "access": records(control / "access"),
-    "routes": records(control / "routes"),
+    "access": records(control / "access", stable_policy_view),
+    "routes": records(control / "routes", stable_policy_view),
     "wg_peers": peers,
 }
 output.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -218,20 +225,6 @@ raise SystemExit(0 if success else 1)
 PY
 }
 
-run_stage() {
-  local command="$1"
-  shift
-  local before after
-  before="$(mktemp)"
-  after="$(mktemp)"
-  trap 'rm -f "${before:-}" "${after:-}"' RETURN
-  snapshot "${before}"
-  "${command}" "$@"
-  wait_active "wg-quick@${WG_INTERFACE}.service"
-  snapshot "${after}"
-  compare_snapshots "${before}" "${after}" "${REPORT}"
-}
-
 case "${ACTION}" in
   control)
     systemctl cat bpc-control.service >/dev/null
@@ -279,6 +272,7 @@ case "${ACTION}" in
     printf '%s\n' "${WG_INTERFACE}" > "${PERSIST_DIR}/wireguard-interface"
     chmod 0600 "${PERSIST_DIR}/wireguard-interface"
     echo "Reboot baseline saved to ${PERSIST_DIR}/before-reboot.json"
+    echo "Keep continuous BPC client traffic running through the reboot."
     echo "After the real Node reboot run:"
     echo "  sudo $0 verify-reboot"
     ;;
