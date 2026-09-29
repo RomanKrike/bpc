@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.20.1
+
+### Fixed
+- Restore replicated gateway WireGuard peers and Access state locally during Node startup before the first remote heartbeat, so Public Node reboot recovery does not depend on immediate Controller reachability.
+- Preserve the BPC 0.18.4 live-interface invariant during routine reconcile/update: an already-live BPC-owned WireGuard interface is updated in place instead of restarting `wg-quick`, preserving peer and learned endpoint state.
+
+### Added
+- Controller-side Multi-Public-Node acceptance proving Device records, Access policy, overlay address, canonical peer identity and Access-derived routes stay unchanged when the active Public Node becomes unavailable.
+- Root-only Stage 8 operational acceptance harness for `bpc-control` restart, transport runtime restart, `bpc-update` and two-phase real Node reboot.
+- Restart/reboot reports compare Node and overlay identity, Devices, Access, routes, WireGuard peer set, AllowedIPs and learned endpoint presence before and after each action.
+
+### Notes
+- A physical reboot necessarily destroys kernel-resident learned WireGuard endpoints. BPC restores the replicated peer definitions before the first heartbeat; active client traffic then relearns the endpoint.
+- Real PC004 + ru-01 + ru-02 timing and reboot measurements remain host-level operational acceptance rather than CI guarantees.
+
 ## 0.20.0
 
 ### Added
