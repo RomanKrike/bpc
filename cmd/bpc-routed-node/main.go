@@ -42,10 +42,11 @@ type runtimeStatus struct {
 }
 
 type kernelState struct {
-	mu          sync.Mutex
-	localNodeID string
-	interfaceID string
-	routes      map[string]struct{}
+	mu            sync.Mutex
+	localNodeID   string
+	interfaceID   string
+	overlaySubnet string
+	routes        map[string]struct{}
 	natNoSNAT   map[string]struct{}
 	siteNAT     map[string]struct{}
 	forward     map[string]struct{}
@@ -68,6 +69,10 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
 
+	previousOverlay := k.overlaySubnet
+	if previousOverlay == "" {
+		previousOverlay = config.OverlaySubnet
+	}
 	desiredRoutes := make(map[string]struct{})
 	if config.LocalPublic {
 		for _, route := range config.Routes {
@@ -115,7 +120,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 		comment := "bpc-routed-nonat:" + k.interfaceID + ":" + cidr
 		check := []string{
 			"iptables", "-t", "nat", "-C", "POSTROUTING",
-			"-s", config.OverlaySubnet,
+			"-s", previousOverlay,
 			"-d", cidr,
 			"-m", "comment", "--comment", comment,
 			"-j", "ACCEPT",
@@ -136,7 +141,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 		comment := "bpc-routed-nonat:" + k.interfaceID + ":" + cidr
 		bestEffort(
 			"iptables", "-t", "nat", "-D", "POSTROUTING",
-			"-s", config.OverlaySubnet,
+			"-s", previousOverlay,
 			"-d", cidr,
 			"-m", "comment", "--comment", comment,
 			"-j", "ACCEPT",
@@ -225,7 +230,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 		comment := "bpc-routed-site-nat:" + k.interfaceID + ":" + cidr
 		bestEffort(
 			"iptables", "-t", "nat", "-D", "POSTROUTING",
-			"-s", config.OverlaySubnet,
+			"-s", previousOverlay,
 			"-d", cidr,
 			"-m", "comment", "--comment", comment,
 			"-j", "MASQUERADE",
@@ -256,7 +261,15 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 	}
 	k.siteNAT = desiredSiteNAT
 	k.forward = desiredForward
+	k.overlaySubnet = config.OverlaySubnet
 	return nil
+}
+
+func (k *kernelState) cleanup() {
+	k.mu.Lock()
+	overlay := k.overlaySubnet
+	k.mu.Unlock()
+	_ = k.reconcile(routed.RoutingConfig{OverlaySubnet: overlay})
 }
 
 func writeStatus(path string, value runtimeStatus) {
@@ -385,6 +398,7 @@ func main() {
 	if err := kernel.reconcile(config); err != nil {
 		logger.Fatal(err)
 	}
+	defer kernel.cleanup()
 
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
@@ -456,6 +470,6 @@ func main() {
 	err = <-errCh
 	stop()
 	if err != nil {
-		logger.Fatal(err)
+		logger.Printf("routed runtime stopped: %v", err)
 	}
 }
