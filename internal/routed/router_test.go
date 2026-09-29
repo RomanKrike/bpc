@@ -2,6 +2,7 @@ package routed
 
 import (
 	"encoding/binary"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -250,5 +251,25 @@ func TestMeshReplayWindowRejectsDuplicateSequence(t *testing.T) {
 	}
 	if peer.acceptSequence(1) {
 		t.Fatal("stale sequence outside replay window accepted")
+	}
+}
+
+
+func TestDirectionalLinkFailsWithoutOwnProbeReplies(t *testing.T) {
+	peer := &meshPeer{
+		config: LinkConfig{ID: "home-link", PeerNodeID: "home-01", Cost: 10},
+		addr: &net.UDPAddr{IP: net.ParseIP("203.0.113.10"), Port: DefaultMeshPort},
+		addressSince: time.Unix(100, 0),
+		lastAuth: time.Unix(200, 0),
+	}
+	status := peer.status("ru-02", time.Unix(200, 0))
+	if status.Health != "failed" {
+		t.Fatalf("inbound-only activity kept outbound link alive: %+v", status)
+	}
+
+	peer.recordProbe(true, 25*time.Millisecond, time.Unix(201, 0))
+	status = peer.status("ru-02", time.Unix(201, 0))
+	if status.Health != "healthy" {
+		t.Fatalf("fresh probe reply did not restore link: %+v", status)
 	}
 }
