@@ -223,6 +223,7 @@ type pendingProbe struct {
 }
 
 type Mesh struct {
+	resolve     func(string, string) (*net.UDPAddr, error)
 	localNodeID string
 	conn        *net.UDPConn
 	logger      *log.Logger
@@ -253,6 +254,7 @@ func NewMesh(localNodeID string, listenPort int, logger *log.Logger) (*Mesh, err
 		return nil, fmt.Errorf("listen routed mesh UDP: %w", err)
 	}
 	return &Mesh{
+		resolve:     net.ResolveUDPAddr,
 		localNodeID: localNodeID,
 		conn:        conn,
 		logger:      logger,
@@ -271,7 +273,7 @@ func (m *Mesh) SetDataHandler(handler func(peerID string, payload []byte)) {
 	m.onDataMu.Unlock()
 }
 
-func makePeer(localNodeID string, config LinkConfig) (*meshPeer, error) {
+func makePeer(localNodeID string, config LinkConfig, resolve func(string, string) (*net.UDPAddr, error)) (*meshPeer, error) {
 	psk, err := config.PSKBytes()
 	if err != nil {
 		return nil, err
@@ -308,16 +310,13 @@ func makePeer(localNodeID string, config LinkConfig) (*meshPeer, error) {
 		return nil, fmt.Errorf("create routed session epoch: %w", err)
 	}
 	if config.PeerEndpoint != "" {
-		addr, resolveErr := net.ResolveUDPAddr("udp", config.PeerEndpoint)
-		if resolveErr != nil {
-			return nil, fmt.Errorf(
-				"resolve routed peer %s endpoint %q: %w",
-				config.PeerNodeID,
-				config.PeerEndpoint,
-				resolveErr,
-			)
+		if resolve == nil {
+			resolve = net.ResolveUDPAddr
 		}
-		peer.setAddress(addr)
+		// A transient DNS failure is a path failure, not a failure of the pool.
+		if addr, err := resolve("udp", config.PeerEndpoint); err == nil {
+			peer.setAddress(addr)
+		}
 	}
 	return peer, nil
 }
@@ -335,9 +334,12 @@ func (m *Mesh) Reconcile(links []LinkConfig) error {
 		if err := config.Validate(m.localNodeID); err != nil {
 			return err
 		}
-		candidate, err := makePeer(m.localNodeID, config)
+		candidate, err := makePeer(m.localNodeID, config, m.resolve)
 		if err != nil {
 			return err
+		}
+		if config.PeerEndpoint != "" && candidate.address() == nil && m.logger != nil {
+			m.logger.Printf("routed endpoint unresolved peer=%s endpoint=%s; retaining other uplinks", config.PeerNodeID, config.PeerEndpoint)
 		}
 		if previous := current[config.PeerNodeID]; previous != nil &&
 			previous.configuration().ID == config.ID &&
@@ -345,13 +347,13 @@ func (m *Mesh) Reconcile(links []LinkConfig) error {
 			previous.configMu.Lock()
 			previous.config = config
 			previous.configMu.Unlock()
-			if config.PeerEndpoint != "" {
-				addr, resolveErr := net.ResolveUDPAddr("udp", config.PeerEndpoint)
-				if resolveErr != nil {
-					return resolveErr
-				}
+			// Keep a working learned endpoint when DNS is temporarily down.
+			// Config reconciliation retries resolution without replacing session
+			// epochs, keys or the replay window.
+			if addr := candidate.address(); addr != nil {
 				previous.setAddress(addr)
 			}
+
 			next[config.PeerNodeID] = previous
 			continue
 		}

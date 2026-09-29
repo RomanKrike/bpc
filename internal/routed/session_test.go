@@ -166,3 +166,38 @@ func TestMeshUDPPrivateUplinkSurvivesPeerRestart(t *testing.T) {
 	defer b.Close()
 	roundTrip("after public restart")
 }
+
+func TestUnresolvedUplinkDoesNotBlockPoolOrDestroySession(t *testing.T) {
+	failDNS := true
+	m := &Mesh{localNodeID: "home", peers: map[string]*meshPeer{}, resolve: func(_ string, address string) (*net.UDPAddr, error) {
+		if address == "ru-01.example:24446" && failDNS {
+			return nil, &net.DNSError{Err: "temporary DNS failure", Name: "ru-01.example", IsTemporary: true}
+		}
+		return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 24446}, nil
+	}}
+	psk := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32))
+	links := []LinkConfig{{ID: "a", PeerNodeID: "ru-01", PeerEndpoint: "ru-01.example:24446", PSK: psk}, {ID: "b", PeerNodeID: "ru-02", PeerEndpoint: "ru-02.example:24446", PSK: psk}}
+	if err := m.Reconcile(links); err != nil {
+		t.Fatal(err)
+	}
+	if m.peer("ru-01").address() != nil || m.peer("ru-02").address() == nil {
+		t.Fatal("DNS failure blocked usable uplink")
+	}
+	first := m.peer("ru-01")
+	first.confirmRemoteEpoch([]byte("0123456789abcdef"))
+	first.acceptSequence(100)
+	failDNS = false
+	if err := m.Reconcile(links); err != nil {
+		t.Fatal(err)
+	}
+	if m.peer("ru-01") != first || first.address() == nil {
+		t.Fatal("DNS recovery replaced the session or failed to resolve")
+	}
+	failDNS = true
+	if err := m.Reconcile(links); err != nil {
+		t.Fatal(err)
+	}
+	if first.address() == nil || first.acceptSequence(100) || !first.sessionReady() {
+		t.Fatal("DNS failure lost endpoint/session or reset replay protection")
+	}
+}
