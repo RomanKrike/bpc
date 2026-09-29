@@ -113,11 +113,12 @@ release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
 release_identity="${BPC_ROOT}/current/deploy/bpc_identity.py"
 release_access="${BPC_ROOT}/current/deploy/bpc_access.py"
 release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"
+release_topology="${BPC_ROOT}/current/deploy/bpc_topology.py"
 release_controller_enrollment="${BPC_ROOT}/current/deploy/bpc_controller_enrollment.py"
 release_gateway_snapshot="${BPC_ROOT}/current/deploy/bpc_gateway_snapshot.py"
 release_gateway_dataplane="${BPC_ROOT}/current/deploy/bpc_gateway_dataplane.py"
 release_package="${BPC_ROOT}/current/src/bpc_connect"
-for required in "${release_control_server}" "${release_node_enrollment}" "${release_identity}" "${release_access}" "${release_control_state}" "${release_controller_enrollment}" "${release_gateway_snapshot}" "${release_gateway_dataplane}" "${release_package}"; do
+for required in "${release_control_server}" "${release_node_enrollment}" "${release_identity}" "${release_access}" "${release_control_state}" "${release_topology}" "${release_controller_enrollment}" "${release_gateway_snapshot}" "${release_gateway_dataplane}" "${release_package}"; do
   if [[ ! -e "${required}" ]]; then
     echo "BPC control runtime dependency is missing from the current release: ${required}" >&2
     exit 3
@@ -133,6 +134,7 @@ install -m 0600 "${release_node_enrollment}" "${runtime_tmp}/bpc_node_enrollment
 install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"
 install -m 0600 "${release_access}" "${runtime_tmp}/bpc_access.py"
 install -m 0600 "${release_control_state}" "${runtime_tmp}/bpc_control_state.py"
+install -m 0600 "${release_topology}" "${runtime_tmp}/bpc_topology.py"
 install -m 0600 "${release_controller_enrollment}" "${runtime_tmp}/bpc_controller_enrollment.py"
 install -m 0600 "${release_gateway_snapshot}" "${runtime_tmp}/bpc_gateway_snapshot.py"
 install -m 0600 "${release_gateway_dataplane}" "${runtime_tmp}/bpc_gateway_dataplane.py"
