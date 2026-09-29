@@ -28,6 +28,8 @@ type RoutingConfig struct {
 	Version       int          `json:"version"`
 	ListenPort    int          `json:"listen_port"`
 	OverlaySubnet string       `json:"overlay_subnet"`
+	LocalPublic    bool         `json:"local_public"`
+	LocalSiteRouter bool        `json:"local_site_router"`
 	Links         []LinkConfig `json:"links"`
 	Paths         []Path       `json:"paths"`
 	TransitPaths  []Path       `json:"transit_paths"`
@@ -201,21 +203,11 @@ func (r Route) Prefix() (netip.Prefix, error) {
 }
 
 func (c RoutingConfig) IsPublicNode(localNodeID string) bool {
-	for _, path := range c.Paths {
-		if len(path.Hops) > 0 && path.Hops[0] == localNodeID {
-			return true
-		}
-	}
-	return false
+	return c.LocalPublic
 }
 
 func (c RoutingConfig) IsSiteRouter(localNodeID string) bool {
-	for _, route := range c.Routes {
-		if route.OwnerNodeID == localNodeID {
-			return true
-		}
-	}
-	return false
+	return c.LocalSiteRouter
 }
 
 func (c RoutingConfig) RouteFor(addr netip.Addr) (Route, bool) {
