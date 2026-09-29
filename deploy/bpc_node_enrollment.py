@@ -1306,6 +1306,36 @@ def reconcile_local_gateway_state(state_dir: Path) -> None:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
+def reconcile_startup_gateway_state(
+    state_dir: Path,
+    roles: dict[str, Any],
+) -> bool:
+    """Restore replicated gateway peers/Access before the first remote heartbeat.
+
+    A reboot recreates the WireGuard interface from its interface-only wg-quick
+    config, so kernel peer/endpoints are empty until canonical replicated state
+    is reconciled. Do this immediately after transport roles start instead of
+    depending on Controller reachability or the next heartbeat.
+    """
+    if not bool(roles.get("gateway")):
+        return False
+    if not (state_dir / "control" / "config.json").is_file():
+        return False
+    try:
+        reconcile_local_gateway_state(state_dir)
+    except (
+        GatewayDataplaneError,
+        AccessError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise EnrollmentError(
+            f"Gateway startup dataplane reconciliation failed: {exc}"
+        ) from exc
+    return True
+
+
 def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any]:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict):
@@ -1800,6 +1830,12 @@ def cmd_daemon(args: argparse.Namespace) -> int:
             reconcile_roles(args.state_dir, roles, role_config)
         except EnrollmentError as exc:
             print(f"role reconciliation warning: {exc}", file=sys.stderr)
+        try:
+            reconcile_startup_gateway_state(args.state_dir, roles)
+        except EnrollmentError as exc:
+            # The immediate heartbeat below retries reconciliation after remote
+            # state refresh. Startup must remain available during service races.
+            print(f"startup gateway reconciliation warning: {exc}", file=sys.stderr)
 
     while True:
         enrollment = enrolled_state(args.state_dir)
