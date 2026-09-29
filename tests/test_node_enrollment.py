@@ -358,6 +358,7 @@ def test_site_router_heartbeat_owns_canonical_routes(tmp_path: Path) -> None:
     record = json.loads(routes[0].read_text(encoding="utf-8"))
     assert record["cidr"] == "192.168.88.0/24"
     assert record["node_id"] == joined["node_id"]
+    assert record["owner_node_id"] == joined["node_id"]
 
     enrollment.node_heartbeat(
         control,
