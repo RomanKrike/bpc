@@ -105,6 +105,12 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
     assert "BPC Agent control plane" in completed.stdout
 
 
+def test_node_runtime_allows_gateway_netlink_reconciliation() -> None:
+    assert "RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK" in NODE_ENROLLMENT
+    assert "CapabilityBoundingSet=CAP_NET_ADMIN" in NODE_ENROLLMENT
+    assert "AmbientCapabilities=CAP_NET_ADMIN" in NODE_ENROLLMENT
+
+
 def test_joined_node_runtime_is_staged_inside_state_dir() -> None:
     assert 'runtime_version = state_dir / f"runtime-{version}"' in NODE_ENROLLMENT
     assert 'runtime_link = state_dir / "runtime"' in NODE_ENROLLMENT
