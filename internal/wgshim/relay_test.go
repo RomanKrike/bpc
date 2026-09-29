@@ -299,7 +299,6 @@ func TestResolveAdaptiveServersFailsOnlyWhenAllUnavailable(t *testing.T) {
 	}
 }
 
-
 func TestWaitForAdaptiveServerRecovery(t *testing.T) {
 	attempts := 0
 	resolver := func(network, address string) (*net.UDPAddr, error) {
@@ -323,7 +322,6 @@ func TestWaitForAdaptiveServerRecovery(t *testing.T) {
 		t.Fatalf("resolver was not retried: attempts=%d", attempts)
 	}
 }
-
 
 func TestPreferAdaptiveServerPreservesActiveAcrossDNSPoolRebuild(t *testing.T) {
 	servers := []string{
