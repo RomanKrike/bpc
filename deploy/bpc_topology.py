@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import ipaddress
 import json
@@ -13,6 +14,7 @@ from typing import Any, Iterable
 
 DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 DEFAULT_TELEMETRY_TTL = 90
+ROUTED_MESH_PORT = 24446
 MAX_INTERMEDIATE_PUBLIC_NODES = 2
 MAX_PATH_HOPS = 4
 VALID_HEALTH = {"healthy", "degraded", "failed", "unknown"}
@@ -88,6 +90,321 @@ def route_records(control_dir: Path, *, include_revoked: bool = False) -> list[d
         record["owner_node_id"] = owner
         result.append(record)
     return result
+
+
+def _canonical_nodes(control_dir: Path) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    directory = Path(control_dir) / "nodes"
+    if not directory.is_dir():
+        return nodes
+    for path in sorted(directory.glob("*.json")):
+        try:
+            node = _read_json(path)
+        except (OSError, ValueError, json.JSONDecodeError, TopologyError):
+            continue
+        node_id = str(node.get("node_id", node.get("id", ""))).strip()
+        if not node_id or bool(node.get("revoked", False)):
+            continue
+        nodes.append(node)
+    return nodes
+
+
+def _is_public_node(node: dict[str, Any]) -> bool:
+    roles = node.get("roles", {})
+    return (
+        isinstance(roles, dict)
+        and bool(roles.get("gateway"))
+        and bool(roles.get("relay"))
+    )
+
+
+def _is_site_router(node: dict[str, Any]) -> bool:
+    roles = node.get("roles", {})
+    return isinstance(roles, dict) and bool(roles.get("site_router"))
+
+
+def _link_pair(a: str, b: str) -> tuple[str, str]:
+    left, right = sorted((str(a).strip(), str(b).strip()))
+    if not left or not right or left == right:
+        raise TopologyError("canonical topology link requires two distinct Nodes")
+    return left, right
+
+
+def topology_link_id(a: str, b: str) -> str:
+    left, right = _link_pair(a, b)
+    return hashlib.sha256(
+        f"{left}\0{right}".encode("utf-8")
+    ).hexdigest()[:32]
+
+
+def topology_link_path(control_dir: Path, a: str, b: str) -> Path:
+    return (
+        Path(control_dir)
+        / "topology"
+        / "links"
+        / f"{topology_link_id(a, b)}.json"
+    )
+
+
+def topology_link_records(control_dir: Path) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    directory = Path(control_dir) / "topology" / "links"
+    if not directory.is_dir():
+        return result
+    for path in sorted(directory.glob("*.json")):
+        try:
+            record = _read_json(path)
+            left, right = _link_pair(
+                str(record.get("a_node_id", "")),
+                str(record.get("b_node_id", "")),
+            )
+            psk = base64.b64decode(
+                str(record.get("psk", "")), validate=True
+            )
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            TopologyError,
+            base64.binascii.Error,
+        ):
+            continue
+        if len(psk) != 32:
+            continue
+        item = dict(record)
+        item["a_node_id"] = left
+        item["b_node_id"] = right
+        item["id"] = topology_link_id(left, right)
+        result.append(item)
+    return result
+
+
+def desired_topology_pairs(control_dir: Path) -> set[tuple[str, str]]:
+    nodes = _canonical_nodes(control_dir)
+    public = [
+        str(node.get("node_id", node.get("id", "")))
+        for node in nodes
+        if _is_public_node(node)
+    ]
+    sites = [
+        str(node.get("node_id", node.get("id", "")))
+        for node in nodes
+        if _is_site_router(node)
+    ]
+    pairs: set[tuple[str, str]] = set()
+    for index, left in enumerate(public):
+        for right in public[index + 1 :]:
+            pairs.add(_link_pair(left, right))
+    for site in sites:
+        for public_node in public:
+            if site != public_node:
+                pairs.add(_link_pair(site, public_node))
+    return pairs
+
+
+def _new_topology_link(a: str, b: str, now: int) -> dict[str, Any]:
+    left, right = _link_pair(a, b)
+    return {
+        "version": 1,
+        "id": topology_link_id(left, right),
+        "a_node_id": left,
+        "b_node_id": right,
+        "psk": base64.b64encode(secrets.token_bytes(32)).decode("ascii"),
+        "port": ROUTED_MESH_PORT,
+        "cost": 10,
+        "created_at": int(now),
+    }
+
+
+def ensure_topology_links(
+    control_dir: Path,
+    *,
+    now: int | None = None,
+) -> list[dict[str, Any]]:
+    """Reconcile stable link credentials only when topology membership changes."""
+    import bpc_control_state
+
+    timestamp = int(time.time()) if now is None else int(now)
+    desired = desired_topology_pairs(control_dir)
+    existing_records = topology_link_records(control_dir)
+    existing = {
+        _link_pair(
+            str(record["a_node_id"]),
+            str(record["b_node_id"]),
+        ): record
+        for record in existing_records
+    }
+
+    for pair in sorted(desired):
+        if pair in existing:
+            continue
+        record = _new_topology_link(*pair, timestamp)
+        target = topology_link_path(control_dir, *pair)
+        raw = json.dumps(record, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        if bpc_control_state.cluster_enabled(control_dir):
+            try:
+                bpc_control_state.mutation(
+                    control_dir,
+                    "CreateTopologyLink",
+                    [
+                        {
+                            "op": "put",
+                            "path": target,
+                            "data": raw,
+                            "if_absent": True,
+                        }
+                    ],
+                    issued_at=timestamp,
+                )
+            except bpc_control_state.ControlStateError as exc:
+                # Another concurrent heartbeat may have committed exactly this
+                # deterministic pair. Only that conflict is benign.
+                if exc.status != 409:
+                    raise
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if not target.exists():
+                _atomic_local_json(target, record)
+        try:
+            committed = _read_json(target)
+        except (OSError, ValueError, json.JSONDecodeError, TopologyError):
+            continue
+        existing[pair] = committed
+
+    obsolete = [
+        record
+        for pair, record in existing.items()
+        if pair not in desired
+    ]
+    if obsolete:
+        if bpc_control_state.cluster_enabled(control_dir):
+            operations = [
+                {
+                    "op": "delete",
+                    "path": topology_link_path(
+                        control_dir,
+                        str(record["a_node_id"]),
+                        str(record["b_node_id"]),
+                    ),
+                }
+                for record in obsolete
+            ]
+            bpc_control_state.mutation(
+                control_dir,
+                "DeleteObsoleteTopologyLinks",
+                operations,
+                issued_at=timestamp,
+            )
+        else:
+            for record in obsolete:
+                topology_link_path(
+                    control_dir,
+                    str(record["a_node_id"]),
+                    str(record["b_node_id"]),
+                ).unlink(missing_ok=True)
+
+    return topology_link_records(control_dir)
+
+
+def _public_endpoint(node: dict[str, Any], port: int) -> str:
+    endpoints = node.get("endpoints", [])
+    if not isinstance(endpoints, list):
+        return ""
+    for endpoint in endpoints:
+        if not isinstance(endpoint, dict):
+            continue
+        if not bool(endpoint.get("enabled", True)) or not bool(
+            endpoint.get("public", True)
+        ):
+            continue
+        host = str(endpoint.get("host", "")).strip()
+        if host:
+            return f"{host}:{port}"
+    return ""
+
+
+def routing_config_for_node(
+    control_dir: Path,
+    node_id: str,
+    *,
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(time.time()) if now is None else int(now)
+    nodes = {
+        str(node.get("node_id", node.get("id", ""))): node
+        for node in _canonical_nodes(control_dir)
+    }
+    local = nodes.get(str(node_id))
+    if local is None:
+        raise TopologyError("routing config requested for an unknown Node")
+
+    links: list[dict[str, Any]] = []
+    for record in topology_link_records(control_dir):
+        left = str(record["a_node_id"])
+        right = str(record["b_node_id"])
+        if str(node_id) not in {left, right}:
+            continue
+        peer_id = right if str(node_id) == left else left
+        peer = nodes.get(peer_id)
+        if peer is None:
+            continue
+        try:
+            port = int(record.get("port", ROUTED_MESH_PORT))
+        except (TypeError, ValueError):
+            port = ROUTED_MESH_PORT
+        links.append(
+            {
+                "id": str(record["id"]),
+                "peer_node_id": peer_id,
+                "peer_name": str(peer.get("name", peer_id)),
+                "psk": str(record["psk"]),
+                "peer_endpoint": _public_endpoint(peer, port)
+                if _is_public_node(peer)
+                else "",
+                "peer_public": _is_public_node(peer),
+                "peer_site_router": _is_site_router(peer),
+                "port": port,
+                "cost": float(record.get("cost", 10) or 10),
+            }
+        )
+
+    graph = topology_snapshot(control_dir, now=timestamp)
+    paths: list[dict[str, Any]] = []
+    if _is_public_node(local):
+        seen: set[tuple[str, str]] = set()
+        for route in graph.get("routes", []):
+            if not isinstance(route, dict):
+                continue
+            owner = str(route.get("owner_node_id", ""))
+            cidr = str(route.get("cidr", ""))
+            key = (owner, cidr)
+            if not owner or not cidr or key in seen:
+                continue
+            seen.add(key)
+            paths.extend(
+                candidate_paths(
+                    graph,
+                    str(node_id),
+                    owner,
+                    cidr=cidr,
+                )
+            )
+
+    return {
+        "version": 1,
+        "listen_port": ROUTED_MESH_PORT,
+        "links": sorted(links, key=lambda item: item["peer_node_id"]),
+        "paths": paths,
+        "routes": [
+            {
+                "cidr": str(record["cidr"]),
+                "owner_node_id": route_owner(record),
+            }
+            for record in route_records(control_dir)
+        ],
+    }
 
 
 def validate_route_ownership(
@@ -330,7 +647,28 @@ def topology_snapshot(
                 }
             )
 
-    links: list[dict[str, Any]] = []
+    link_map: dict[tuple[str, str], dict[str, Any]] = {}
+    for record in topology_link_records(control_dir):
+        left = str(record.get("a_node_id", ""))
+        right = str(record.get("b_node_id", ""))
+        if left not in node_ids or right not in node_ids:
+            continue
+        try:
+            cost = float(record.get("cost", 10) or 10)
+        except (TypeError, ValueError):
+            cost = 10.0
+        for start, target in ((left, right), (right, left)):
+            link_map[(start, target)] = {
+                "id": str(record.get("id", topology_link_id(left, right))),
+                "from": start,
+                "to": target,
+                "health": "unknown",
+                "rtt_ms": 0.0,
+                "loss_percent": 0.0,
+                "cost": cost,
+                "last_seen": 0,
+            }
+
     for node_id in sorted(node_ids):
         telemetry = read_node_telemetry(control_dir, node_id)
         if not telemetry:
@@ -350,7 +688,11 @@ def topology_snapshot(
                 and str(link.get("from", "")) == node_id
                 and str(link.get("to", "")) in node_ids
             ):
-                links.append(dict(link))
+                link_map[(node_id, str(link["to"]))] = dict(link)
+    links = [
+        link_map[key]
+        for key in sorted(link_map)
+    ]
 
     routes = [
         {
