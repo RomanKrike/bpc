@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	probeInterval = time.Second
-	probeTimeout  = 2 * time.Second
-	linkFailAfter = 4 * time.Second
+	probeInterval = 250 * time.Millisecond
+	probeTimeout  = 400 * time.Millisecond
+	linkFailAfter = time.Second
 )
 
 type LinkStatus struct {
