@@ -49,8 +49,8 @@ type meshPeer struct {
 	lastRTT   time.Duration
 	samples   []bool
 
-	sendSeq atomic.Uint64
-	recvMu  sync.Mutex
+	sendSeq  atomic.Uint64
+	recvMu   sync.Mutex
 	recvHigh uint64
 	recvMask uint64
 }
