@@ -270,11 +270,11 @@ func TestIndependentPublicNodeFailover(t *testing.T) {
 	rehandshakeErr := make(chan error, 1)
 	go func() {
 		_ = RunAdaptiveClient(ctx, AdaptiveClientConfig{
-			LocalListen:  local,
-			Servers:      endpoints,
-			TX:           newCodec(txKey),
-			RX:           newCodec(rxKey),
-			ProbeTimeout: 400 * time.Millisecond,
+			LocalListen:   local,
+			Servers:       endpoints,
+			TX:            newCodec(txKey),
+			RX:            newCodec(rxKey),
+			ProbeTimeout:  400 * time.Millisecond,
 			ProbeInterval: 250 * time.Millisecond,
 			Policy: PathPolicy{
 				MinimumImprovement:    time.Second,
