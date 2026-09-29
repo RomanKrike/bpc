@@ -83,6 +83,7 @@ function Invoke-Fault([string]$hostName, [string]$userName, [string]$serviceName
     }
     $arguments = @(
         "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
         "-o", "ConnectTimeout=5",
         $destination,
         "systemctl", "stop", $serviceName
@@ -100,7 +101,7 @@ function Restore-Fault([string]$hostName, [string]$userName, [string]$serviceNam
     else {
         "$userName@$hostName"
     }
-    & ssh.exe -o BatchMode=yes -o ConnectTimeout=5 $destination systemctl start $serviceName | Out-Null
+    & ssh.exe -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 $destination systemctl start $serviceName | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to restore $serviceName on $destination"
     }
