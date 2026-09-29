@@ -876,8 +876,9 @@ type uiStatus struct {
 	Routes        []string `json:"routes"`
 	UpdatedAt     int64    `json:"updated_at,omitempty"`
 	HandshakeAt   int64    `json:"handshake_at,omitempty"`
-	RXBytes       uint64   `json:"rx_bytes,omitempty"`
-	TXBytes       uint64   `json:"tx_bytes,omitempty"`
+	RXBytes       uint64              `json:"rx_bytes,omitempty"`
+	TXBytes       uint64              `json:"tx_bytes,omitempty"`
+	Transport     *transportTelemetry `json:"transport,omitempty"`
 }
 
 func uiStatusPath() (string, error) {
@@ -1012,6 +1013,14 @@ func printStatusJSON() error {
 				payload.HandshakeAt = runtimeStatus.HandshakeAt
 				payload.RXBytes = runtimeStatus.RXBytes
 				payload.TXBytes = runtimeStatus.TXBytes
+			}
+		}
+	}
+	if transportPath, transportErr := uiTransportStatusPath(); transportErr == nil {
+		if transportRaw, readErr := os.ReadFile(transportPath); readErr == nil {
+			var transportStatus transportTelemetry
+			if json.Unmarshal(transportRaw, &transportStatus) == nil {
+				payload.Transport = &transportStatus
 			}
 		}
 	}
