@@ -189,6 +189,7 @@ func (n *Node) Submit(command Mutation, timeout time.Duration) (MutationResult, 
 	}
 	switch response := future.Response().(type) {
 	case MutationResult:
+		response.CommitIndex = future.Index()
 		return response, nil
 	case error:
 		return MutationResult{}, response

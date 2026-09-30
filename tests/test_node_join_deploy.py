@@ -1,7 +1,11 @@
+import json
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[1]
 INSTALL = (ROOT / "install.sh").read_text(encoding="utf-8")
@@ -10,6 +14,23 @@ CONTROL = (ROOT / "deploy" / "bpc-control-server.py").read_text(encoding="utf-8"
 NODE_ENROLLMENT = (ROOT / "deploy" / "bpc_node_enrollment.py").read_text(encoding="utf-8")
 MIGRATE = (ROOT / "deploy" / "bpc-migrate.sh").read_text(encoding="utf-8")
 HEALTH = (ROOT / "deploy" / "bpc-healthcheck.sh").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("offset,expected", [(60, 0), (-1, 1), (None, 1)])
+def test_routed_health_requires_unexpired_policy(tmp_path: Path, offset, expected) -> None:
+    # Execute the actual healthcheck program rather than a copy of its predicate.
+    marker = 'python3 - "${status}" "${enrollment}" <<\'PY\'\n'
+    script = HEALTH.split(marker, 1)[1].split("\nPY", 1)[0]
+    status = tmp_path / "status.json"
+    status.write_text(json.dumps({"updated_at": int(time.time())}))
+    routing = {} if offset is None else {"policy_expires_at": int(time.time()) + offset}
+    enrolled = tmp_path / "enrollment.json"
+    enrolled.write_text(json.dumps({"config": {"routing": routing}}))
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(status), str(enrolled)],
+        capture_output=True, check=False,
+    )
+    assert result.returncode == expected, result.stderr
 
 
 def test_no_argument_installer_is_core_only_and_init_is_first_class() -> None:

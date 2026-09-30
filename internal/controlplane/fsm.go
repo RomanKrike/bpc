@@ -66,10 +66,11 @@ type Mutation struct {
 }
 
 type MutationResult struct {
-	OK       bool   `json:"ok"`
-	Revision uint64 `json:"revision"`
-	Error    string `json:"error,omitempty"`
-	Conflict bool   `json:"conflict,omitempty"`
+	CommitIndex uint64 `json:"commit_index,omitempty"`
+	OK          bool   `json:"ok"`
+	Revision    uint64 `json:"revision"`
+	Error       string `json:"error,omitempty"`
+	Conflict    bool   `json:"conflict,omitempty"`
 }
 
 type snapshotEnvelope struct {

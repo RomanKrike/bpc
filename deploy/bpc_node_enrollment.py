@@ -52,6 +52,7 @@ from bpc_gateway_snapshot import (  # noqa: E402
     controller_public_urls,
     install_security_snapshot,
     load_valid_security_snapshot,
+    security_runtime_lock,
 )
 from bpc_topology import (  # noqa: E402
     TopologyError,
@@ -1382,6 +1383,11 @@ def reconcile_roles(
 
 
 def stage_node_runtime(state_dir: Path) -> Path:
+    with security_runtime_lock(state_dir):
+        return _stage_node_runtime_locked(state_dir)
+
+
+def _stage_node_runtime_locked(state_dir: Path) -> Path:
     version_path = ROOT / "VERSION"
     version = (
         version_path.read_text(encoding="utf-8").strip()
@@ -1408,6 +1414,13 @@ def stage_node_runtime(state_dir: Path) -> Path:
         shutil.copytree(release_package, runtime_tmp / "src" / "bpc_connect")
         (runtime_tmp / "VERSION").write_text(version + "\n", encoding="utf-8")
 
+        # Security state is runtime data, not release content. Keep the signed
+        # bytes, trust and revision floor across upgrades and same-version repair.
+        for name in ("security-snapshot.json", "security-trust.json"):
+            previous = runtime_link / name
+            if previous.is_file():
+                shutil.copyfile(previous, runtime_tmp / name)
+
         for directory in [runtime_tmp, *runtime_tmp.rglob("*")]:
             if directory.is_dir():
                 os.chmod(directory, 0o700)
@@ -1431,6 +1444,38 @@ def stage_node_runtime(state_dir: Path) -> Path:
     link_tmp.symlink_to(runtime_version.name)
     os.replace(link_tmp, runtime_link)
     return runtime_link
+
+
+def running_routed_executable() -> Path | None:
+    completed = subprocess.run(
+        ["systemctl", "show", "--property=MainPID", "--value", "bpc-routed-node.service"],
+        check=False, capture_output=True, text=True,
+    )
+    pid = completed.stdout.strip()
+    if completed.returncode != 0:
+        raise EnrollmentError("cannot inspect running routed runtime during update")
+    if pid == "0":
+        return None
+    if not pid.isdecimal() or int(pid) <= 0:
+        raise EnrollmentError("invalid routed runtime MainPID")
+    return Path("/proc") / pid / "exe"
+
+
+def restart_changed_routed_runtime() -> bool:
+    running = running_routed_executable()
+    if running is None:
+        return False
+    try:
+        with running.open("rb") as handle:
+            before = hashlib.file_digest(handle, "sha256").digest()
+        with _routed_binary().open("rb") as handle:
+            after = hashlib.file_digest(handle, "sha256").digest()
+    except OSError as exc:
+        raise EnrollmentError("cannot verify routed binary during update") from exc
+    if before == after:
+        return False
+    subprocess.run(["systemctl", "restart", "bpc-routed-node.service"], check=True)
+    return True
 
 
 def install_runtime_service(state_dir: Path) -> None:
@@ -1564,7 +1609,7 @@ WantedBy=multi-user.target
         )
     ):
         sysctl = Path("/etc/sysctl.d/93-bpc-routed.conf")
-        sysctl.write_text("net.ipv4.ip_forward=1\\n", encoding="ascii")
+        sysctl.write_text("net.ipv4.ip_forward=1\n", encoding="ascii")
         os.chmod(sysctl, 0o644)
         subprocess.run(["sysctl", "-q", "-p", str(sysctl)], check=True)
 
@@ -1575,6 +1620,9 @@ WantedBy=multi-user.target
         check=True,
     )
     subprocess.run(["systemctl", "restart", "bpc-node.service"], check=True)
+    routing = current.get("config", {}).get("routing", {}) if isinstance(current, dict) else {}
+    if isinstance(routing, dict) and routing.get("links"):
+        restart_changed_routed_runtime()
 
 
 def enrolled_state(state_dir: Path) -> dict[str, Any] | None:

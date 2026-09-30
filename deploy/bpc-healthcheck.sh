@@ -431,7 +431,7 @@ PY
     fail_health "BPC routed mesh status is missing"
     return 1
   fi
-  if ! python3 - "${status}" <<'PY'
+  if ! python3 - "${status}" "${enrollment}" <<'PY'
 import json
 import sys
 import time
@@ -440,12 +440,15 @@ from pathlib import Path
 try:
     value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
     updated = int(value.get("updated_at", 0))
+    enrolled = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    expires = int(enrolled.get("config", {}).get("routing", {}).get("policy_expires_at", 0))
 except (OSError, TypeError, ValueError, json.JSONDecodeError):
     raise SystemExit(1)
-raise SystemExit(0 if updated > 0 and time.time() - updated <= 15 else 1)
+now = time.time()
+raise SystemExit(0 if updated > 0 and 0 <= now - updated <= 15 and expires > now else 1)
 PY
   then
-    fail_health "BPC routed mesh status is stale"
+    fail_health "BPC routed mesh status is stale or routing policy has expired"
     return 1
   fi
 }

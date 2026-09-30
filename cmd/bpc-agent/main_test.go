@@ -158,13 +158,13 @@ func TestTransportNodeTrackerOnlySignalsCrossNodeSwitch(t *testing.T) {
 		t.Fatal("same-node port switch must not request a rehandshake")
 	}
 	event, changed := tracker.observe(
-		wgshim.EndpointReport{Selected: "ru-02.example:24444", Switched: true},
+		wgshim.EndpointReport{Selected: "ru-02.example:24444", Switched: true, PreserveSession: true},
 		nodes,
 	)
 	if !changed {
 		t.Fatal("cross-node switch did not request a rehandshake")
 	}
-	if event.FromNode != "ru-01" || event.ToNode != "ru-02" {
+	if event.FromNode != "ru-01" || event.ToNode != "ru-02" || !event.PreserveSession {
 		t.Fatalf("unexpected switch event: %#v", event)
 	}
 }
