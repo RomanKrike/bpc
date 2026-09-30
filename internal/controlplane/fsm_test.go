@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/raft"
 )
@@ -235,5 +236,31 @@ func TestStaleHeartbeatCannotOverwriteControllerRouteGrant(t *testing.T) {
 	stored, err := os.ReadFile(filepath.Join(root, path))
 	if err != nil || !bytes.Equal(stored, updated) {
 		t.Fatalf("grant changed: %s %v", stored, err)
+	}
+}
+
+func TestWaitRevisionRequiresAppliedStateAndRepairsProjection(t *testing.T) {
+	_, fsm, root := testFSM(t)
+	node := &Node{fsm: fsm}
+	if node.WaitRevision(0, time.Second) == nil {
+		t.Fatal("missing mutation revision accepted")
+	}
+	if node.WaitRevision(1, time.Millisecond) == nil {
+		t.Fatal("unapplied revision acknowledged")
+	}
+	path := "control/nodes/home-01.json"
+	result := applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: "project", Kind: "Test",
+		Operations: []Operation{{Op: "put", Path: path, Data: siteRouterNode("home-01")}}})
+	if !result.OK {
+		t.Fatal(result)
+	}
+	if err := os.Remove(filepath.Join(root, path)); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.WaitRevision(result.Revision, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, path)); err != nil {
+		t.Fatal("applied revision returned without repairing its projection", err)
 	}
 }

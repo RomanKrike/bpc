@@ -35,6 +35,30 @@ loss, quorum loss (writes and heartbeat renewal denied), quorum restoration and
 projection convergence. The router tests cover deadline expiry and renewal.
 These are layer-specific tests, not combined live acceptance scenarios E-G.
 
+## Restart and update safeguards
+
+The mesh branch includes `main` 0.20.2's healthy make-before-break migration.
+Runtime staging preserves the signed Gateway security snapshot and trust bytes,
+including their deadline and revision floor, under a lock shared with snapshot
+refresh and verification. Same-version repair and replacement by a new release
+therefore do not reset offline grace or permit revision rollback.
+
+Runtime installation now writes a valid newline-terminated `ip_forward` sysctl
+file. It compares the running routed service executable with the release binary
+through systemd's MainPID and `/proc/PID/exe`. Identical binaries leave the
+process running; changed binaries restart the dedicated routed service after
+daemon reload. Enrollment and its Controller-issued paths remain unchanged.
+A changed-binary restart still requires mesh session reauthentication; combined
+traffic interruption and rolling updater scenario H have not been measured on
+VPS. The existing peer-restart UDP test is not a TCP rolling-update acceptance.
+Healthcheck rejects an expired/missing routed lease even if service, interface
+and recent status are present.
+
+After quorum restoration, forwarded mutation acknowledgements now wait for the
+receiving follower to apply and reconcile the returned canonical revision.
+The process regression checks an immediate read after a follower write and the
+subsequent route config, without adding a polling workaround to the caller.
+
 Run the controlled data-path acceptance:
 
 ```bash

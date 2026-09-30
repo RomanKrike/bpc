@@ -3,6 +3,7 @@ package wgshim
 import (
 	"context"
 	crand "crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -41,15 +42,19 @@ type ServerConfig struct {
 }
 
 type EndpointReport struct {
-	Selected  string
-	RTT       time.Duration
-	Reachable int
-	Total     int
-	Switched  bool
-	Paths     []PathHealth `json:"paths"`
+	Selected        string
+	RTT             time.Duration
+	Reachable       int
+	Total           int
+	Switched        bool
+	PreserveSession bool
+	Paths           []PathHealth `json:"paths"`
 }
 
 type AdaptiveClientConfig struct {
+	// WireGuardHandoff retains encrypted data on the healthy previous path during
+	// a new WireGuard handshake. Generic WGShim payloads retain legacy behavior.
+	WireGuardHandoff     bool
 	LocalListen          string
 	Servers              []string
 	TX                   *Codec
@@ -357,12 +362,13 @@ func runAdaptiveClientOnce(ctx context.Context, cfg AdaptiveClientConfig) error 
 			paths = append(paths, PathHealth{Endpoint: endpoint, State: "FAILED"})
 		}
 		report := EndpointReport{
-			Selected:  serverNames[next],
-			RTT:       rtt,
-			Reachable: reachable,
-			Total:     len(serverNames) + len(unresolved),
-			Switched:  switched,
-			Paths:     paths,
+			Selected:        serverNames[next],
+			RTT:             rtt,
+			Reachable:       reachable,
+			Total:           len(serverNames) + len(unresolved),
+			Switched:        switched,
+			PreserveSession: cfg.WireGuardHandoff && manager.MigrationFallback() >= 0,
+			Paths:           paths,
 		}
 		if cfg.OnEndpointReport != nil {
 			cfg.OnEndpointReport(report)
@@ -438,6 +444,16 @@ func runAdaptiveClientOnce(ctx context.Context, cfg AdaptiveClientConfig) error 
 				return
 			}
 			stats.OuterTX.Add(uint64(len(outer)))
+			// Handshakes go exclusively to the new responder. During overlap,
+			// only the responder owning a data packet's ephemeral key can
+			// accept it; WireGuard replay protection rejects duplicate delivery.
+			if cfg.WireGuardHandoff && isWireGuardTransportData(buf[:n]) {
+				if previous := manager.MigrationFallback(); previous >= 0 && previous != index {
+					if _, err := outerConn.WriteToUDP(outer, serverAddrs[previous]); err == nil {
+						stats.OuterTX.Add(uint64(len(outer)))
+					}
+				}
+			}
 		}
 	}()
 
@@ -480,7 +496,15 @@ func runAdaptiveClientOnce(ctx context.Context, cfg AdaptiveClientConfig) error 
 			if !IsData(packetType) {
 				continue
 			}
-			manager.ConfirmTraffic(serverSources[source.String()], time.Now())
+			if !cfg.WireGuardHandoff || isWireGuardTransportData(inner) {
+				manager.ConfirmTraffic(serverSources[source.String()], time.Now())
+			} else {
+				// Do not let an old responder's rekey win the new handshake.
+				_, selectedAddr := getSelected()
+				if source.String() != selectedAddr.String() {
+					continue
+				}
+			}
 
 			wgPeerMu.RLock()
 			peer := cloneUDPAddr(wgPeer)
@@ -764,4 +788,10 @@ func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
 		out.IP = append(net.IP(nil), addr.IP...)
 	}
 	return &out
+}
+
+// MessageTransportType is 4 in the existing WireGuard protocol. Include the
+// receiver/counter and authentication tag in the minimum packet length.
+func isWireGuardTransportData(packet []byte) bool {
+	return len(packet) >= 32 && binary.LittleEndian.Uint32(packet[:4]) == 4
 }

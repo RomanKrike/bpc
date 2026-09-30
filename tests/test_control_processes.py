@@ -268,9 +268,31 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         converged = (successor["root"] / relative).read_bytes()
         until(lambda: (nodes[0]["root"] / relative).read_bytes() == converged)
         assert "10.20.0.0/16" not in json.loads(converged)["authorized_routes"]
+        live = [nodes[0], successor]
+        follower = until(lambda: next(
+            (node for node in live if api(node, "/v1/health")["raft_role"] == "Follower"),
+            None,
+        ))
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + follower["local"],
+        )
+        enrollment.authorize_site_routes(
+            follower["root"] / "control", joined["node_id"], ["10.30.0.0/16"],
+        )
+        # No polling/barrier: successful follower mutation must already be local.
+        assert "10.30.0.0/16" in json.loads(
+            (follower["root"] / relative).read_bytes()
+        )["authorized_routes"]
+        forwarded = enrollment.node_heartbeat(
+            follower["root"] / "control", credential=joined["credential"],
+            payload={"advertised_routes": ["10.30.0.0/16"]},
+        )
+        assert {"cidr": "10.30.0.0/16", "owner_node_id": joined["node_id"]} in (
+            forwarded["config"]["routing"]["routes"]
+        )
         print(
             "3 processes: mTLS, membership, replication, restart, leader/quorum "
-            "failover, route grants, policy renewal and convergence PASS"
+            "failover, route grants, policy renewal, convergence and follower writes PASS"
         )
     finally:
         for node in nodes:

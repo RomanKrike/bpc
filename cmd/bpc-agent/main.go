@@ -563,7 +563,7 @@ func (t *transportNodeTracker) observe(
 	if !report.Switched || previous == "" || previous == node {
 		return pathSwitchEvent{}, false
 	}
-	return pathSwitchEvent{FromNode: previous, ToNode: node}, true
+	return pathSwitchEvent{FromNode: previous, ToNode: node, PreserveSession: report.PreserveSession}, true
 }
 
 func runWGShimLoop(ctx context.Context, cfg agentctl.RuntimeConfig, logger *log.Logger) {
@@ -611,14 +611,15 @@ func runWGShimLoopWithSwitch(
 		}
 		tracker := &transportNodeTracker{}
 		err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
-			LocalListen:     cfg.WGShimListen,
-			Servers:         servers,
-			TX:              tx,
-			RX:              rx,
-			Logger:          logger,
-			StatsInterval:   defaultLogEvery,
-			ProbeTimeout:    400 * time.Millisecond,
-			SwitchThreshold: 10 * time.Millisecond,
+			WireGuardHandoff: true,
+			LocalListen:      cfg.WGShimListen,
+			Servers:          servers,
+			TX:               tx,
+			RX:               rx,
+			Logger:           logger,
+			StatsInterval:    defaultLogEvery,
+			ProbeTimeout:     400 * time.Millisecond,
+			SwitchThreshold:  10 * time.Millisecond,
 			OnEndpointReport: func(report wgshim.EndpointReport) {
 				for i := range report.Paths {
 					report.Paths[i].Node = nodeByEndpoint[report.Paths[i].Endpoint]

@@ -223,6 +223,20 @@ func (n *Node) WaitApplied(index uint64, timeout time.Duration) error {
 	return fmt.Errorf("local controller did not apply commit index %d before timeout", index)
 }
 
+func (n *Node) WaitRevision(revision uint64, timeout time.Duration) error {
+	if revision == 0 {
+		return errors.New("mutation response has no canonical revision")
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if n.fsm.Revision() >= revision {
+			return n.fsm.ReconcileProjection()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return fmt.Errorf("local controller did not project revision %d before timeout", revision)
+}
+
 func (n *Node) AddMember(id, address string, voter bool, timeout time.Duration) error {
 	if !n.IsLeader() {
 		return ErrNotLeader

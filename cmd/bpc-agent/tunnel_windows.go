@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
@@ -59,6 +60,7 @@ func runEmbeddedWireGuard(
 		},
 	}
 	wgDevice := device.NewDevice(tunDevice, conn.NewDefaultBind(), wgLogger)
+	defer wgDevice.Close()
 
 	uapi, err := embeddedUAPI(cfg, profile)
 	if err != nil {
@@ -102,25 +104,27 @@ func runEmbeddedWireGuard(
 			}
 			return fmt.Errorf("embedded WireGuard device stopped unexpectedly")
 		case event := <-pathSwitches:
-			// A different Public Node has the same static overlay identity but not
-			// the previous responder's ephemeral WireGuard session state. Reapply
-			// replace_peers on the existing device to discard only peer session
-			// state and force a fresh handshake without recreating Wintun, its IP,
-			// or application routes.
-			if err := wgDevice.IpcSet(uapi); err != nil {
-				logger.Printf(
-					"wireguard cross-node rehandshake failed from=%s to=%s: %v",
-					event.FromNode,
-					event.ToNode,
-					err,
-				)
-			} else {
-				logger.Printf(
-					"wireguard cross-node rehandshake armed from=%s to=%s",
-					event.FromNode,
-					event.ToNode,
-				)
+			// A healthy old path keeps carrying encrypted data while the new
+			// responder negotiates independent ephemeral keys. Never remove
+			// its peer first. Emergency failover retains the immediate reset.
+			if event.PreserveSession {
+				raw, decodeErr := base64.StdEncoding.DecodeString(profile.PeerPublicKey)
+				if decodeErr != nil || len(raw) != 32 {
+					return fmt.Errorf("invalid overlay public key")
+				}
+				var key device.NoisePublicKey
+				copy(key[:], raw)
+				peer := wgDevice.LookupPeer(key)
+				if peer == nil {
+					return fmt.Errorf("overlay peer missing during migration")
+				}
+				if err := peer.SendHandshakeInitiation(false); err != nil {
+					logger.Printf("wireguard make-before-break handshake failed: %v", err)
+				}
+			} else if err := wgDevice.IpcSet(uapi); err != nil {
+				logger.Printf("wireguard cross-node rehandshake failed: %v", err)
 			}
+			logger.Printf("wireguard cross-node handoff from=%s to=%s preserve_session=%t", event.FromNode, event.ToNode, event.PreserveSession)
 		case <-telemetryTicker.C:
 			if reportTelemetry != nil {
 				reportTelemetry(readEmbeddedTelemetry(wgDevice))
