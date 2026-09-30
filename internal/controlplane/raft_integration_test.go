@@ -2,11 +2,13 @@ package controlplane
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/hashicorp/raft"
+	bolt "go.etcd.io/bbolt"
 )
 
 type testRaftNode struct {
@@ -15,6 +17,7 @@ type testRaftNode struct {
 	raft      *raft.Raft
 	transport *raft.InmemTransport
 	store     *Store
+	fsm       *StateMachine
 }
 
 func newTestRaftNode(t *testing.T, id string) *testRaftNode {
@@ -43,7 +46,7 @@ func newTestRaftNode(t *testing.T, id string) *testRaftNode {
 	if string(address) != id {
 		t.Fatalf("unexpected address %s", address)
 	}
-	return &testRaftNode{id: id, root: root, raft: instance, transport: transport, store: canonical}
+	return &testRaftNode{id: id, root: root, raft: instance, transport: transport, store: canonical, fsm: fsm}
 }
 
 func waitLeader(t *testing.T, nodes []*testRaftNode, timeout time.Duration) *testRaftNode {
@@ -65,6 +68,46 @@ func waitLeader(t *testing.T, nodes []*testRaftNode, timeout time.Duration) *tes
 	}
 	t.Fatalf("leader election timeout: %+v", states)
 	return nil
+}
+
+func TestMutationAckUsesRaftIndexAndRepairsProjection(t *testing.T) {
+	n := newTestRaftNode(t, "index-test")
+	defer func() {
+		_ = n.raft.Shutdown().Error()
+		_ = n.store.Close()
+	}()
+	if err := n.raft.BootstrapCluster(raft.Configuration{Servers: []raft.Server{
+		{ID: "index-test", Address: "index-test", Suffrage: raft.Voter},
+	}}).Error(); err != nil {
+		t.Fatal(err)
+	}
+	waitLeader(t, []*testRaftNode{n}, time.Second)
+	node := &Node{raft: n.raft, fsm: n.fsm}
+	path := "control/nodes/home-01.json"
+	result, err := node.Submit(Mutation{Version: CommandVersion, ID: "indexed", Kind: "Test",
+		Operations: []Operation{{Op: "put", Path: path, Data: siteRouterNode("home-01")}}}, time.Second)
+	if err != nil || !result.OK || result.CommitIndex == 0 {
+		t.Fatalf("missing commit index: %+v %v", result, err)
+	}
+	if err := os.Remove(filepath.Join(n.root, path)); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.WaitApplied(result.CommitIndex, time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(n.root, path)); err != nil {
+		t.Fatal("projection not repaired", err)
+	}
+	// Canonical revision can differ after a durable FSM/log replay. It must
+	// never satisfy a wait for a Raft entry which has not been applied.
+	if err := n.store.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketMeta).Put(keyRevision, u64key(result.CommitIndex+1000))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if node.WaitApplied(result.CommitIndex+100, time.Millisecond) == nil {
+		t.Fatal("canonical revision was mistaken for applied Raft index")
+	}
 }
 
 func TestThreeControllerQuorumReplicationAndLeaderFailover(t *testing.T) {

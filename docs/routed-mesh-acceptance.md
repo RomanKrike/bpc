@@ -55,7 +55,10 @@ Healthcheck rejects an expired/missing routed lease even if service, interface
 and recent status are present.
 
 After quorum restoration, forwarded mutation acknowledgements now wait for the
-receiving follower to apply and reconcile the returned canonical revision.
+receiving follower to apply and reconcile the returned Raft log index. Mutation
+responses include an optional `commit_index`; older leaders are confirmed using
+their existing barrier API. Canonical revision is not used as a catch-up index
+because durable FSM/log replay can make local revision counters differ.
 The process regression checks an immediate read after a follower write and the
 subsequent route config, without adding a polling workaround to the caller.
 

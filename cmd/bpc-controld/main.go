@@ -260,7 +260,20 @@ func (s *server) mutate(w http.ResponseWriter, r *http.Request) {
 			}
 			// Callers read local projected files immediately after a mutation.
 			// Leader acknowledgement alone does not provide read-your-writes here.
-			if err := s.node.WaitRevision(result.Revision, 10*time.Second); err != nil {
+			if result.CommitIndex == 0 {
+				// Older leaders do not include the exact log index. Their barrier
+				// still provides a Raft index at or after the acknowledged write.
+				barrier, barrierStatus, err := s.forwardBytes(http.MethodPost, "/v1/barrier", nil)
+				if err != nil || barrierStatus != http.StatusOK {
+					writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "cannot confirm legacy leader mutation"})
+					return
+				}
+				if err := json.Unmarshal(barrier, &result); err != nil || result.CommitIndex == 0 {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"error": "invalid legacy leader barrier response"})
+					return
+				}
+			}
+			if err := s.node.WaitApplied(result.CommitIndex, 10*time.Second); err != nil {
 				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
 				return
 			}
