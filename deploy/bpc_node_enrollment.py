@@ -527,6 +527,7 @@ def enroll_node(
         "role_config": role_config,
         "endpoints": [item.to_mapping() for item in canonical_endpoints(record.get("endpoints"))],
         "advertised_routes": list(canonical_advertised_routes(record.get("advertised_routes"))),
+        "authorized_routes": list(canonical_advertised_routes(record.get("advertised_routes"))),
         "created_at": timestamp,
         "last_seen": timestamp,
         "revoked": False,
@@ -768,6 +769,26 @@ def normalize_advertised_routes(values: object) -> list[str]:
     return sorted(routes)
 
 
+def authorized_node_routes(node: dict[str, Any]) -> list[str]:
+    # Upgrade old Nodes by freezing their last canonical advertisements. A
+    # heartbeat may never use its own payload as the source of authorization.
+    return normalize_advertised_routes(
+        node.get("authorized_routes", node.get("advertised_routes", []))
+    )
+
+
+def route_is_authorized(cidr: str, grants: list[str]) -> bool:
+    prefix = ipaddress.ip_network(cidr)
+    return any(prefix.subnet_of(ipaddress.ip_network(grant)) for grant in grants)
+
+
+def node_record_digest(path: Path, node: dict[str, Any]) -> str:
+    raw = path.read_bytes()
+    if json.loads(raw) != node:
+        raise EnrollmentError("Node changed concurrently; retry the request", 409)
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _route_path(control_dir: Path, node_id: str, cidr: str) -> Path:
     index = hashlib.sha256(f"{node_id}\0{cidr}".encode()).hexdigest()
     return control_dir / "routes" / f"{index}.json"
@@ -800,6 +821,7 @@ def node_heartbeat(
 ) -> dict[str, Any]:
     timestamp = int(time.time()) if now is None else int(now)
     node_path, node = authorize_node(control_dir, credential)
+    node_digest = node_record_digest(node_path, node)
     node_id = str(node["node_id"])
     roles = node.get("roles", {})
     if not isinstance(roles, dict):
@@ -816,6 +838,9 @@ def node_heartbeat(
         if bool(roles.get("site_router"))
         else []
     )
+    grants = authorized_node_routes(node)
+    if any(not route_is_authorized(cidr, grants) for cidr in advertised):
+        raise EnrollmentError("advertised route is outside Controller route policy", 403)
     try:
         validate_route_ownership(control_dir, node_id, advertised)
     except TopologyError as exc:
@@ -836,6 +861,7 @@ def node_heartbeat(
     ):
         canonical_node.pop(key, None)
     canonical_node["advertised_routes"] = advertised
+    canonical_node["authorized_routes"] = grants
 
     existing_routes = _existing_node_routes(control_dir, node_id)
     wanted = set(advertised)
@@ -845,6 +871,7 @@ def node_heartbeat(
             {
                 "op": "put",
                 "path": node_path,
+                "expected_sha256": node_digest,
                 "data": json.dumps(
                     canonical_node, sort_keys=True, separators=(",", ":")
                 ).encode("utf-8"),
@@ -886,6 +913,11 @@ def node_heartbeat(
         if cidr not in wanted:
             operations.append({"op": "delete", "path": route_path})
 
+    if operations and not any(op["path"] == node_path for op in operations):
+        operations.insert(0, {
+            "op": "put", "path": node_path, "expected_sha256": node_digest,
+            "data": json.dumps(canonical_node, sort_keys=True, separators=(",", ":")).encode(),
+        })
     if operations and bpc_control_state.cluster_enabled(control_dir):
         try:
             bpc_control_state.mutation(
@@ -1712,6 +1744,34 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
     return response
 
 
+def authorize_site_routes(control_dir: Path, node_id: str, routes: list[str]) -> None:
+    """Controller-admin operation; never exposed through Node heartbeat."""
+    if not re.fullmatch(r"[0-9a-f]{32}", node_id):
+        raise EnrollmentError("invalid Node ID")
+    strong_read(control_dir)
+    path = control_dir / "nodes" / f"{node_id}.json"
+    node = read_json(path)
+    digest = node_record_digest(path, node)
+    if node.get("revoked") or not node.get("roles", {}).get("site_router"):
+        raise EnrollmentError("route policy requires an active site_router", 409)
+    grants = normalize_advertised_routes(authorized_node_routes(node) + routes)
+    try:
+        validate_route_ownership(control_dir, node_id, grants)
+    except TopologyError as exc:
+        raise EnrollmentError(str(exc), 409) from exc
+    node["authorized_routes"] = grants
+    if bpc_control_state.cluster_enabled(control_dir):
+        try:
+            bpc_control_state.mutation(control_dir, "AuthorizeSiteRoutes", [{
+                "op": "put", "path": path, "expected_sha256": digest,
+                "data": json.dumps(node, sort_keys=True, separators=(",", ":")).encode(),
+            }])
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+    else:
+        atomic_json(path, node)
+
+
 def cmd_node_create(args: argparse.Namespace) -> int:
     roles = list(NODE_PRESETS[args.preset])
     endpoints = [item.to_mapping() for item in canonical_endpoints(
@@ -2073,6 +2133,15 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     routed_required = bool(roles.get("gateway")) or bool(roles.get("site_router"))
     routed_service = service_state("bpc-routed-node.service")
+    if routed_required and routing.get("links"):
+        try:
+            policy_expires_at = int(routing.get("policy_expires_at", 0) or 0)
+        except (TypeError, ValueError):
+            policy_expires_at = 0
+        if policy_expires_at <= int(time.time()):
+            print("BPC: Not connected (routed policy expired or missing)")
+            print("Restore Controller connectivity to refresh routing policy.")
+            return 1
     if routed_required and routing.get("links") and routed_service != "active":
         print("BPC: Degraded")
     else:
@@ -2260,6 +2329,10 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--expires", default="15m")
     create.add_argument("--controller-url")
 
+    route_policy = sub.add_parser("route-authorize")
+    route_policy.add_argument("node_id")
+    route_policy.add_argument("--route", action="append", required=True)
+
     token = sub.add_parser("token-create")
     token.add_argument("--roles", action="append", required=True)
     token.add_argument("--name")
@@ -2288,6 +2361,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "route-authorize":
+            authorize_site_routes(args.control_dir, args.node_id, args.route)
+            print("Site route policy updated.")
+            return 0
         if args.command == "node-create":
             return cmd_node_create(args)
         if args.command == "token-create":

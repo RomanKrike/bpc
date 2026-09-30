@@ -200,6 +200,7 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
             nodes[0]["root"] / "control",
             controller_url="https://ru-01.example:8444",
             roles=["site_router"],
+            advertised_routes=["192.168.88.0/24"],
             name="home-01",
             endpoints=[{"host": "home.internal", "public": False}],
         )
@@ -236,8 +237,40 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
             credential=joined["credential"],
             payload={"advertised_routes": ["192.168.88.0/24"]},
         )["ok"]
+        # Route grants replicate independently of transient advertisements.
+        enrollment.authorize_site_routes(
+            successor["root"] / "control", joined["node_id"], ["10.10.0.0/16"],
+        )
+        approved = (successor["root"] / relative).read_bytes()
+        survivor = next(node for node in nodes[1:] if node is not successor)
+        until(lambda: (survivor["root"] / relative).read_bytes() == approved)
+        survivor["process"].terminate()
+        survivor["process"].wait(timeout=10)
+        with pytest.raises(enrollment.EnrollmentError) as failed_write:
+            enrollment.authorize_site_routes(
+                successor["root"] / "control", joined["node_id"], ["10.20.0.0/16"],
+            )
+        assert failed_write.value.status == 503
+        assert (successor["root"] / relative).read_bytes() == approved
+        with pytest.raises(enrollment.EnrollmentError):
+            enrollment.node_heartbeat(
+                successor["root"] / "control", credential=joined["credential"],
+                payload={"advertised_routes": ["192.168.88.0/24"]},
+            )
+        # Rejoin an existing voter using its persisted log and wait for quorum.
+        start(nodes[0])
+        until(lambda: api(successor, "/v1/barrier", {}))
+        recovered = enrollment.node_heartbeat(
+            successor["root"] / "control", credential=joined["credential"],
+            payload={"advertised_routes": ["10.10.0.0/16"]},
+        )
+        assert recovered["config"]["routing"]["policy_expires_at"] > int(time.time())
+        converged = (successor["root"] / relative).read_bytes()
+        until(lambda: (nodes[0]["root"] / relative).read_bytes() == converged)
+        assert "10.20.0.0/16" not in json.loads(converged)["authorized_routes"]
         print(
-            "3 processes: mTLS, nonvoter/voter, endpoint replication, restart, leader failover PASS"
+            "3 processes: mTLS, membership, replication, restart, leader/quorum "
+            "failover, route grants, policy renewal and convergence PASS"
         )
     finally:
         for node in nodes:

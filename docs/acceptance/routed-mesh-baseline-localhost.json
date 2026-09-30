@@ -1,0 +1,40 @@
+{
+  "control_plane": "static controller-approved fixture; Raft not exercised",
+  "failover_ms": 3862.419368,
+  "overlay_ip_after": "10.253.0.2",
+  "overlay_ip_before": "10.253.0.2",
+  "scenario": "D: direct uplink blocked; routed multi-hop fallback",
+  "scope": "real localhost routed mesh with userspace IP stacks; no kernel/WireGuard ingress",
+  "selected_path_after": "ru-02 -\u003e ru-01 -\u003e home-01",
+  "selected_path_before": "ru-02 -\u003e home-01",
+  "traffic": {
+    "ping": {
+      "sent": 214,
+      "received": 182,
+      "lost": 32,
+      "max_gap_ms": 3925.510225,
+      "survived": true
+    },
+    "rdp_like_tcp": {
+      "sent": 29,
+      "received": 29,
+      "lost": 0,
+      "max_gap_ms": 6465.157283,
+      "survived": true
+    },
+    "tcp_stream": {
+      "sent": 47,
+      "received": 47,
+      "lost": 0,
+      "max_gap_ms": 7044.75499,
+      "survived": true
+    },
+    "udp": {
+      "sent": 399,
+      "received": 206,
+      "lost": 193,
+      "max_gap_ms": 3881.419436,
+      "survived": true
+    }
+  }
+}

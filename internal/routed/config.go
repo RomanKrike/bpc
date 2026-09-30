@@ -8,11 +8,13 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 const (
 	DefaultMeshPort = 24446
-	MaxPathHops     = 4
+	// Device ingress is outside this hop list: at most two Public Nodes plus owner.
+	MaxPathHops = 3
 )
 
 type Enrollment struct {
@@ -25,6 +27,7 @@ type Enrollment struct {
 }
 
 type RoutingConfig struct {
+	PolicyExpiresAt int64             `json:"policy_expires_at"`
 	Version         int               `json:"version"`
 	ListenPort      int               `json:"listen_port"`
 	OverlaySubnet   string            `json:"overlay_subnet"`
@@ -86,7 +89,16 @@ func (e Enrollment) Validate() error {
 	if strings.TrimSpace(e.NodeID) == "" {
 		return fmt.Errorf("routing enrollment has no node_id")
 	}
+	if e.Config.Routing.PolicyExpiresAt <= 0 {
+		return fmt.Errorf("routed policy lease missing; refresh Node heartbeat before starting")
+	}
 	return e.Config.Routing.Validate(e.NodeID)
+}
+
+// Zero is only permitted for internal in-memory fixtures. File-based runtime
+// enrollment requires a Controller-issued deadline, even after process reboot.
+func (c RoutingConfig) PolicyValid(now time.Time) bool {
+	return c.PolicyExpiresAt == 0 || now.Unix() < c.PolicyExpiresAt
 }
 
 func (c RoutingConfig) Validate(localNodeID string) error {

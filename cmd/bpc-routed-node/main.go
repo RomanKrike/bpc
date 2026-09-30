@@ -356,6 +356,9 @@ func main() {
 		logger.Fatal(err)
 	}
 	config := enrollment.Config.Routing
+	if !config.PolicyValid(time.Now()) {
+		logger.Fatal("routed Controller policy expired; refresh Node heartbeat before starting")
+	}
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -435,6 +438,10 @@ func main() {
 					continue
 				}
 				nextConfig := next.Config.Routing
+				if !nextConfig.PolicyValid(time.Now()) {
+					logger.Printf("routed Controller policy expired; data traffic denied until refresh")
+					continue
+				}
 				if reconcileErr := mesh.Reconcile(nextConfig.Links); reconcileErr != nil {
 					logger.Printf("mesh reconcile failed: %v", reconcileErr)
 					continue

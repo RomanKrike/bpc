@@ -22,6 +22,7 @@ Usage:
   bpc node info
   bpc node status
   bpc node token create --roles ROLE[,ROLE...] [--name NAME] [--expires 15m]
+  bpc node route-authorize NODE_ID --route CIDR [--route CIDR ...]
   bpc node list
   bpc node create --name NAME --preset public-node --host HOST
   bpc node create --name NAME --preset site-router --route CIDR
@@ -91,6 +92,11 @@ case "${scope}" in
   node)
     shift
     case "${1:-}" in
+      route-authorize)
+        require_file "${ENROLL}" "BPC Node enrollment helper"
+        shift
+        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" route-authorize "$@"
+        ;;
       create)
         require_file "${ENROLL}" "BPC Node enrollment helper"
         shift

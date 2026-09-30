@@ -25,6 +25,7 @@ def _join(
         control,
         controller_url="https://ru-01.example:8444",
         roles=roles,
+        advertised_routes=["192.168.88.0/24"] if "site_router" in roles else [],
         name=name,
         now=now,
     )
@@ -305,3 +306,42 @@ def test_stale_telemetry_is_not_a_healthy_link(tmp_path: Path) -> None:
     )
     graph = topology.topology_snapshot(control, now=5_400, ttl=90)
     assert graph["links"] == []
+
+
+def test_path_budget_counts_ingress_public_node() -> None:
+    graph = {
+        "nodes": [
+            {"id": name, "roles": {"gateway": True, "relay": True}}
+            for name in ("ru-02", "ru-01", "ge-01")
+        ] + [{"id": "home-01", "roles": {"site_router": True}}],
+        "links": [
+            {"from": start, "to": end, "health": "healthy", "rtt_ms": 1}
+            for start, end in (
+                ("ru-02", "ru-01"), ("ru-01", "ge-01"), ("ge-01", "home-01")
+            )
+        ],
+    }
+    assert topology.candidate_paths(
+        graph, "ru-02", "home-01", cidr="192.168.88.0/24"
+    ) == []
+
+
+def test_routed_policy_deadline_requires_successful_controller_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control = tmp_path / "control"
+    home = _join(control, name="home-01", roles=["site_router"], now=6000)
+    response = enrollment.node_heartbeat(
+        control, credential=home["credential"], payload={}, now=6010,
+    )
+    assert response["config"]["routing"]["policy_expires_at"] == 6310
+
+    def quorum_lost(*args: object) -> None:
+        raise enrollment.EnrollmentError("quorum unavailable", 503)
+
+    monkeypatch.setattr(enrollment, "strong_read", quorum_lost)
+    with pytest.raises(enrollment.EnrollmentError, match="quorum"):
+        enrollment.node_heartbeat(
+            control, credential=home["credential"], payload={}, now=6020,
+        )
+    assert response["config"]["routing"]["policy_expires_at"] == 6310
