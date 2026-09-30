@@ -119,9 +119,11 @@ type routeOwnershipRecord struct {
 }
 
 type routeOwnerNodeRecord struct {
-	NodeID  string          `json:"node_id"`
-	Revoked bool            `json:"revoked"`
-	Roles   map[string]bool `json:"roles"`
+	AuthorizedRoutes *[]string       `json:"authorized_routes"`
+	AdvertisedRoutes []string        `json:"advertised_routes"`
+	NodeID           string          `json:"node_id"`
+	Revoked          bool            `json:"revoked"`
+	Roles            map[string]bool `json:"roles"`
 }
 
 type validatedRouteOwnership struct {
@@ -190,6 +192,22 @@ func validateRouteOwnershipInvariant(
 		}
 		if strings.TrimSpace(node.NodeID) != owner || node.Revoked || !node.Roles["site_router"] {
 			return "route owner is not an active site_router: " + owner
+		}
+		grants := node.AdvertisedRoutes
+		if node.AuthorizedRoutes != nil {
+			grants = *node.AuthorizedRoutes
+		}
+		authorized := false
+		for _, rawGrant := range grants {
+			grant, err := netip.ParsePrefix(rawGrant)
+			if err == nil && grant.Addr().Is4() && grant.Bits() > 0 &&
+				grant.Bits() <= prefix.Bits() && grant.Masked().Contains(prefix.Addr()) {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			return "route is outside Controller route policy: " + path
 		}
 		validated = append(validated, validatedRouteOwnership{
 			path: path, owner: owner, prefix: prefix,

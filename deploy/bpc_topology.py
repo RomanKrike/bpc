@@ -16,6 +16,7 @@ from typing import Any
 DEFAULT_CONTROL_DIR = Path("/etc/bpc-connect/control")
 DEFAULT_TELEMETRY_TTL = 90
 ROUTED_MESH_PORT = 24446
+ROUTED_OFFLINE_GRACE = 300
 MAX_INTERMEDIATE_PUBLIC_NODES = 2
 # Device ingress is outside the Node frame: two Public Nodes plus owner.
 MAX_PATH_HOPS = 3
@@ -424,6 +425,7 @@ def routing_config_for_node(
     return {
         "version": 1,
         "listen_port": ROUTED_MESH_PORT,
+        "policy_expires_at": timestamp + ROUTED_OFFLINE_GRACE,
         "overlay_subnet": overlay_subnet,
         "local_public": _is_public_node(local),
         "local_site_router": _is_site_router(local),

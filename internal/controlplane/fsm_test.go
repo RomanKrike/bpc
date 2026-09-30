@@ -107,8 +107,9 @@ func TestSnapshotIsChecksummedAndRestoresProjection(t *testing.T) {
 
 func siteRouterNode(id string) []byte {
 	raw, _ := json.Marshal(map[string]any{
-		"node_id": id,
-		"roles":   map[string]bool{"site_router": true},
+		"node_id":           id,
+		"roles":             map[string]bool{"site_router": true},
+		"authorized_routes": []string{"192.168.88.0/24"},
 	})
 	return raw
 }
@@ -194,5 +195,45 @@ func TestStateMachineRejectsRouteOwnerWithoutSiteRouterCapability(t *testing.T) 
 	})
 	if !result.Conflict {
 		t.Fatalf("non-site-router route owner was accepted: %+v", result)
+	}
+}
+
+func TestStateMachineRejectsUnapprovedSiteRoute(t *testing.T) {
+	_, fsm, _ := testFSM(t)
+	result := applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: "unapproved", Kind: "TestRoutes", Operations: []Operation{
+		{Op: "put", Path: "control/nodes/home-01.json", Data: siteRouterNode("home-01")},
+		{Op: "put", Path: "control/routes/rogue.json", Data: routeOwnerRecord("home-01", "10.0.0.0/8")},
+	}})
+	if !result.Conflict {
+		t.Fatalf("unapproved CIDR committed: %+v", result)
+	}
+}
+
+func TestStaleHeartbeatCannotOverwriteControllerRouteGrant(t *testing.T) {
+	_, fsm, root := testFSM(t)
+	path := "control/nodes/home-01.json"
+	old := siteRouterNode("home-01")
+	put := func(id string, data []byte, digest string) MutationResult {
+		return applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: id, Kind: "RoutePolicy",
+			Operations: []Operation{{Op: "put", Path: path, Data: data, ExpectedSHA256: digest}}})
+	}
+	if result := put("initial", old, ""); !result.OK {
+		t.Fatal(result)
+	}
+	var node map[string]any
+	if err := json.Unmarshal(old, &node); err != nil {
+		t.Fatal(err)
+	}
+	node["authorized_routes"] = []string{"192.168.88.0/24", "10.10.0.0/16"}
+	updated, _ := json.Marshal(node)
+	if result := put("admin", updated, sha256Hex(old)); !result.OK {
+		t.Fatal(result)
+	}
+	if result := put("stale-heartbeat", old, sha256Hex(old)); !result.Conflict {
+		t.Fatal("stale heartbeat overwrote Controller grant")
+	}
+	stored, err := os.ReadFile(filepath.Join(root, path))
+	if err != nil || !bytes.Equal(stored, updated) {
+		t.Fatalf("grant changed: %s %v", stored, err)
 	}
 }

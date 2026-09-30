@@ -2,6 +2,39 @@
 
 The mesh draft is not a completed multi-VPS HA release.
 
+## Route authorization and offline policy
+
+Node invitations establish `authorized_routes`. A heartbeat may advertise only
+those IPv4 prefixes or their subnets, and cannot provide its own grants. Legacy
+Nodes freeze their last canonical advertisements on first heartbeat, including
+when they withdraw routes. The Controller administrator can extend the grant:
+
+```bash
+bpc node route-authorize NODE_ID --route 192.168.89.0/24
+```
+
+The Raft state machine checks route grants alongside owner capability and CIDR
+conflicts. Heartbeat updates use a Node-record digest precondition so an older
+heartbeat cannot overwrite a concurrent administrator policy change. Default
+routes remain rejected; no default-route permission is introduced here.
+
+Routed configs carry a Controller-issued `policy_expires_at`, with 300 seconds
+of offline grace. Heartbeats require a strong Controller read, so quorum loss
+cannot renew this deadline. The router itself denies ingress, transit and return
+data at expiry, independent of the Node daemon. Link probes may continue; they
+do not grant forwarding permission. Refresh resumes forwarding with the same
+path IDs and mesh sessions. A runtime restart uses the persisted absolute
+deadline, never a fresh grace period. Missing or expired leases cannot start the
+production routed service: existing development Nodes must complete a heartbeat
+before starting the updated runtime. This policy relies on the Node system clock
+and its root-owned config received through the authenticated Controller channel.
+It covers the new routed mesh; compatibility gateway snapshot policy is separate.
+
+The three-process Controller test now covers replicated route grants, leader
+loss, quorum loss (writes and heartbeat renewal denied), quorum restoration and
+projection convergence. The router tests cover deadline expiry and renewal.
+These are layer-specific tests, not combined live acceptance scenarios E-G.
+
 Run the controlled data-path acceptance:
 
 ```bash

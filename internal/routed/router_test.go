@@ -2,11 +2,124 @@ package routed
 
 import (
 	"encoding/binary"
+	"encoding/json"
 	"net"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestPolicyLeaseBlocksIngressTransitAndResumesAfterRefresh(t *testing.T) {
+	config := testRoutingConfig()
+	config.PolicyExpiresAt = 10300
+	mesh := &fakeMesh{status: map[string]LinkStatus{"home-01": {Health: "healthy"}, "ru-01": {Health: "healthy"}}}
+	writer := &fakeWriter{}
+	router, err := NewRouter("ru-02", config, mesh, writer, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(10000, 0)
+	router.now = func() time.Time { return now }
+	packet := ipv4Packet("10.253.0.2", "192.168.88.10")
+	if err := router.HandleTunPacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	before := router.SelectedPaths()[0].PathID
+	// A reply from the owner on an already-approved direct path.
+	reply, err := MarshalFrame(Frame{PathID: "direct", OwnerNodeID: "home-01",
+		Hops: []string{"home-01", "ru-02"}, HopIndex: 1, Return: true,
+		Payload: ipv4Packet("192.168.88.10", "10.253.0.2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := router.HandleMeshData("home-01", reply); err != nil {
+		t.Fatal(err)
+	}
+	now = time.Unix(10300, 0)
+	if router.HandleTunPacket(packet) == nil || router.HandleMeshData("home-01", reply) == nil {
+		t.Fatal("expired policy forwarded traffic")
+	}
+	if len(writer.packets) != 1 || len(mesh.sent) != 1 || len(router.SelectedPaths()) != 0 {
+		t.Fatal("expired policy emitted packets or reported an active path")
+	}
+	config.PolicyExpiresAt = 10600
+	if err := router.UpdateConfig(config); err != nil {
+		t.Fatal(err)
+	}
+	if err := router.HandleTunPacket(packet); err != nil {
+		t.Fatal(err)
+	}
+	if err := router.HandleMeshData("home-01", reply); err != nil {
+		t.Fatal(err)
+	}
+	if router.SelectedPaths()[0].PathID != before {
+		t.Fatal("lease renewal replaced path identity")
+	}
+}
+
+func TestFileEnrollmentRequiresControllerPolicyLease(t *testing.T) {
+	var enrollment Enrollment
+	enrollment.NodeID = "ru-02"
+	enrollment.Config.Routing = testRoutingConfig()
+	path := filepath.Join(t.TempDir(), "enrollment.json")
+	raw, _ := json.Marshal(enrollment)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEnrollment(path); err == nil {
+		t.Fatal("missing lease accepted from disk")
+	}
+	enrollment.Config.Routing.PolicyExpiresAt = time.Now().Add(time.Minute).Unix()
+	raw, _ = json.Marshal(enrollment)
+	if err := os.WriteFile(path, raw, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadEnrollment(path); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExpiredPolicyBlocksTransitAndSiteDelivery(t *testing.T) {
+	for _, node := range []string{"ru-01", "home-01"} {
+		t.Run(node, func(t *testing.T) {
+			config := testRoutingConfig()
+			config.PolicyExpiresAt = 10300
+			config.Links = nil // fake transport already owns the per-Node links
+			config.LocalPublic = node == "ru-01"
+			config.LocalSiteRouter = node == "home-01"
+			mesh := &fakeMesh{status: map[string]LinkStatus{"home-01": {Health: "healthy"}}}
+			writer := &fakeWriter{}
+			router, err := NewRouter(node, config, mesh, writer, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			at := time.Unix(10299, 0)
+			router.now = func() time.Time { return at }
+			hop, peer := 1, "ru-02"
+			if node == "home-01" {
+				hop, peer = 2, "ru-01"
+			}
+			raw, err := MarshalFrame(Frame{PathID: "multi", OwnerNodeID: "home-01",
+				Hops: []string{"ru-02", "ru-01", "home-01"}, HopIndex: hop,
+				Payload: ipv4Packet("10.253.0.2", "192.168.88.10")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := router.HandleMeshData(peer, raw); err != nil {
+				t.Fatal(err)
+			}
+			at = time.Unix(10300, 0)
+			if router.HandleMeshData(peer, raw) == nil {
+				t.Fatal("expired data accepted")
+			}
+			if len(mesh.sent)+len(writer.packets) != 1 {
+				t.Fatal("expired data escaped to next hop or LAN")
+			}
+		})
+	}
+}
 
 type fakeMesh struct {
 	status map[string]LinkStatus

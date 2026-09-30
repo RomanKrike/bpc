@@ -304,6 +304,9 @@ func (r *Router) HandleTunPacket(packet []byte) error {
 	}
 	config := r.configSnapshot()
 	now := r.now()
+	if !config.PolicyValid(now) {
+		return fmt.Errorf("routed Controller policy expired; traffic denied")
+	}
 
 	if config.IsSiteRouter(r.localNodeID) {
 		overlay, overlayErr := netip.ParsePrefix(config.OverlaySubnet)
@@ -350,6 +353,9 @@ func (r *Router) HandleMeshData(peerID string, raw []byte) error {
 		return err
 	}
 	config := r.configSnapshot()
+	if !config.PolicyValid(r.now()) {
+		return fmt.Errorf("routed Controller policy expired; traffic denied")
+	}
 	path, err := ValidateFrameForNode(frame, r.localNodeID, peerID, config)
 	if err != nil {
 		return err
@@ -385,7 +391,7 @@ func displayHopNames(hops []string, names map[string]string) []string {
 
 func (r *Router) SelectedPaths() []SelectedPathStatus {
 	config := r.configSnapshot()
-	if !config.IsPublicNode(r.localNodeID) {
+	if !config.IsPublicNode(r.localNodeID) || !config.PolicyValid(r.now()) {
 		return nil
 	}
 	now := r.now()

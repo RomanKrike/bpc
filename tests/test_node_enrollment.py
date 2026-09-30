@@ -330,6 +330,7 @@ def test_site_router_heartbeat_owns_canonical_routes(tmp_path: Path) -> None:
         control,
         controller_url="https://controller.example:8444",
         roles=["site_router"],
+        advertised_routes=["192.168.88.0/24", "10.10.0.0/16"],
         now=6_000,
     )
     joined = enrollment.enroll_node(
@@ -568,3 +569,66 @@ def test_gateway_startup_reconcile_failure_is_retryable(
             tmp_path,
             {"gateway": True, "relay": True},
         )
+
+
+def test_site_router_cannot_expand_invitation_route_policy(tmp_path: Path) -> None:
+    control = tmp_path / "control"
+    token = enrollment.create_join_token(
+        control, controller_url="https://controller.example:8444",
+        roles=["site_router"], advertised_routes=["192.168.88.0/24"], now=100,
+    )
+    joined = enrollment.enroll_node(
+        control, token=token, public_key=base64.b64encode(os.urandom(44)).decode(),
+        presented_name="home-01", now=101,
+    )
+    with pytest.raises(enrollment.EnrollmentError, match="route policy") as error:
+        enrollment.node_heartbeat(
+            control, credential=joined["credential"], now=102,
+            payload={"advertised_routes": ["10.0.0.0/8"], "authorized_routes": ["10.0.0.0/8"]},
+        )
+    assert error.value.status == 403
+    assert not list((control / "routes").glob("*.json"))
+
+
+def test_legacy_site_route_policy_freezes_and_admin_can_extend(tmp_path: Path) -> None:
+    control = tmp_path / "control"
+    token = enrollment.create_join_token(
+        control, controller_url="https://controller.example:8444",
+        roles=["site_router"], advertised_routes=["192.168.88.0/24"], now=100,
+    )
+    joined = enrollment.enroll_node(
+        control, token=token, public_key=base64.b64encode(os.urandom(44)).decode(),
+        presented_name="home-01", now=101,
+    )
+    path = control / "nodes" / f"{joined['node_id']}.json"
+    node = enrollment.read_json(path)
+    node.pop("authorized_routes")
+    enrollment.atomic_json(path, node)
+    # Withdrawal does not erase the upgrade-time grant or allow its expansion.
+    enrollment.node_heartbeat(control, credential=joined["credential"], payload={}, now=102)
+    assert enrollment.read_json(path)["authorized_routes"] == ["192.168.88.0/24"]
+    enrollment.node_heartbeat(control, credential=joined["credential"],
+                              payload={"advertised_routes": ["192.168.88.128/25"]}, now=103)
+    with pytest.raises(enrollment.EnrollmentError, match="route policy"):
+        enrollment.node_heartbeat(control, credential=joined["credential"],
+                                  payload={"advertised_routes": ["10.10.0.0/16"]}, now=104)
+    enrollment.authorize_site_routes(control, joined["node_id"], ["10.10.0.0/16"])
+    enrollment.node_heartbeat(control, credential=joined["credential"],
+                              payload={"advertised_routes": ["10.10.0.0/16"]}, now=105)
+    assert enrollment.read_json(path)["node_id"] == joined["node_id"]
+    with pytest.raises(enrollment.EnrollmentError):
+        enrollment.authorize_site_routes(control, joined["node_id"], ["0.0.0.0/0"])
+
+
+def test_status_does_not_report_connected_after_policy_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    import argparse
+
+    monkeypatch.setattr(enrollment, "enrolled_state", lambda _: {
+        "roles": {"site_router": True},
+        "config": {"routing": {"links": [{"id": "uplink"}], "policy_expires_at": 100}},
+    })
+    monkeypatch.setattr(enrollment, "service_state", lambda _: "active")
+    assert enrollment.cmd_status(argparse.Namespace(state_dir=tmp_path)) == 1
+    assert "Not connected (routed policy expired" in capsys.readouterr().out
