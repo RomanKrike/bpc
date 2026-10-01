@@ -169,7 +169,7 @@ func ImportReplayCheckpoint(config NodeConfig, source string) (CheckpointImportR
 	if err != nil || !info.Mode().IsRegular() {
 		return CheckpointImportResult{}, errors.New("checkpoint import requires an existing stopped Controller DB")
 	}
-	store, err := OpenStore(dbPath)
+	store, err := openStore(dbPath, false)
 	if err != nil {
 		return CheckpointImportResult{}, fmt.Errorf("stop recipient bpc-controld before importing checkpoint: %w", err)
 	}

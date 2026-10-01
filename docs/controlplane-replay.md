@@ -95,7 +95,10 @@ also offers `--replay-checkpoint-source` alongside its normal identity/TLS and
 state-directory arguments.
 
 The importer takes the exclusive Bolt lock before contacting the source. It
-requires an existing recipient DB, verifies cluster CA, membership URI and
+opens the existing buckets without a write transaction and refuses an incomplete
+DB instead of initializing it. Ordinary opens also avoid writing when all
+buckets already exist. This preserves DB bytes on rejected source requests.
+It requires an existing recipient DB, verifies cluster CA, membership URI and
 certificate fingerprint through mTLS, forbids redirects, and binds the source
 ID to the authenticated peer. Both authenticated certificates must match the
 canonical checkpoint membership records; the source must remain a voter. The
@@ -123,6 +126,33 @@ higher revision floor; and rejection of corrupt/mismatched metadata. The real
 three-process mTLS scenario also refuses import while the recipient is running,
 rejects a follower source and an untrusted fingerprint, then imports and
 restarts the recipient while preserving its private key and policy.
+
+The process scenario also stops two voters, then attempts an offline import
+from the remaining Controller. A follower rejects it, or a Controller still
+reporting Leader fails its strong-read quorum barrier. Every recipient file
+(DB, snapshots, previous backups, policy and identity) must stay byte-identical.
+After a persisted voter returns and quorum is restored, retry against the
+current Leader succeeds; the recipient catches up and all three revisions
+converge. This covers checkpoint import around a quorum outage, not arbitrary
+mixed-version recovery or an in-flight source crash.
+
+## Reconciliation constraints
+
+Gateway heartbeat signs a security snapshot using the revision returned by a
+Controller strong read (`deploy/bpc-control-server.py`). Gateway installation
+retains its previous signed snapshot as the minimum accepted revision
+(`deploy/bpc_gateway_snapshot.py`). An old Controller can have issued a higher
+revision before it was removed or became unavailable. Therefore the maximum
+floor reported by the remaining Controllers alone cannot prove that a proposed
+reconciled revision covers every consumer's accepted floor.
+
+A future reconciliation protocol must preserve these signed consumer floors,
+authenticate evidence of a higher historical revision, and prevent an arbitrary
+client-supplied counter from advancing the cluster. It must commit the chosen
+revision through Raft without changing policy or CAS history and verify support
+on the configured members before introducing semantics older binaries cannot
+apply. An isolated Leader must not acknowledge it. Neither local checkpoint
+import nor a successful same-version quorum recovery meets these requirements.
 
 ## Unresolved legacy migration
 

@@ -54,18 +54,40 @@ type Store struct {
 }
 
 func OpenStore(path string) (*Store, error) {
+	return openStore(path, true)
+}
+
+// Offline checkpoint import must not initialize or rewrite an existing DB
+// before the source and its checkpoint have been validated.
+func openStore(path string, initialize bool) (*Store, error) {
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketLogs, bucketStable, bucketCanonical, bucketMeta} {
-			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
-				return err
+	names := [][]byte{bucketLogs, bucketStable, bucketCanonical, bucketMeta}
+	var missing bool
+	err = db.View(func(tx *bolt.Tx) error {
+		for _, name := range names {
+			if tx.Bucket(name) == nil {
+				if !initialize {
+					return fmt.Errorf("existing Raft DB is missing bucket %q", name)
+				}
+				missing = true
 			}
 		}
 		return nil
-	}); err != nil {
+	})
+	if err == nil && missing {
+		err = db.Update(func(tx *bolt.Tx) error {
+			for _, name := range names {
+				if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}

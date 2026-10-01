@@ -314,6 +314,25 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
                 successor["root"] / "control", credential=joined["credential"],
                 payload={"advertised_routes": ["192.168.88.0/24"]},
             )
+        # A stopped recipient must not accept a checkpoint from an isolated
+        # former leader. Failed export must leave every persisted file intact.
+        def persisted_files(node):
+            return {
+                str(path.relative_to(node["root"])): hashlib.sha256(path.read_bytes()).digest()
+                for path in node["root"].rglob("*")
+                if path.is_file() and path.name != "process.log"
+            }
+
+        before_failed_import = persisted_files(survivor)
+        isolated_import = subprocess.run(
+            controller_command(survivor) + [
+                "--replay-checkpoint-source",
+                "https://" + successor["record"]["api_address"],
+            ], capture_output=True, text=True, timeout=40,
+        )
+        assert isolated_import.returncode != 0
+        assert any(code in isolated_import.stderr for code in ("HTTP 409", "HTTP 503"))
+        assert persisted_files(survivor) == before_failed_import
         # Rejoin an existing voter using its persisted log and wait for quorum.
         start(nodes[0])
         until(lambda: api(successor, "/v1/barrier", {}))
@@ -325,6 +344,24 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         converged = (successor["root"] / relative).read_bytes()
         until(lambda: (nodes[0]["root"] / relative).read_bytes() == converged)
         assert "10.20.0.0/16" not in json.loads(converged)["authorized_routes"]
+        # Retry the same offline operation after quorum returns. The source
+        # may have changed leadership; choose the actual current leader.
+        donor = until(lambda: next(
+            (node for node in [nodes[0], successor]
+             if api(node, "/v1/health")["raft_role"] == "Leader"),
+            None,
+        ))
+        retry_import = subprocess.run(
+            controller_command(survivor) + [
+                "--replay-checkpoint-source", "https://" + donor["record"]["api_address"],
+            ], capture_output=True, text=True, timeout=40,
+        )
+        assert retry_import.returncode == 0, retry_import.stderr
+        assert (survivor["root"] / relative).read_bytes() == approved
+        start(survivor)
+        until(lambda: api(survivor, "/v1/barrier", {}))
+        assert (survivor["root"] / relative).read_bytes() == converged
+        assert api(survivor, "/v1/health")["ok"]
         live = [nodes[0], successor]
         follower = until(lambda: next(
             (node for node in live if api(node, "/v1/health")["raft_role"] == "Follower"),
@@ -347,9 +384,9 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         assert {"cidr": "10.30.0.0/16", "owner_node_id": joined["node_id"]} in (
             forwarded["config"]["routing"]["routes"]
         )
-        for node in live:
+        for node in nodes:
             api(node, "/v1/barrier", {})
-        assert len({api(node, "/v1/health")["revision"] for node in live}) == 1
+        assert len({api(node, "/v1/health")["revision"] for node in nodes}) == 1
         print(
             "3 processes: mTLS, membership, replication, restart, leader/quorum "
             "failover, route grants, policy renewal, convergence and follower writes PASS"
