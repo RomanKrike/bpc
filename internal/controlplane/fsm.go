@@ -264,9 +264,25 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 
 	var revision uint64
 	var conflict string
+	var replay bool
 	err := f.store.db.Update(func(tx *bolt.Tx) error {
 		canonical := tx.Bucket(bucketCanonical)
 		meta := tx.Bucket(bucketMeta)
+		revision = decodeU64(meta.Get(keyRevision))
+		// Canonical state survives process exit alongside the Raft log. Raft
+		// replays committed entries after restart; replaying that prefix into
+		// the already advanced state could temporarily undo a revocation.
+		if log.Index != 0 && log.Index <= decodeU64(meta.Get(keyAppliedIndex)) {
+			replay = true
+			return nil
+		}
+		if log.Index != 0 {
+			// Conflicts are applied entries too. Persist their watermark in the
+			// same transaction as the canonical state and revision.
+			if err := meta.Put(keyAppliedIndex, u64key(log.Index)); err != nil {
+				return err
+			}
+		}
 		for _, op := range normalized {
 			existing := canonical.Get([]byte(op.Path))
 			if op.IfAbsent && existing != nil {
@@ -317,6 +333,11 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	}
 	if conflict != "" {
 		return MutationResult{Revision: revision, Error: conflict, Conflict: true}
+	}
+	if replay {
+		// Do not project historical operations. StrongRead/WaitApplied repairs
+		// the projection from the current canonical state when necessary.
+		return MutationResult{OK: true, Revision: revision}
 	}
 	if err := f.projectOperations(normalized); err != nil {
 		return MutationResult{Revision: revision, Error: "state committed but projection failed: " + err.Error()}
@@ -572,6 +593,12 @@ func (f *StateMachine) Restore(reader io.ReadCloser) error {
 			}
 		}
 		meta := tx.Bucket(bucketMeta)
+		// Snapshot v1 deliberately remains unchanged. Restore replaces the
+		// durable state with the snapshot base; its subsequent Raft suffix must
+		// not be suppressed by a watermark from the previous DB contents.
+		if err := meta.Delete(keyAppliedIndex); err != nil {
+			return err
+		}
 		if err := meta.Put(keyRevision, u64key(envelope.Revision)); err != nil {
 			return err
 		}

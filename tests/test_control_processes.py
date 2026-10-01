@@ -215,11 +215,14 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         for node in nodes:
             until(lambda node=node: (node["root"] / relative).read_bytes() == expected)
         # Persistence: restart the second actual process with the same Raft DB.
+        api(nodes[1], "/v1/barrier", {})
+        restart_revision = api(nodes[1], "/v1/health")["revision"]
         nodes[1]["process"].terminate()
         nodes[1]["process"].wait(timeout=10)
         start(nodes[1])
         until(lambda: api(nodes[1], "/v1/barrier", {}))
         assert (nodes[1]["root"] / relative).read_bytes() == expected
+        assert api(nodes[1], "/v1/health")["revision"] == restart_revision
         # Stop the leader, then write through the surviving cluster.
         nodes[0]["process"].terminate()
         nodes[0]["process"].wait(timeout=10)
@@ -290,6 +293,9 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         assert {"cidr": "10.30.0.0/16", "owner_node_id": joined["node_id"]} in (
             forwarded["config"]["routing"]["routes"]
         )
+        for node in live:
+            api(node, "/v1/barrier", {})
+        assert len({api(node, "/v1/health")["revision"] for node in live}) == 1
         print(
             "3 processes: mTLS, membership, replication, restart, leader/quorum "
             "failover, route grants, policy renewal, convergence and follower writes PASS"

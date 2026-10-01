@@ -17,6 +17,7 @@ var (
 	bucketMeta      = []byte("canonical_meta")
 	keyRevision     = []byte("revision")
 	keySchema       = []byte("schema_version")
+	keyAppliedIndex = []byte("applied_index")
 )
 
 type Store struct {
