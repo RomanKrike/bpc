@@ -199,13 +199,14 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                   true,
+		"ok":                   status.Revision >= status.RevisionFloor,
 		"node_id":              status.NodeID,
 		"raft_role":            status.RaftRole,
 		"leader_id":            status.LeaderID,
 		"commit_index":         status.CommitIndex,
 		"last_applied":         status.LastApplied,
 		"revision":             status.Revision,
+		"revision_floor":       status.RevisionFloor,
 		"software_version":     s.version,
 		"protocol_version":     controlplane.ProtocolVersion,
 		"state_schema_version": controlplane.ControlSchemaVersion,
@@ -746,7 +747,7 @@ func (s *server) controllerHealth(status controlplane.Status) map[string]map[str
 	for _, member := range status.Members {
 		if member.ID == status.NodeID {
 			result[member.ID] = map[string]any{
-				"healthy":      true,
+				"healthy":      status.Revision >= status.RevisionFloor,
 				"raft_role":    status.RaftRole,
 				"commit_index": status.CommitIndex,
 				"last_applied": status.LastApplied,
@@ -770,7 +771,7 @@ func (s *server) controllerHealth(status controlplane.Status) map[string]map[str
 			result[member.ID] = map[string]any{"healthy": false, "error": err.Error()}
 			continue
 		}
-		health["healthy"] = true
+		health["healthy"], _ = health["ok"].(bool)
 		result[member.ID] = health
 	}
 	return result

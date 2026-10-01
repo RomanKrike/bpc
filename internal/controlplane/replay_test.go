@@ -91,12 +91,13 @@ func TestSnapshotRestoreResetsDurableReplayWatermark(t *testing.T) {
 }
 
 func TestRaftRestartPreservesCanonicalRevision(t *testing.T) {
-	for _, snapshot := range []bool{false, true} {
-		t.Run(fmt.Sprintf("snapshot=%v", snapshot), func(t *testing.T) {
+	for _, scenario := range []struct{ snapshot, legacy bool }{{false, false}, {true, false}, {true, true}} {
+		t.Run(fmt.Sprintf("snapshot=%v/legacy=%v", scenario.snapshot, scenario.legacy), func(t *testing.T) {
 			dir, root := t.TempDir(), t.TempDir()
 			var store *Store
 			var instance *raft.Raft
 			var fsm *StateMachine
+			var revisionFloor uint64
 			start := func() {
 				var err error
 				store, err = OpenStore(filepath.Join(dir, "state.db"))
@@ -105,6 +106,14 @@ func TestRaftRestartPreservesCanonicalRevision(t *testing.T) {
 				}
 				fsm = NewStateMachine(store, root)
 				snapshots, err := raft.NewFileSnapshotStore(dir, 2, io.Discard)
+				if err != nil {
+					t.Fatal(err)
+				}
+				available, err := snapshots.List()
+				if err != nil {
+					t.Fatal(err)
+				}
+				revisionFloor, err = store.prepareReplay(len(available) != 0)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -144,7 +153,7 @@ func TestRaftRestartPreservesCanonicalRevision(t *testing.T) {
 				deadline := time.Now().Add(3 * time.Second)
 				for time.Now().Before(deadline) {
 					if instance.State() == raft.Leader {
-						if err := instance.Barrier(time.Second).Error(); err == nil {
+						if _, _, err := (&Node{raft: instance, fsm: fsm, revisionFloor: revisionFloor}).StrongRead(time.Second); err == nil {
 							return
 						}
 					}
@@ -154,19 +163,22 @@ func TestRaftRestartPreservesCanonicalRevision(t *testing.T) {
 			}
 			wait()
 			submit := func(value string) {
-				node := &Node{raft: instance, fsm: fsm}
+				node := &Node{raft: instance, fsm: fsm, revisionFloor: revisionFloor}
 				result, err := node.Submit(Mutation{Version: CommandVersion, ID: value, Kind: "DurableTest", Operations: []Operation{{Op: "put", Path: "control/access/device-d1.json", Data: []byte(value)}}}, time.Second)
 				if err != nil || !result.OK {
 					t.Fatalf("submit: %+v %v", result, err)
 				}
 			}
 			submit("grant")
-			if snapshot {
+			if scenario.snapshot {
 				if err := instance.Snapshot().Error(); err != nil {
 					t.Fatal(err)
 				}
 			}
 			submit("revoke")
+			if scenario.legacy {
+				eraseReplayIndex(t, store)
+			}
 			for round := 0; round < 3; round++ {
 				stop()
 				start()

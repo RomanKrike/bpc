@@ -11,14 +11,43 @@ import (
 )
 
 var (
-	bucketLogs      = []byte("raft_logs")
-	bucketStable    = []byte("raft_stable")
-	bucketCanonical = []byte("canonical")
-	bucketMeta      = []byte("canonical_meta")
-	keyRevision     = []byte("revision")
-	keySchema       = []byte("schema_version")
-	keyAppliedIndex = []byte("applied_index")
+	bucketLogs       = []byte("raft_logs")
+	bucketStable     = []byte("raft_stable")
+	bucketCanonical  = []byte("canonical")
+	bucketMeta       = []byte("canonical_meta")
+	keyRevision      = []byte("revision")
+	keySchema        = []byte("schema_version")
+	keyAppliedIndex  = []byte("applied_index")
+	keyRevisionFloor = []byte("revision_floor")
 )
+
+var ErrLegacyReplayUnsafe = errors.New("legacy canonical state has no applied index and no Raft snapshot; automatic replay is unsafe; preserve the DB and use a verified migration checkpoint")
+
+// prepareReplay records a local revision floor before Raft can restore an older
+// snapshot. It does not infer committed indexes from revisions or stored logs.
+// A legacy materialized DB needs an actual snapshot base for reconstruction.
+func (s *Store) prepareReplay(hasSnapshots bool) (uint64, error) {
+	var floor uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(bucketMeta)
+		for _, key := range [][]byte{keyRevision, keyAppliedIndex, keyRevisionFloor} {
+			if raw := meta.Get(key); raw != nil && len(raw) != 8 {
+				return fmt.Errorf("invalid canonical metadata %q", key)
+			}
+		}
+		revision := decodeU64(meta.Get(keyRevision))
+		first, _ := tx.Bucket(bucketCanonical).Cursor().First()
+		if decodeU64(meta.Get(keyAppliedIndex)) == 0 && (revision != 0 || first != nil) && !hasSnapshots {
+			return ErrLegacyReplayUnsafe
+		}
+		floor = decodeU64(meta.Get(keyRevisionFloor))
+		if revision > floor {
+			floor = revision
+		}
+		return meta.Put(keyRevisionFloor, u64key(floor))
+	})
+	return floor, err
+}
 
 type Store struct {
 	db *bolt.DB

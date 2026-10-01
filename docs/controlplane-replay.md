@@ -43,6 +43,32 @@ when restarting a persisted voter and equal revisions after leader/quorum
 recovery and follower mutations. These are local process tests, not production
 VPS or kernel mesh acceptance.
 
+## Legacy startup preflight and revision floor
+
+Before starting a transport listener or Raft, inspect canonical metadata. A
+materialized legacy DB without an applied index and without any Raft snapshot
+is refused with `ErrLegacyReplayUnsafe`. Canonical entries, revision and
+projected files remain intact; do not delete the DB or synthesize an index.
+Snapshot presence allows Raft to attempt restoration; it does not bypass Raft
+or canonical checksum validation of that snapshot.
+
+Persist the maximum of the current canonical revision and any previously saved
+`canonical_meta/revision_floor` before snapshot restoration. The floor is local
+metadata and survives restores and failed migration restarts. It is never
+replaced by a lower reconstructed revision. Strong reads, normal mutations,
+follower acknowledgements, membership changes, snapshot creation and export
+fail while reconstruction is below that floor. Health exposes `revision_floor`
+and reports `ok: false`; such a Controller is not counted as healthy. An
+explicit authorized snapshot restore remains available for recovery, but does
+not reset the floor.
+
+A legacy DB with a valid snapshot and an uninflated counter can replay its
+suffix normally. The durable Raft regression covers this path through three
+restarts, alongside indexed DBs with and without snapshots. Tests also prove
+that missing-checkpoint refusal preserves policy and releases the Bolt lock,
+malformed metadata is rejected, an inflated floor survives repeated recovery
+attempts, and blocked operations do not write policy or change membership.
+
 ## Unresolved legacy migration
 
 An existing database created by an older binary has no trustworthy applied
@@ -52,11 +78,15 @@ Using the last stored log index would also skip possibly uncommitted entries.
 Do not guess either value.
 
 If Raft restores a valid snapshot, the snapshot base and subsequent suffix are
-well defined and the cleared watermark is safe. A legacy database that restarts
-without a restored snapshot still has the original first-replay problem: the
-new watermark prevents later repetitions but cannot retroactively identify its
-already materialized prefix. Previously inflated revisions and consumers'
-signed-snapshot revision floors also need a cluster-wide migration policy.
+well defined and the cleared watermark is safe. A legacy database without a
+snapshot now stops before replay. It needs a verified checkpoint import or a
+controlled rejoin procedure; neither is implemented here. A database with an
+inflated historical revision stops successful control-plane operations if
+snapshot reconstruction falls below its preserved floor. Previously divergent
+counters and consumers' signed-snapshot revision floors still need a
+cluster-wide reconciliation procedure. These safeguards deliberately do not
+claim to complete migration or guarantee availability during a mixed-version
+rollout.
 
 The draft therefore does not claim a safe rolling upgrade from arbitrary older
 databases. Before merging, implement and test migration without policy rollback

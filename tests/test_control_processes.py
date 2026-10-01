@@ -223,6 +223,8 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         until(lambda: api(nodes[1], "/v1/barrier", {}))
         assert (nodes[1]["root"] / relative).read_bytes() == expected
         assert api(nodes[1], "/v1/health")["revision"] == restart_revision
+        assert api(nodes[1], "/v1/health")["revision_floor"] == restart_revision
+        assert api(nodes[1], "/v1/health")["ok"]
         # Stop the leader, then write through the surviving cluster.
         nodes[0]["process"].terminate()
         nodes[0]["process"].wait(timeout=10)
