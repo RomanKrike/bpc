@@ -151,7 +151,7 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         with urllib.request.urlopen(request, timeout=90) as response:
             return json.load(response)
 
-    def start(node, bootstrap=False):
+    def controller_command(node, bootstrap=False):
         root = node["root"]
         cluster = root / "cluster"
         command = [
@@ -179,6 +179,11 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         ]
         if bootstrap:
             command.append("--bootstrap")
+        return command
+
+    def start(node, bootstrap=False):
+        root = node["root"]
+        command = controller_command(node, bootstrap)
         log = (root / "process.log").open("ab")
         node["process"] = subprocess.Popen(command, stdout=log, stderr=log)
         log.close()
@@ -217,8 +222,55 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         # Persistence: restart the second actual process with the same Raft DB.
         api(nodes[1], "/v1/barrier", {})
         restart_revision = api(nodes[1], "/v1/health")["revision"]
+        online_import = subprocess.run(
+            controller_command(nodes[1]) + [
+                "--replay-checkpoint-source", "https://" + nodes[0]["record"]["api_address"],
+            ], capture_output=True, text=True, timeout=15,
+        )
+        assert online_import.returncode != 0
+        assert "stop recipient bpc-controld" in online_import.stderr
         nodes[1]["process"].terminate()
         nodes[1]["process"].wait(timeout=10)
+        rejected_import = subprocess.run(
+            controller_command(nodes[1]) + [
+                "--replay-checkpoint-source", "https://" + nodes[2]["record"]["api_address"],
+            ], capture_output=True, text=True, timeout=15,
+        )
+        assert rejected_import.returncode != 0
+        assert "HTTP 409" in rejected_import.stderr
+        assert not (nodes[1]["root"] / "cluster/raft/replay-backups").exists()
+        donor_record = (
+            nodes[1]["root"] / "cluster/controllers"
+            / f"{nodes[0]['record']['node_id']}.json"
+        )
+        trusted_record = donor_record.read_bytes()
+        mismatched = json.loads(trusted_record)
+        mismatched["certificate_sha256"] = "00" * 32
+        donor_record.write_text(json.dumps(mismatched))
+        try:
+            untrusted_import = subprocess.run(
+                controller_command(nodes[1]) + [
+                    "--replay-checkpoint-source",
+                    "https://" + nodes[0]["record"]["api_address"],
+                ], capture_output=True, text=True, timeout=15,
+            )
+            assert untrusted_import.returncode != 0
+            assert "fingerprint mismatch" in untrusted_import.stderr
+            assert not (nodes[1]["root"] / "cluster/raft/replay-backups").exists()
+        finally:
+            donor_record.write_bytes(trusted_record)
+        private_key = (nodes[1]["root"] / "cluster/key.pem").read_bytes()
+        # Import through the actual offline binary and loopback mTLS source.
+        # Import must not mutate current policy before normal Raft restoration.
+        imported = subprocess.run(
+            controller_command(nodes[1]) + [
+                "--replay-checkpoint-source", "https://" + nodes[0]["record"]["api_address"],
+            ], capture_output=True, text=True, timeout=40,
+        )
+        assert imported.returncode == 0, imported.stderr
+        assert (nodes[1]["root"] / relative).read_bytes() == expected
+        assert (nodes[1]["root"] / "cluster/key.pem").read_bytes() == private_key
+        assert list((nodes[1]["root"] / "cluster/raft/replay-backups").glob("*.db"))
         start(nodes[1])
         until(lambda: api(nodes[1], "/v1/barrier", {}))
         assert (nodes[1]["root"] / relative).read_bytes() == expected

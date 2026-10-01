@@ -66,6 +66,7 @@ type Node struct {
 	raft          *raft.Raft
 	transport     *raft.NetworkTransport
 	revisionFloor uint64
+	snapshots     raft.SnapshotStore
 }
 
 func NewNode(config NodeConfig) (*Node, error) {
@@ -165,7 +166,7 @@ func NewNode(config NodeConfig) (*Node, error) {
 			return nil, err
 		}
 	}
-	return &Node{config: config, store: store, fsm: fsm, raft: instance, transport: transport, revisionFloor: revisionFloor}, nil
+	return &Node{config: config, store: store, fsm: fsm, raft: instance, transport: transport, revisionFloor: revisionFloor, snapshots: snapshots}, nil
 }
 
 func (n *Node) IsLeader() bool { return n.raft.State() == raft.Leader }

@@ -70,19 +70,20 @@ type removeMemberRequest struct {
 
 func main() {
 	var (
-		nodeID      = flag.String("node-id", "", "canonical BPC Node ID")
-		raftBind    = flag.String("raft-bind-address", "", "Controller Raft listen address")
-		raftAddress = flag.String("raft-address", "", "Controller Raft advertised address")
-		clusterAPI  = flag.String("cluster-api-address", "", "mTLS Controller API listen address")
-		localAPI    = flag.String("local-api-address", "127.0.0.1:9446", "loopback control API")
-		stateRoot   = flag.String("state-root", "/etc/bpc-connect", "BPC canonical state root")
-		dataDir     = flag.String("data-dir", "/etc/bpc-connect/cluster/raft", "persistent Raft directory")
-		certFile    = flag.String("cert-file", "", "Controller certificate")
-		keyFile     = flag.String("key-file", "", "Controller private key")
-		caFile      = flag.String("ca-file", "", "BPC cluster CA")
-		bootstrap   = flag.Bool("bootstrap", false, "bootstrap the first Controller")
-		version     = flag.String("software-version", "source", "BPC software version")
-		localToken  = flag.String("local-api-token-file", "", "root-only local API bearer token file")
+		nodeID           = flag.String("node-id", "", "canonical BPC Node ID")
+		raftBind         = flag.String("raft-bind-address", "", "Controller Raft listen address")
+		raftAddress      = flag.String("raft-address", "", "Controller Raft advertised address")
+		clusterAPI       = flag.String("cluster-api-address", "", "mTLS Controller API listen address")
+		localAPI         = flag.String("local-api-address", "127.0.0.1:9446", "loopback control API")
+		stateRoot        = flag.String("state-root", "/etc/bpc-connect", "BPC canonical state root")
+		dataDir          = flag.String("data-dir", "/etc/bpc-connect/cluster/raft", "persistent Raft directory")
+		certFile         = flag.String("cert-file", "", "Controller certificate")
+		keyFile          = flag.String("key-file", "", "Controller private key")
+		caFile           = flag.String("ca-file", "", "BPC cluster CA")
+		bootstrap        = flag.Bool("bootstrap", false, "bootstrap the first Controller")
+		version          = flag.String("software-version", "source", "BPC software version")
+		localToken       = flag.String("local-api-token-file", "", "root-only local API bearer token file")
+		checkpointSource = flag.String("replay-checkpoint-source", "", "offline: import a replay checkpoint from an upgraded HTTPS Leader and exit")
 	)
 	flag.Parse()
 	for name, value := range map[string]string{
@@ -108,6 +109,16 @@ func main() {
 		CAFile:          *caFile,
 		MembershipDir:   filepath.Join(*stateRoot, "cluster", "controllers"),
 		ClusterID:       clusterID,
+	}
+	if *checkpointSource != "" {
+		result, err := controlplane.ImportReplayCheckpoint(controlplane.NodeConfig{
+			NodeID: *nodeID, RaftAddress: *raftAddress, StateRoot: *stateRoot, DataDir: *dataDir, TLS: material,
+		}, *checkpointSource)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("replay checkpoint imported index=%d revision_floor=%d backup=%s; start Controller and verify quorum catch-up", result.SnapshotIndex, result.RevisionFloor, result.BackupFile)
+		return
 	}
 	node, err := controlplane.NewNode(controlplane.NodeConfig{
 		NodeID: *nodeID, RaftBindAddress: *raftBind, RaftAddress: *raftAddress,
@@ -189,7 +200,21 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/members/remove", s.removeMember)
 	mux.HandleFunc("POST /v1/snapshot", s.snapshot)
 	mux.HandleFunc("GET /v1/export", s.export)
+	mux.HandleFunc("POST /v1/replay-checkpoint", s.replayCheckpoint)
 	mux.HandleFunc("POST /v1/restore", s.restore)
+}
+
+func (s *server) replayCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.node.IsLeader() {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "checkpoint source must be the upgraded Leader"})
+		return
+	}
+	checkpoint, err := s.node.ExportReplayCheckpoint(10 * time.Second)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, checkpoint)
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {

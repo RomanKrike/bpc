@@ -69,6 +69,61 @@ that missing-checkpoint refusal preserves policy and releases the Bolt lock,
 malformed metadata is rejected, an inflated floor survives repeated recovery
 attempts, and blocked operations do not write policy or change membership.
 
+## Verified offline checkpoint import
+
+An upgraded ready Leader exposes `POST /v1/replay-checkpoint`. It first passes
+an ordinary strong-read barrier and requests a Raft snapshot, then opens that
+snapshot from the snapshot store. The payload includes the exact state bytes,
+index, term, configuration and configuration index from the same stored
+snapshot. A whole-payload checksum binds the state and metadata. It does not
+construct an index from a logical export or separately sampled status.
+
+The stopped recipient can run the proposed admin command:
+
+```sh
+systemctl stop bpc-controld.service
+bpc cluster replay-checkpoint --source https://LEADER:9447
+systemctl start bpc-controld.service
+bpc cluster status
+```
+
+These commands describe this unreleased draft. Migrate one recipient at a time;
+the selected upgraded Leader and a quorum must remain available. The helper
+does not automatically stop or restart services or restore the entire cluster.
+Use the HTTPS **cluster API**, not the public Device/Gateway API. The binary
+also offers `--replay-checkpoint-source` alongside its normal identity/TLS and
+state-directory arguments.
+
+The importer takes the exclusive Bolt lock before contacting the source. It
+requires an existing recipient DB, verifies cluster CA, membership URI and
+certificate fingerprint through mTLS, forbids redirects, and binds the source
+ID to the authenticated peer. Both authenticated certificates must match the
+canonical checkpoint membership records; the source must remain a voter. The
+recipient ID and Raft address must match the snapshot configuration, and the
+checkpoint cluster must match the recipient's canonical DB. Canonical paths,
+snapshot schema/checksum, whole-payload checksum, sizes, index, term and
+configuration index are validated before installation.
+
+Before writing the checkpoint, create and fsync a private Bolt backup under
+`cluster/raft/replay-backups/`. Preserve all existing snapshot files and refuse
+to replace an equal or newer checkpoint. Install through the library's snapshot
+sink so normal Raft startup can consume the real metadata. The current canonical
+policy, projected files and Node identity are untouched during import. Retain
+the original revision floor; importing an older base never lowers it.
+
+The backup contains Raft and canonical state, including control credentials,
+and has mode 0600 under an owner-only directory. Node private identity files
+are neither transferred nor changed. Verify successful quorum catch-up after
+starting the recipient. A successful import does not by itself mark recovery
+healthy or reconcile divergent revision floors.
+
+Tests cover installing a checkpoint into a watermark-free legacy DB and
+consuming it with actual Raft; preservation of original policy, backup and a
+higher revision floor; and rejection of corrupt/mismatched metadata. The real
+three-process mTLS scenario also refuses import while the recipient is running,
+rejects a follower source and an untrusted fingerprint, then imports and
+restarts the recipient while preserving its private key and policy.
+
 ## Unresolved legacy migration
 
 An existing database created by an older binary has no trustworthy applied
@@ -79,8 +134,8 @@ Do not guess either value.
 
 If Raft restores a valid snapshot, the snapshot base and subsequent suffix are
 well defined and the cleared watermark is safe. A legacy database without a
-snapshot now stops before replay. It needs a verified checkpoint import or a
-controlled rejoin procedure; neither is implemented here. A database with an
+snapshot now stops before replay. It can now import a verified checkpoint from an upgraded ready Leader. If no
+ready Leader exists, this command cannot recover the cluster on its own. A database with an
 inflated historical revision stops successful control-plane operations if
 snapshot reconstruction falls below its preserved floor. Previously divergent
 counters and consumers' signed-snapshot revision floors still need a

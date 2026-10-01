@@ -18,6 +18,7 @@ type testRaftNode struct {
 	transport *raft.InmemTransport
 	store     *Store
 	fsm       *StateMachine
+	snapshots raft.SnapshotStore
 }
 
 func newTestRaftNode(t *testing.T, id string) *testRaftNode {
@@ -46,7 +47,7 @@ func newTestRaftNode(t *testing.T, id string) *testRaftNode {
 	if string(address) != id {
 		t.Fatalf("unexpected address %s", address)
 	}
-	return &testRaftNode{id: id, root: root, raft: instance, transport: transport, store: canonical, fsm: fsm}
+	return &testRaftNode{id: id, root: root, raft: instance, transport: transport, store: canonical, fsm: fsm, snapshots: snaps}
 }
 
 func waitLeader(t *testing.T, nodes []*testRaftNode, timeout time.Duration) *testRaftNode {
