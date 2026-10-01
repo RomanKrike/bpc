@@ -125,6 +125,13 @@ func TestLegacySnapshotRetainsRevisionFloorAcrossFailedMigrationRestarts(t *test
 	if _, err := node.ExportSnapshot(); err == nil {
 		t.Fatal("lower revision exported")
 	}
+	if _, err := fsm.ExportSnapshot(); err == nil {
+		t.Fatal("lower revision exported directly by FSM")
+	}
+	// Automatic Raft snapshots bypass Node.Snapshot and call the FSM directly.
+	if _, err := fsm.Snapshot(); err == nil {
+		t.Fatal("automatic snapshot persisted an unreconciled revision")
+	}
 }
 
 func TestRevisionFloorBlocksSuccessfulControllerOperations(t *testing.T) {

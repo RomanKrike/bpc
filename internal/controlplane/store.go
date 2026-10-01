@@ -287,6 +287,15 @@ func (s *Store) revision() (uint64, error) {
 	return revision, err
 }
 
+func (s *Store) revisionFloor() (uint64, error) {
+	var floor uint64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		floor = decodeU64(tx.Bucket(bucketMeta).Get(keyRevisionFloor))
+		return nil
+	})
+	return floor, err
+}
+
 func (s *Store) schemaVersion() (uint64, error) {
 	var version uint64
 	err := s.db.View(func(tx *bolt.Tx) error {

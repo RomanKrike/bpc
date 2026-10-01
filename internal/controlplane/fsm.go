@@ -507,6 +507,9 @@ func (f *StateMachine) ExportSnapshot() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.checkSnapshotRevisionFloor(revision); err != nil {
+		return nil, err
+	}
 	schema, err := f.store.schemaVersion()
 	if err != nil {
 		return nil, err
@@ -527,6 +530,9 @@ func (f *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.checkSnapshotRevisionFloor(revision); err != nil {
+		return nil, err
+	}
 	schema, err := f.store.schemaVersion()
 	if err != nil {
 		return nil, err
@@ -538,6 +544,17 @@ func (f *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
 		return nil, err
 	}
 	return &stateSnapshot{data: raw}, nil
+}
+
+func (f *StateMachine) checkSnapshotRevisionFloor(revision uint64) error {
+	floor, err := f.store.revisionFloor()
+	if err != nil {
+		return err
+	}
+	if revision < floor {
+		return fmt.Errorf("cannot snapshot canonical revision %d below preserved floor %d", revision, floor)
+	}
+	return nil
 }
 
 type stateSnapshot struct{ data []byte }
