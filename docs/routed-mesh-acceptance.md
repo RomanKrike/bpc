@@ -62,6 +62,14 @@ because durable FSM/log replay can make local revision counters differ.
 The process regression checks an immediate read after a follower write and the
 subsequent route config, without adding a polling workaround to the caller.
 
+The replay/migration fix in [controlplane-replay.md](controlplane-replay.md)
+adds durable applied indexes, verified offline checkpoints and administrative
+revision reconciliation. Local process acceptance uses both current and actual
+pre-watermark binaries, preserves signed Gateway floors and exercises quorum
+loss/recovery. Real Raft tests also cover Leader loss after reconciliation commit
+before acknowledgement. These checks complete the supported control-plane
+migration procedure; production mesh A–H remains a separate acceptance gate.
+
 Run the controlled data-path acceptance:
 
 ```bash

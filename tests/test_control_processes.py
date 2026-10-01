@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import secrets
+import shutil
 import socket
 import subprocess
 import sys
@@ -26,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "deploy"))
 import bpc_node_enrollment as enrollment  # noqa: E402
 
 BINARY = os.environ.get("BPC_CONTROLD_BINARY")
+LEGACY_BINARY = os.environ.get("BPC_LEGACY_CONTROLD_BINARY")
 pytestmark = pytest.mark.skipif(not BINARY, reason="set BPC_CONTROLD_BINARY for process acceptance")
 
 
@@ -181,9 +183,11 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
             command.append("--bootstrap")
         return command
 
-    def start(node, bootstrap=False):
+    def start(node, bootstrap=False, binary=None):
         root = node["root"]
         command = controller_command(node, bootstrap)
+        if binary:
+            command[0] = binary
         log = (root / "process.log").open("ab")
         node["process"] = subprocess.Popen(command, stdout=log, stderr=log)
         log.close()
@@ -193,7 +197,7 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         start(nodes[0], True)
         until(lambda: api(nodes[0], "/v1/health")["raft_role"] == "Leader")
         for node in nodes[1:]:
-            start(node)
+            start(node, binary=LEGACY_BINARY if node is nodes[2] else None)
             request = {**node["record"], "voter": False}
             assert api(nodes[0], "/v1/members/add", request)["state"] == "nonvoter"
             request["voter"] = True
@@ -219,6 +223,88 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         expected = (nodes[0]["root"] / relative).read_bytes()
         for node in nodes:
             until(lambda node=node: (node["root"] / relative).read_bytes() == expected)
+        if LEGACY_BINARY:
+            # Actual pre-watermark binary must block administrative recovery.
+            before_revision = api(nodes[0], "/v1/health")["revision"]
+            with pytest.raises(urllib.error.HTTPError) as mixed:
+                api(nodes[0], "/v1/reconcile-revision", {"gateway_receipts": {}})
+            assert mixed.value.code == 503
+            assert api(nodes[0], "/v1/health")["revision"] == before_revision
+            assert (nodes[0]["root"] / relative).read_bytes() == expected
+            nodes[2]["process"].terminate()
+            nodes[2]["process"].wait(timeout=10)
+            # Reproduce legacy no-snapshot replay only in this temporary fixture.
+            shutil.rmtree(nodes[2]["root"] / "cluster/raft/snapshots", ignore_errors=True)
+            start(nodes[2], binary=LEGACY_BINARY)
+            until(lambda: api(nodes[2], "/v1/barrier", {}))
+            legacy_floor = api(nodes[2], "/v1/health")["revision"]
+            assert legacy_floor > before_revision
+            nodes[2]["process"].terminate()
+            nodes[2]["process"].wait(timeout=10)
+            checkpoint = subprocess.run(
+                controller_command(nodes[2]) + [
+                    "--replay-checkpoint-source", "https://" + nodes[0]["record"]["api_address"],
+                ], capture_output=True, text=True, timeout=40,
+            )
+            assert checkpoint.returncode == 0, checkpoint.stderr
+            start(nodes[2])
+            assert not api(nodes[2], "/v1/health")["ok"]
+            reconciled = api(nodes[0], "/v1/reconcile-revision", {"gateway_receipts": {}})
+            assert reconciled["revision"] >= legacy_floor
+            for node in nodes:
+                api(node, "/v1/barrier", {})
+                assert api(node, "/v1/health")["ok"]
+                assert api(node, "/v1/health")["revision"] == reconciled["revision"]
+                assert (node["root"] / relative).read_bytes() == expected
+
+        # A Gateway can hold a signed revision above every current Controller.
+        from bpc_gateway_snapshot import (
+            _signing_bytes,
+            build_security_snapshot,
+            install_security_snapshot,
+            load_valid_security_snapshot,
+        )
+        pki = nodes[0]["root"] / "cluster/pki"
+        pki.mkdir(exist_ok=True)
+        (pki / "cluster-ca.crt").write_bytes(ca.public_bytes(serialization.Encoding.PEM))
+        (pki / "cluster-ca.key").write_bytes(ca_key.private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ))
+        gateway_id = "a" * 32
+        api(nodes[0], "/v1/mutate", {
+            "version": 1, "id": "gateway-proof", "kind": "NodePut",
+            "operations": [{"op": "put", "path": f"control/nodes/{gateway_id}.json",
+                            "data": base64.b64encode(json.dumps({
+                                "node_id": gateway_id, "roles": {"gateway": True},
+                            }).encode()).decode()}],
+        })
+        high_revision = api(nodes[0], "/v1/health")["revision"] + 1000
+        receipt, verification_key = build_security_snapshot(
+            nodes[0]["root"] / "control", revision=high_revision,
+        )
+        gateway = tmp_path / "gateway"
+        install_security_snapshot(gateway, receipt, verification_key)
+        proof = {"signed": base64.b64encode(_signing_bytes(receipt)).decode(),
+                 "signature": receipt["signature"]}
+        recovery_request = {"gateway_receipts": {gateway_id: proof}}
+        for invalid in ({"gateway_receipts": {}}, {"gateway_receipts": {
+            gateway_id: {**proof, "signature": base64.b64encode(bytes(64)).decode()},
+        }}):
+            before = api(nodes[0], "/v1/health")["revision"]
+            with pytest.raises(urllib.error.HTTPError) as rejected:
+                api(nodes[0], "/v1/reconcile-revision", invalid)
+            assert rejected.value.code == 503
+            assert api(nodes[0], "/v1/health")["revision"] == before
+        result = api(nodes[0], "/v1/reconcile-revision", recovery_request)
+        assert result["revision"] == high_revision
+        current, _ = build_security_snapshot(
+            nodes[0]["root"] / "control", revision=result["revision"],
+        )
+        install_security_snapshot(gateway, current, verification_key)
+        assert load_valid_security_snapshot(gateway)["revision"] == high_revision
+        for node in nodes:
+            assert (node["root"] / relative).read_bytes() == expected
         # Persistence: restart the second actual process with the same Raft DB.
         api(nodes[1], "/v1/barrier", {})
         restart_revision = api(nodes[1], "/v1/health")["revision"]
@@ -324,6 +410,9 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
             }
 
         before_failed_import = persisted_files(survivor)
+        with pytest.raises(urllib.error.HTTPError) as isolated_recovery:
+            api(successor, "/v1/reconcile-revision", recovery_request)
+        assert isolated_recovery.value.code in (409, 503)
         isolated_import = subprocess.run(
             controller_command(survivor) + [
                 "--replay-checkpoint-source",
@@ -389,7 +478,8 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         assert len({api(node, "/v1/health")["revision"] for node in nodes}) == 1
         print(
             "3 processes: mTLS, membership, replication, restart, leader/quorum "
-            "failover, route grants, policy renewal, convergence and follower writes PASS"
+            "failover, route grants, policy renewal, convergence, revision recovery, "
+            "Gateway receipts and follower writes PASS"
         )
     finally:
         for node in nodes:

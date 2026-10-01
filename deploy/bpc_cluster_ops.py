@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import io
 import json
@@ -369,6 +370,31 @@ def cmd_replay_checkpoint(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_reconcile_revision(args: argparse.Namespace) -> int:
+    if os.geteuid() != 0:
+        raise ClusterOpsError("run revision reconciliation as root on the Leader")
+    # Read the actual accepted snapshots copied from each active Gateway.
+    # Preserve the exact Python signing serialization; Go verifies against CA.
+    from bpc_gateway_snapshot import _signing_bytes
+
+    receipts = {}
+    for item in args.gateway_receipt:
+        node_id, separator, filename = item.partition("=")
+        if not separator or not node_id or node_id in receipts:
+            raise ClusterOpsError("use unique --gateway-receipt NODE_ID=SNAPSHOT_FILE")
+        snapshot = json.loads(Path(filename).read_text(encoding="utf-8"))
+        receipts[node_id] = {
+            "signed": base64.b64encode(_signing_bytes(snapshot)).decode("ascii"),
+            "signature": snapshot["signature"],
+        }
+    result = _request_json(
+        args.state_dir, "POST", "/v1/reconcile-revision", {"gateway_receipts": receipts},
+    )
+    print(f"Revision reconciled: {result['revision']}; commit {result['commit_index']}")
+    print("Every configured Controller confirmed the committed revision and canonical policy.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BPC distributed cluster operations")
     parser.add_argument("--state-dir", type=Path, default=Path("/etc/bpc-connect"))
@@ -393,6 +419,11 @@ def build_parser() -> argparse.ArgumentParser:
     checkpoint.add_argument(
         "--source", required=True, help="HTTPS cluster API origin of an upgraded ready Leader"
     )
+    reconcile = sub.add_parser("reconcile-revision")
+    reconcile.add_argument(
+        "--gateway-receipt", action="append", default=[], metavar="NODE_ID=SNAPSHOT_FILE",
+        help="latest accepted runtime/security-snapshot.json from each active Gateway",
+    )
     return parser
 
 
@@ -411,6 +442,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_restore(args)
         if args.command == "replay-checkpoint":
             return cmd_replay_checkpoint(args)
+        if args.command == "reconcile-revision":
+            return cmd_reconcile_revision(args)
     except (ClusterOpsError, OSError, ValueError, KeyError) as exc:
         print(f"ERROR: {exc}", file=os.sys.stderr)
         return 2

@@ -201,6 +201,8 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/snapshot", s.snapshot)
 	mux.HandleFunc("GET /v1/export", s.export)
 	mux.HandleFunc("POST /v1/replay-checkpoint", s.replayCheckpoint)
+	mux.HandleFunc("POST /v1/recovery-state", s.recoveryState)
+	mux.HandleFunc("POST /v1/reconcile-revision", s.reconcileRevision)
 	mux.HandleFunc("POST /v1/restore", s.restore)
 }
 
@@ -224,17 +226,18 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                   status.Revision >= status.RevisionFloor,
-		"node_id":              status.NodeID,
-		"raft_role":            status.RaftRole,
-		"leader_id":            status.LeaderID,
-		"commit_index":         status.CommitIndex,
-		"last_applied":         status.LastApplied,
-		"revision":             status.Revision,
-		"revision_floor":       status.RevisionFloor,
-		"software_version":     s.version,
-		"protocol_version":     controlplane.ProtocolVersion,
-		"state_schema_version": controlplane.ControlSchemaVersion,
+		"ok":                        status.Revision >= status.RevisionFloor,
+		"node_id":                   status.NodeID,
+		"raft_role":                 status.RaftRole,
+		"leader_id":                 status.LeaderID,
+		"commit_index":              status.CommitIndex,
+		"last_applied":              status.LastApplied,
+		"revision":                  status.Revision,
+		"revision_floor":            status.RevisionFloor,
+		"revision_recovery_version": controlplane.RevisionRecoveryVersion,
+		"software_version":          s.version,
+		"protocol_version":          controlplane.ProtocolVersion,
+		"state_schema_version":      controlplane.ControlSchemaVersion,
 	})
 }
 
@@ -272,6 +275,15 @@ func (s *server) mutate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	var command controlplane.Mutation
+	if err := json.Unmarshal(raw, &command); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid mutation"})
+		return
+	}
+	if command.Kind == "ReconcileRevision" || command.RevisionMinimum != 0 {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "use local administrative revision reconciliation"})
+		return
+	}
 	if !s.node.IsLeader() {
 		response, status, err := s.forwardBytes(r.Method, r.URL.Path, raw)
 		if err != nil {
@@ -307,11 +319,6 @@ func (s *server) mutate(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(response)
-		return
-	}
-	var command controlplane.Mutation
-	if err := json.Unmarshal(raw, &command); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid mutation"})
 		return
 	}
 	result, err := s.node.Submit(command, 10*time.Second)

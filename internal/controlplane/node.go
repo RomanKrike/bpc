@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -67,6 +68,7 @@ type Node struct {
 	transport     *raft.NetworkTransport
 	revisionFloor uint64
 	snapshots     raft.SnapshotStore
+	mutationMu    sync.RWMutex
 }
 
 func NewNode(config NodeConfig) (*Node, error) {
@@ -189,6 +191,11 @@ func (n *Node) WaitForLeader(timeout time.Duration) error {
 }
 
 func (n *Node) Submit(command Mutation, timeout time.Duration) (MutationResult, error) {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
+	if command.Kind == "ReconcileRevision" || command.RevisionMinimum != 0 {
+		return MutationResult{}, errors.New("use administrative revision reconciliation")
+	}
 	if !n.IsLeader() {
 		return MutationResult{}, ErrNotLeader
 	}
@@ -254,6 +261,8 @@ func (n *Node) checkRevisionFloor() error {
 }
 
 func (n *Node) AddMember(id, address string, voter bool, timeout time.Duration) error {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
 	if !n.IsLeader() {
 		return ErrNotLeader
 	}
@@ -270,6 +279,8 @@ func (n *Node) AddMember(id, address string, voter bool, timeout time.Duration) 
 }
 
 func (n *Node) RemoveMember(id string, force bool, timeout time.Duration) error {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
 	if !n.IsLeader() {
 		return ErrNotLeader
 	}
@@ -344,6 +355,8 @@ func SnapshotClusterID(raw []byte) (string, error) {
 }
 
 func (n *Node) RestoreSnapshot(raw []byte, timeout time.Duration) error {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
 	if !n.IsLeader() {
 		return ErrNotLeader
 	}

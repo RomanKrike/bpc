@@ -1,7 +1,8 @@
 # Durable Raft FSM replay
 
-Status: proposed fix; do not release until migration of legacy databases is
-implemented and verified. This work does not complete mesh live acceptance.
+Status: implemented replay fix and administrative rolling migration, validated
+locally with current and pre-watermark binaries. This work does not complete
+mesh live acceptance or authorize a production rollout.
 
 ## Reproduced defect
 
@@ -118,7 +119,7 @@ The backup contains Raft and canonical state, including control credentials,
 and has mode 0600 under an owner-only directory. Node private identity files
 are neither transferred nor changed. Verify successful quorum catch-up after
 starting the recipient. A successful import does not by itself mark recovery
-healthy or reconcile divergent revision floors.
+healthy; finish revision reconciliation below if reconstruction is blocked.
 
 Tests cover installing a checkpoint into a watermark-free legacy DB and
 consuming it with actual Raft; preservation of original policy, backup and a
@@ -136,7 +137,7 @@ current Leader succeeds; the recipient catches up and all three revisions
 converge. This covers checkpoint import around a quorum outage, not arbitrary
 mixed-version recovery or an in-flight source crash.
 
-## Reconciliation constraints
+## Administrative revision reconciliation
 
 Gateway heartbeat signs a security snapshot using the revision returned by a
 Controller strong read (`deploy/bpc-control-server.py`). Gateway installation
@@ -146,15 +147,82 @@ revision before it was removed or became unavailable. Therefore the maximum
 floor reported by the remaining Controllers alone cannot prove that a proposed
 reconciled revision covers every consumer's accepted floor.
 
-A future reconciliation protocol must preserve these signed consumer floors,
-authenticate evidence of a higher historical revision, and prevent an arbitrary
-client-supplied counter from advancing the cluster. It must commit the chosen
-revision through Raft without changing policy or CAS history and verify support
-on the configured members before introducing semantics older binaries cannot
-apply. An isolated Leader must not acknowledge it. Neither local checkpoint
-import nor a successful same-version quorum recovery meets these requirements.
+Run on the **current Leader** through the root-only local API:
 
-## Unresolved legacy migration
+```sh
+bpc cluster reconcile-revision \
+  --gateway-receipt GATEWAY_NODE_ID=/root/gateway-security-snapshot.json
+bpc cluster status
+```
+
+Repeat `--gateway-receipt` for every active canonical Gateway. Copy each
+Gateway's latest **accepted** `runtime/security-snapshot.json`, including expired
+snapshots; do not replace it with a newly generated lower-revision snapshot.
+Collect from the actual Gateway runtime during the migration maintenance window,
+with old Controller issuance stopped. The CA signature proves issuance, not
+which snapshot a Gateway most recently accepted: supplying an older signed copy
+cannot prove its current floor. If a Gateway is inaccessible or its accepted
+snapshot is missing, finish collecting evidence before proceeding. No Gateway
+snapshot/trust/minimum revision is reset by this command. With no active Gateways,
+the command needs no receipt arguments.
+
+The API derives the target itself; it accepts no arbitrary numeric minimum.
+For each required receipt, verify Ed25519 against the configured cluster CA,
+the exact signed bytes/domain, cluster ID, schema and validity shape. Expiration
+is permitted solely for historical evidence; the old policy is never installed.
+Missing/extra Gateway IDs, wrong signatures/cluster and exhausted counters fail
+before the reconciliation entry is written.
+
+An actual quorum barrier establishes the observed leader state. Every configured
+Raft member, including nonvoters, must support recovery version 1 and catch up to
+that index over pinned mTLS. Compare canonical policy digests (excluding revision)
+and configuration indexes. Take the maximum of current revisions, preserved local
+floors and verified Gateway receipts. Recheck state/revision/configuration under
+the mutation lock before committing a `ReconcileRevision` entry; a concurrent
+policy or membership change requires retry. Ordinary mutation endpoints reject
+this reserved command and field. It changes revision metadata only, preserves
+canonical entries and CAS inputs, and advances the replay watermark atomically.
+Normal mutations retain increment-by-one semantics, with overflow refusal.
+
+Recovery metadata/barriers remain available below the local revision floor; this
+does not bypass the guard for ordinary reads, writes, membership or snapshots.
+After commit, require a fresh strong read and member confirmations. If leadership
+or connectivity disappears, report failure even if the entry committed; retry
+on the new Leader recomputes the target and is safe without increment inflation.
+The v1 canonical snapshot/checksum format remains unchanged and retains the
+reconciled revision. Normal restart persists it as the local floor.
+
+## Supported rolling procedure
+
+1. While the old cluster has quorum, run `bpc cluster backup` on its Leader.
+   This creates a real persisted Raft snapshot before upgrade. Keep the backup
+   and original state directories; a logical export alone is not a replay base.
+2. Upgrade the Leader and the other Controllers one at a time, maintaining quorum.
+   A marker-free recipient without a snapshot must stay stopped and import the
+   verified paired checkpoint from the upgraded ready Leader before starting.
+   An inflated recipient may remain `ok: false` until final reconciliation.
+3. Collect the latest accepted signed snapshot from every active Gateway and stop
+   issuance by old Controller binaries. Return every configured Raft member to
+   service with the new binary and matching canonical policy. Reconciliation
+   deliberately refuses a mixed-version or partially inaccessible configuration.
+4. Run `bpc cluster reconcile-revision` on the current Leader, verify every member
+   is healthy, then resume normal traffic/configuration updates. Signed Gateway
+   refresh uses the raised revision and preserves the accepted minimum.
+5. Keep upgraded binaries on all Controllers; do not downgrade to the defective
+   pre-watermark implementation or add it after migration. Its replay behavior
+   remains unsafe even though transport and snapshot v1 stay compatible.
+
+Tests exercise the actual pre-watermark binary from mesh base `2d2a3513`: mixed
+membership refuses reconciliation without changing policy/revision, its legacy
+no-snapshot restart reproduces counter inflation, verified import preserves the
+floor, and the upgraded cluster reconciles while retaining policy. A real
+Gateway accepts its high historical signed floor and the refreshed snapshot
+without a reset. Missing/forged evidence fails. Additional real Raft tests lose
+the Leader after quorum commit but before its FSM/response completes, verify no
+successful acknowledgement, elect a successor and retry without inflation. CAS
+updates invalidate stale proposals; normal APIs cannot bypass recovery checks.
+
+## Recovery limits
 
 An existing database created by an older binary has no trustworthy applied
 index. Its revision is a count of successful mutations, not a Raft log index;
@@ -164,17 +232,14 @@ Do not guess either value.
 
 If Raft restores a valid snapshot, the snapshot base and subsequent suffix are
 well defined and the cleared watermark is safe. A legacy database without a
-snapshot now stops before replay. It can now import a verified checkpoint from an upgraded ready Leader. If no
-ready Leader exists, this command cannot recover the cluster on its own. A database with an
-inflated historical revision stops successful control-plane operations if
-snapshot reconstruction falls below its preserved floor. Previously divergent
-counters and consumers' signed-snapshot revision floors still need a
-cluster-wide reconciliation procedure. These safeguards deliberately do not
-claim to complete migration or guarantee availability during a mixed-version
-rollout.
+snapshot now stops before replay and requires a verified checkpoint. If no
+ready upgraded Leader can export one, offline import cannot manufacture it.
+Floor-blocked members with valid reconstructed state can use administrative
+reconciliation when quorum and every configured member return.
 
-The draft therefore does not claim a safe rolling upgrade from arbitrary older
-databases. Before merging, implement and test migration without policy rollback
-or resetting accepted security revision floors, including mixed binaries,
-missing snapshots, CAS/conflict history, and quorum loss. Do not deploy this
-branch as a mesh release.
+This procedure does not reconstruct permanently lost quorum, guess missing
+Gateway floors or automatically repair differing canonical policies. Those
+conditions refuse successful migration and require preserved backups/evidence.
+Availability during rolling maintenance depends on existing quorum/membership;
+migration does not grant an isolated Controller authority. The mesh release
+still requires production VPS/kernel/Windows acceptance.

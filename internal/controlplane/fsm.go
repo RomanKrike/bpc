@@ -58,11 +58,12 @@ type Operation struct {
 }
 
 type Mutation struct {
-	Version    int         `json:"version"`
-	ID         string      `json:"id"`
-	Kind       string      `json:"kind"`
-	IssuedAt   int64       `json:"issued_at"`
-	Operations []Operation `json:"operations"`
+	Version         int         `json:"version"`
+	ID              string      `json:"id"`
+	Kind            string      `json:"kind"`
+	IssuedAt        int64       `json:"issued_at"`
+	Operations      []Operation `json:"operations"`
+	RevisionMinimum uint64      `json:"revision_minimum,omitempty"`
 }
 
 type MutationResult struct {
@@ -245,6 +246,13 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	if command.Version != CommandVersion || command.ID == "" || command.Kind == "" {
 		return MutationResult{Error: "unsupported or incomplete mutation"}
 	}
+	if command.Kind == "ReconcileRevision" {
+		if command.RevisionMinimum == 0 || len(command.Operations) != 0 {
+			return MutationResult{Error: "invalid revision reconciliation"}
+		}
+	} else if command.RevisionMinimum != 0 {
+		return MutationResult{Error: "revision minimum requires administrative reconciliation"}
+	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -307,7 +315,16 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 			revision = decodeU64(meta.Get(keyRevision))
 			return nil
 		}
-		revision = decodeU64(meta.Get(keyRevision)) + 1
+		if command.Kind == "ReconcileRevision" {
+			if command.RevisionMinimum > revision {
+				revision = command.RevisionMinimum
+			}
+		} else {
+			if revision == ^uint64(0) {
+				return errors.New("canonical revision exhausted")
+			}
+			revision++
+		}
 		for _, op := range normalized {
 			switch op.Op {
 			case "put":

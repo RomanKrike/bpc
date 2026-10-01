@@ -21,7 +21,7 @@ type testRaftNode struct {
 	snapshots raft.SnapshotStore
 }
 
-func newTestRaftNode(t *testing.T, id string) *testRaftNode {
+func newTestRaftNode(t *testing.T, id string, wrappers ...func(raft.FSM) raft.FSM) *testRaftNode {
 	t.Helper()
 	root := t.TempDir()
 	canonical, err := OpenStore(filepath.Join(t.TempDir(), id+".db"))
@@ -40,7 +40,11 @@ func newTestRaftNode(t *testing.T, id string) *testRaftNode {
 	config.LeaderLeaseTimeout = 100 * time.Millisecond
 	config.CommitTimeout = 20 * time.Millisecond
 	config.SnapshotThreshold = 16
-	instance, err := raft.NewRaft(config, fsm, logs, stable, snaps, transport)
+	var machine raft.FSM = fsm
+	for _, wrap := range wrappers {
+		machine = wrap(machine)
+	}
+	instance, err := raft.NewRaft(config, machine, logs, stable, snaps, transport)
 	if err != nil {
 		t.Fatal(err)
 	}

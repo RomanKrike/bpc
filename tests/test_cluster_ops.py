@@ -167,3 +167,33 @@ def test_replay_checkpoint_uses_offline_binary_and_preserves_marker(
         assert ops.cmd_replay_checkpoint(args) == 0
     assert len(calls) == 1
     assert marker_path.read_bytes() == original
+
+
+def test_revision_recovery_sends_exact_signed_gateway_evidence(tmp_path, monkeypatch):
+    from bpc_gateway_snapshot import _signing_bytes
+
+    snapshot = {"cluster_id": "cluster", "revision": 500, "signature": "c2ln"}
+    receipt = tmp_path / "accepted.json"
+    receipt.write_text(json.dumps(snapshot))
+    original = receipt.read_bytes()
+    monkeypatch.setattr(ops.os, "geteuid", lambda: 0)
+    calls = []
+
+    def request(state, method, path, body):
+        assert method == "POST" and path == "/v1/reconcile-revision"
+        calls.append(body)
+        proof = body["gateway_receipts"]["gateway"]
+        assert ops.base64.b64decode(proof["signed"]) == _signing_bytes(snapshot)
+        assert proof["signature"] == snapshot["signature"]
+        return {"revision": 500, "commit_index": 100}
+
+    monkeypatch.setattr(ops, "_request_json", request)
+    args = ops.argparse.Namespace(
+        state_dir=tmp_path, gateway_receipt=[f"gateway={receipt}"],
+    )
+    assert ops.cmd_reconcile_revision(args) == 0
+    assert len(calls) == 1 and receipt.read_bytes() == original
+    args.gateway_receipt.append(f"gateway={receipt}")
+    with pytest.raises(ops.ClusterOpsError, match="unique"):
+        ops.cmd_reconcile_revision(args)
+    assert len(calls) == 1
