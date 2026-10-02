@@ -6,7 +6,7 @@ import io
 import json
 import re
 import tarfile
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 def verify(bundle: Path, expected: str, destination: Path | None = None) -> dict:
@@ -21,7 +21,11 @@ def verify(bundle: Path, expected: str, destination: Path | None = None) -> dict
         names = set()
         for member in archive.getmembers():
             path = PurePosixPath(member.name)
-            if path.is_absolute() or ".." in path.parts or "\\" in member.name:
+            if (path.is_absolute() or ".." in path.parts or "\\" in member.name
+                    or PureWindowsPath(member.name).drive
+                    or any(":" in part or part.endswith((".", " "))
+                           or PureWindowsPath(part).is_reserved() for part in path.parts)
+                    or (member.isfile() and not path.parts)):
                 raise ValueError("Unsafe archive path")
             name = path.as_posix()
             if name in names or not (member.isfile() or member.isdir()):
@@ -32,6 +36,10 @@ def verify(bundle: Path, expected: str, destination: Path | None = None) -> dict
             members.append((member, name))
             if member.isfile():
                 files[name] = archive.extractfile(member).read()
+        for name in names:
+            if any(parent.as_posix() in files for parent in PurePosixPath(name).parents
+                   if parent.parts):
+                raise ValueError("Archive file conflicts with a directory")
         manifest = json.loads(files["CANDIDATE.json"])
         sha = manifest["source_sha"]
         version = manifest["version"]

@@ -56,6 +56,10 @@ def test_verified_extract_and_reject_wrong_checksum(tmp_path):
 
 @pytest.mark.parametrize("name,kind", [("../outside", tarfile.REGTYPE),
                                        ("/outside", tarfile.REGTYPE),
+                                       ("C:/outside", tarfile.REGTYPE),
+                                       ("VERSION:stream", tarfile.REGTYPE),
+                                       ("VERSION.", tarfile.REGTYPE),
+                                       ("CON", tarfile.REGTYPE),
                                        ("link", tarfile.SYMTYPE),
                                        ("hard", tarfile.LNKTYPE),
                                        ("VERSION", tarfile.REGTYPE)])
@@ -65,6 +69,14 @@ def test_archive_escape_links_duplicates_rejected_before_extraction(tmp_path, na
     extra.linkname = "/etc/passwd"
     path, sha, _ = bundle(tmp_path, extra=extra)
     with pytest.raises(ValueError):
+        candidate.verify(path, sha, tmp_path / "extract")
+    assert not (tmp_path / "extract").exists()
+
+
+def test_file_directory_conflict_rejected_before_extraction(tmp_path):
+    extra = tarfile.TarInfo("VERSION/child")
+    path, sha, _ = bundle(tmp_path, extra=extra)
+    with pytest.raises(ValueError, match="conflicts with a directory"):
         candidate.verify(path, sha, tmp_path / "extract")
     assert not (tmp_path / "extract").exists()
 
