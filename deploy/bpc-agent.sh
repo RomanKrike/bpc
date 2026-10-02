@@ -197,14 +197,27 @@ DONE
 publish_update() {
   local version=""
   local file=""
+  local automatic="false"
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --version) version="${2:-}"; shift 2 ;;
       --file) file="${2:-}"; shift 2 ;;
+      --automatic) automatic="true"; shift ;;
       -h|--help) usage; exit 0 ;;
       *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
   done
+
+  # Candidate reconciliation must preserve the stable Windows update channel.
+  # Explicit publication is refused too, even with a stable --version override.
+  if [[ -f "${BPC_ROOT}/current/CANDIDATE.json" ]]; then
+    if [[ "${automatic}" == "true" ]]; then
+      echo "Mesh candidate: existing Windows Agent update channel preserved."
+      return 0
+    fi
+    echo "Mesh candidate: Windows Agent auto-update publication is disabled." >&2
+    return 2
+  fi
 
   require_control
   # shellcheck disable=SC1090,SC1091

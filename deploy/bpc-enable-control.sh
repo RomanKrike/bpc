@@ -302,7 +302,7 @@ if [[ -f "${node_model}" ]]; then
 fi
 
 if [[ -x "${BPC_ROOT}/current/deploy/bpc-agent.sh" ]]; then
-  "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update
+  "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update --automatic
 fi
 
 cat <<DONE
