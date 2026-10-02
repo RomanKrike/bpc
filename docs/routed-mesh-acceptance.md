@@ -113,3 +113,9 @@ updates with all traffic probes running. Existing Raft process tests and the
 0.20.2 independent-WireGuard tests cover separate layers; they do not substitute
 for that combined acceptance. This execution environment denies network
 namespace creation and does not expose a kernel TUN or production host access.
+
+The [combined live procedure](live-mesh-acceptance.md) defines the A–H matrix,
+required SSH/Windows access and evidence. `scripts/acceptance-mesh-traffic.py`
+collects simultaneous ICMP, UDP and two persistent TCP workloads on Windows
+or Linux. Its local functional checks validate measurement only; reports remain
+unreviewed until faults, topology, policy and kernel state are verified on hosts.
