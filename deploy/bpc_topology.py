@@ -48,7 +48,9 @@ def _atomic_local_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def telemetry_root(control_dir: Path) -> Path:
-    return Path(control_dir).resolve().parent / "runtime" / "topology"
+    # Node updates swap runtime symlinks. Telemetry must retain one writable
+    # systemd mount target across both API and Node runtime replacements.
+    return Path(control_dir).resolve().parent / "runtime-topology"
 
 
 def node_telemetry_path(control_dir: Path, node_id: str) -> Path:

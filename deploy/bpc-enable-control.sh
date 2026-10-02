@@ -243,8 +243,12 @@ CONTROL_HOST=${SUBSCRIPTION_HOST}
 CONTROL_PORT=${PORT}
 CONTROL_CERT=${SUBSCRIPTION_CERT}
 CONTROL_KEY=${SUBSCRIPTION_KEY}
+CONTROL_MODE=primary
 RUNTIME
 chmod 0600 "${CONTROL_DIR}/runtime.env"
+
+python3 "${BPC_ROOT}/current/deploy/bpc_control_runtime.py" \
+  --state-dir "${BPC_STATE_DIR}" --release-root "${BPC_ROOT}"
 
 cat > /etc/systemd/system/bpc-control.service <<UNIT
 [Unit]
@@ -263,7 +267,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=${CONTROL_DIR} ${AGENT_DIR}
+ReadWritePaths=${CONTROL_DIR} ${AGENT_DIR} ${BPC_STATE_DIR}/runtime-topology
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
