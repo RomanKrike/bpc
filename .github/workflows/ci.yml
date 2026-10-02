@@ -117,9 +117,8 @@ jobs:
           print(data['project']['version'])
           PY
           )"
-          chmod +x scripts/build-release.sh
           if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
-            ./scripts/build-release.sh "${VERSION}" release-dist
+            bash scripts/build-release.sh "${VERSION}" release-dist
           else
             bash scripts/build-mesh-candidate.sh release-dist
           fi
