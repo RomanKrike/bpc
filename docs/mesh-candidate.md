@@ -73,6 +73,11 @@ and executable. Explicit `bpc-agent publish-update` is disabled on candidates,
 including attempts to override the version with a stable number; update the
 test Windows Device manually from the verified bundle instead.
 
+For a VPS with existing nginx/WireGuard services, follow
+[the explicit routed provisioning procedure](mesh-existing-vps.md). Controller
+runtime updates now refresh both the Raft unit and an enrolled public API replica;
+check their actual running executable and cluster health after each voter update.
+
 If candidate validation fails, exit code is 5 and the updater prints the previous
 release path. The candidate and current state remain available for diagnosis;
 there is no automatic database rewind. Same-version retry rechecks migration

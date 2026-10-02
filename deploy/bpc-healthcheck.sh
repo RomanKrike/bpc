@@ -459,15 +459,19 @@ check_control() {
   local runtime_env="${control_dir}/runtime.env"
 
   [[ -f "${control_dir}/enabled" ]] || return 0
-  if [[ ! -s "${runtime_env}" || ! -s "${control_dir}/config.json" || \
-    ! -s "${control_dir}/update-signing-key.pem" || \
-    ! -s "${control_dir}/update-signing-public.pem" ]]; then
+  if [[ ! -s "${runtime_env}" || ! -s "${control_dir}/config.json" ]]; then
     fail_health "BPC control-plane state is incomplete"
     return 1
   fi
 
   # shellcheck disable=SC1090,SC1091
   source "${runtime_env}"
+  if [[ "${CONTROL_MODE:-primary}" != "replica" ]] && \
+    [[ ! -s "${control_dir}/update-signing-key.pem" || \
+       ! -s "${control_dir}/update-signing-public.pem" ]]; then
+    fail_health "BPC primary control-plane update signing keys are missing"
+    return 1
+  fi
   if [[ ! -s "${CONTROL_CERT:-}" || ! -s "${CONTROL_KEY:-}" ]]; then
     fail_health "BPC control-plane TLS certificate or private key is missing"
     return 1
@@ -487,7 +491,20 @@ check_control() {
 }
 
 gateway_config="${BPC_STATE_DIR}/ru-node/config.json"
-if node_has_capability gateway || [[ -s "${gateway_config}" ]]; then
+mesh_only="false"
+if [[ -s "${BPC_STATE_DIR}/enrollment.json" ]] && python3 - "${BPC_STATE_DIR}/enrollment.json" <<'PY_MODE'
+import json
+import sys
+from pathlib import Path
+
+value = json.loads(Path(sys.argv[1]).read_text())
+gateway = value.get("config", {}).get("role_config", {}).get("gateway", {})
+raise SystemExit(0 if gateway.get("mode") == "routed" else 1)
+PY_MODE
+then
+  mesh_only="true"
+fi
+if [[ -s "${gateway_config}" ]] || { node_has_capability gateway && [[ "${mesh_only}" != "true" ]]; }; then
   if [[ ! -x /usr/local/bin/xray ]]; then
     fail_health "xray binary is missing"
     exit 1

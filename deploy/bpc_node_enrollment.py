@@ -66,6 +66,7 @@ from bpc_topology import (  # noqa: E402
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
     reconcile_transport_roles,
+    routed_dataplane,
 )
 from bpc_connect.compat.runtime import (  # noqa: E402
     agent_runtime_env as compatibility_agent_runtime_env,
@@ -381,8 +382,16 @@ def discover_controller_url(control_dir: Path) -> str:
     return normalize_controller_url(f"https://{host}:{port}")
 
 
-def default_role_config(state_dir: Path, roles: list[str]) -> dict[str, Any]:
-    return compatibility_role_config(state_dir, roles)
+def default_role_config(
+    state_dir: Path, roles: list[str], *, dataplane: str = "compat",
+) -> dict[str, Any]:
+    return compatibility_role_config(state_dir, roles, dataplane=dataplane)
+
+
+def enrollment_uses_routed_dataplane(enrollment: dict[str, Any]) -> bool:
+    config = enrollment.get("config", {})
+    role_config = config.get("role_config", {}) if isinstance(config, dict) else {}
+    return isinstance(role_config, dict) and routed_dataplane(role_config)
 
 
 def create_join_token(
@@ -1260,12 +1269,19 @@ def service_state(name: str) -> str:
     return completed.stdout.strip() or "inactive"
 
 
-def local_services(roles: dict[str, Any]) -> dict[str, str]:
+def local_services(
+    roles: dict[str, Any], role_config: dict[str, Any] | None = None,
+) -> dict[str, str]:
     services: dict[str, str] = {"bpc-node": service_state("bpc-node.service")}
+    mesh_only = routed_dataplane(role_config or {})
     if bool(roles.get("gateway")):
-        services["gateway"] = service_state("xray.service")
+        services["gateway"] = service_state(
+            "bpc-routed-node.service" if mesh_only else "xray.service"
+        )
     if bool(roles.get("relay")):
-        services["relay"] = service_state("bpc-agent-relay.service")
+        services["relay"] = service_state(
+            "bpc-routed-node.service" if mesh_only else "bpc-agent-relay.service"
+        )
     if bool(roles.get("controller")):
         services["controller"] = service_state("bpc-control.service")
         services["distributed-controller"] = service_state("bpc-controld.service")
@@ -1669,6 +1685,8 @@ def reconcile_startup_gateway_state(
     """
     if not bool(roles.get("gateway")):
         return False
+    if enrollment_uses_routed_dataplane(enrolled_state(state_dir) or {}):
+        return False
     if not (state_dir / "control" / "config.json").is_file():
         return False
     try:
@@ -1704,8 +1722,11 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         "protocol_version": BPC_PROTOCOL_VERSION,
         "state_schema_version": STATE_SCHEMA_VERSION,
         "advertised_routes": _local_advertised_routes(state_dir),
-        "services": local_services(roles),
-        "transport": local_transport_runtime(state_dir, roles),
+        "services": local_services(roles, enrollment.get("config", {}).get("role_config", {})),
+        "transport": (
+            {} if enrollment_uses_routed_dataplane(enrollment)
+            else local_transport_runtime(state_dir, roles)
+        ),
         "links": local_routed_links(),
     }
     credential = str(enrollment["credential"])
@@ -1759,7 +1780,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         enrollment["security_revision"] = int(installed.get("revision", 0))
         enrollment["security_expires_at"] = int(installed.get("expires_at", 0))
         control_config = state_dir / "control" / "config.json"
-        if control_config.is_file():
+        if control_config.is_file() and not enrollment_uses_routed_dataplane(enrollment):
             try:
                 reconcile_local_gateway_state(state_dir)
             except (
@@ -1820,22 +1841,70 @@ def authorize_site_routes(control_dir: Path, node_id: str, routes: list[str]) ->
         atomic_json(path, node)
 
 
+def public_node_endpoints(hosts: list[str]) -> list[dict[str, Any]]:
+    endpoints = [item.to_mapping() for item in canonical_endpoints(
+        [{"host": host} for host in hosts]
+    )]
+    if not endpoints:
+        raise EnrollmentError("public-node requires --host with a public DNS hostname")
+    for endpoint in endpoints:
+        host = endpoint["host"]
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            if "." in host:
+                continue
+        raise EnrollmentError("public-node requires a public DNS hostname")
+    return endpoints
+
+
+def cmd_node_configure(args: argparse.Namespace) -> int:
+    """Promote an enrolled Controller without a new identity or join token.
+
+    Controller membership is deliberately not edited by role configuration.
+    Converting an existing compatibility Gateway requires a separate migration.
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", args.node_id):
+        raise EnrollmentError("invalid Node ID")
+    endpoints = public_node_endpoints(args.host)
+    if not bpc_control_state.cluster_enabled(args.control_dir):
+        raise EnrollmentError("node configure requires distributed control plane")
+    strong_read(args.control_dir)
+    path = args.control_dir / "nodes" / f"{args.node_id}.json"
+    node = read_json(path)
+    digest = node_record_digest(path, node)
+    roles = node.get("roles", {})
+    if node.get("revoked") or not isinstance(roles, dict) or not roles.get("controller"):
+        raise EnrollmentError("public-node promotion requires an active enrolled Controller", 409)
+    old_config = node.get("role_config", {})
+    if (roles.get("gateway") or roles.get("relay")) and not (
+        isinstance(old_config, dict) and routed_dataplane(old_config)
+    ):
+        raise EnrollmentError("existing compatibility transports require explicit migration", 409)
+    node["roles"] = {**roles, "gateway": True, "relay": True}
+    node["role_config"] = default_role_config(
+        args.state_dir, [role for role, enabled in node["roles"].items() if enabled],
+        dataplane="routed",
+    )
+    node["endpoints"] = endpoints
+    try:
+        bpc_control_state.mutation(args.control_dir, "ConfigurePublicNode", [{
+            "op": "put", "path": path, "expected_sha256": digest,
+            "data": json.dumps(node, sort_keys=True, separators=(",", ":")).encode(),
+        }])
+    except bpc_control_state.ControlStateError as exc:
+        _raise_control_state(exc)
+    print(f"Public Node configured: {node['name']} ({args.node_id}); dataplane=routed")
+    return 0
+
+
 def cmd_node_create(args: argparse.Namespace) -> int:
     roles = list(NODE_PRESETS[args.preset])
     endpoints = [item.to_mapping() for item in canonical_endpoints(
         [{"host": host} for host in args.host]
     )]
     if args.preset == "public-node":
-        if not endpoints:
-            raise EnrollmentError("public-node requires --host with a public DNS hostname")
-        for endpoint in endpoints:
-            host = endpoint["host"]
-            try:
-                ipaddress.ip_address(host)
-            except ValueError:
-                if "." in host:
-                    continue
-            raise EnrollmentError("public-node requires a public DNS hostname")
+        endpoints = public_node_endpoints(args.host)
         if not bpc_control_state.cluster_enabled(args.control_dir):
             raise EnrollmentError("public-node requires an initialized distributed control plane")
     controller_url = args.controller_url or discover_controller_url(args.control_dir)
@@ -1843,7 +1912,8 @@ def cmd_node_create(args: argparse.Namespace) -> int:
     token = create_join_token(
         args.control_dir, controller_url=controller_url, roles=roles, name=args.name,
         expires_in=parse_duration(args.expires), endpoints=endpoints,
-        advertised_routes=args.route, role_config=default_role_config(args.state_dir, roles),
+        advertised_routes=args.route,
+        role_config=default_role_config(args.state_dir, roles, dataplane=args.dataplane),
     )
     bootstrap = "https://github.com/RomanKrike/bpc/releases/latest/download/install.sh"
     print(f"Node invitation: {args.name} ({', '.join(roles)}); expires in {args.expires}")
@@ -1859,7 +1929,9 @@ def cmd_token_create(args: argparse.Namespace) -> int:
         if args.controller_url
         else discover_controller_url(args.control_dir)
     )
-    role_config = default_role_config(args.state_dir, roles)
+    if args.dataplane == "routed" and (args.gateway_port or args.gateway_reality_server_name):
+        raise EnrollmentError("legacy Gateway options cannot be used with --dataplane routed")
+    role_config = default_role_config(args.state_dir, roles, dataplane=args.dataplane)
     if "gateway" in role_config:
         if args.gateway_reality_server_name:
             role_config["gateway"]["reality_server_name"] = args.gateway_reality_server_name
@@ -1967,6 +2039,73 @@ def require_role_health(roles: dict[str, Any], results: dict[str, str]) -> None:
     for role, enabled in roles.items():
         if enabled and results.get(role) not in {"active", "configured"}:
             raise EnrollmentError(f"Node capability {role} is not ready: {results.get(role)}")
+
+
+def reconcile_controller_runtime(state_dir: Path) -> None:
+    """Update an existing Controller without bootstrap, identity or PKI changes."""
+    marker_path = state_dir / "cluster" / "controller.json"
+    if not marker_path.is_file():
+        raise EnrollmentError("existing Controller marker is required")
+    marker = read_json(marker_path)
+    node = load_node_config(state_dir / "node.yaml")
+    if marker.get("node_id") != node.node.id or not node.node.roles.has("controller"):
+        raise EnrollmentError("Controller marker does not match local Node identity")
+    enrollment = enrolled_state(state_dir)
+    if enrollment is not None:
+        progress = enrollment.get("controller_provision", {})
+        if isinstance(progress, dict) and progress and not progress.get("complete"):
+            resume_controller_provisioning(state_dir, enrollment)
+            return
+
+    def address(key: str) -> tuple[str, int]:
+        host, separator, raw_port = str(marker.get(key, "")).rpartition(":")
+        if not separator or not host or ":" in host:
+            raise EnrollmentError(f"invalid existing Controller {key}")
+        port = int(raw_port)
+        if not 1024 <= port <= 65535:
+            raise EnrollmentError(f"invalid existing Controller {key}")
+        return host, port
+
+    host, raft_port = address("raft_address")
+    api_host, api_port = address("cluster_api_address")
+    _, local_port = address("local_api_address")
+    if api_host != host:
+        raise EnrollmentError("Controller advertised hosts do not agree")
+    protected = [
+        state_dir / "identity" / "node.key",
+        state_dir / "identity" / "node.pub",
+        Path(str(marker["certificate_file"])),
+        Path(str(marker["key_file"])),
+        Path(str(marker["ca_file"])),
+        Path(str(marker["local_api_token_file"])),
+    ]
+    ca_key = state_dir / "cluster" / "pki" / "cluster-ca.key"
+    if ca_key.is_file():
+        protected.append(ca_key)
+    fingerprints = {path: hashlib.sha256(path.read_bytes()).digest() for path in protected}
+    env = dict(os.environ, BPC_STATE_DIR=str(state_dir))
+    runtime_env = state_dir / "control" / "runtime.env"
+    public_port = read_env_value(runtime_env, "CONTROL_PORT")
+    if public_port:
+        env["BPC_CONTROL_PORT"] = public_port
+    command = [
+        str(ROOT / "deploy" / "bpc-enable-cluster.sh"),
+        "--advertise-host", host, "--raft-port", str(raft_port),
+        "--cluster-api-port", str(api_port), "--local-api-port", str(local_port),
+    ]
+    completed = subprocess.run(command, check=False, env=env)
+    if completed.returncode:
+        raise EnrollmentError("existing Controller runtime reconciliation failed")
+    if any(hashlib.sha256(path.read_bytes()).digest() != digest
+           for path, digest in fingerprints.items()):
+        raise EnrollmentError("Controller runtime changed protected identity or PKI files")
+    if enrollment is not None and enrollment.get("roles", {}).get("controller"):
+        completed = subprocess.run([
+            str(ROOT / "deploy" / "bpc-enable-control-replica.sh"), "--hostname", host,
+            "--port", public_port or "8444",
+        ], check=False, env=env)
+        if completed.returncode:
+            raise EnrollmentError("Controller public API runtime reconciliation failed")
 
 
 def cmd_join(args: argparse.Namespace) -> int:
@@ -2109,6 +2248,8 @@ def cmd_local_reconcile(args: argparse.Namespace) -> int:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict) or not bool(roles.get("gateway")):
         return 0
+    if enrollment_uses_routed_dataplane(enrollment):
+        return 0
     control_config = args.state_dir / "control" / "config.json"
     if not control_config.is_file():
         return 0
@@ -2181,6 +2322,10 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     routed_required = bool(roles.get("gateway")) or bool(roles.get("site_router"))
     routed_service = service_state("bpc-routed-node.service")
+    if enrollment_uses_routed_dataplane(enrollment) and not routing.get("links"):
+        print("BPC: Not connected (routed mesh awaits topology links)")
+        print(f"Node: {enrollment.get('name')}")
+        return 1
     if routed_required and routing.get("links"):
         try:
             policy_expires_at = int(routing.get("policy_expires_at", 0) or 0)
@@ -2350,7 +2495,11 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                     )
                 except (GatewaySnapshotError, OSError, ValueError, json.JSONDecodeError):
                     subprocess.run(
-                        ["systemctl", "stop", "xray.service"],
+                        ["systemctl", "stop", (
+                            "bpc-routed-node.service"
+                            if enrollment_uses_routed_dataplane(enrollment)
+                            else "xray.service"
+                        )],
                         check=False,
                         capture_output=True,
                     )
@@ -2376,6 +2525,13 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--route", action="append", default=[])
     create.add_argument("--expires", default="15m")
     create.add_argument("--controller-url")
+    create.add_argument("--dataplane", choices=("compat", "routed"), default="compat")
+
+    configure = sub.add_parser("node-configure")
+    configure.add_argument("node_id")
+    configure.add_argument("--preset", choices=("public-node",), required=True)
+    configure.add_argument("--host", action="append", required=True)
+    configure.add_argument("--dataplane", choices=("routed",), required=True)
 
     route_policy = sub.add_parser("route-authorize")
     route_policy.add_argument("node_id")
@@ -2388,6 +2544,7 @@ def build_parser() -> argparse.ArgumentParser:
     token.add_argument("--controller-url")
     token.add_argument("--gateway-reality-server-name")
     token.add_argument("--gateway-port", type=int)
+    token.add_argument("--dataplane", choices=("compat", "routed"), default="compat")
 
     sub.add_parser("list")
 
@@ -2397,6 +2554,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status")
     sub.add_parser("runtime-install")
+    sub.add_parser("controller-runtime-install")
     sub.add_parser("local-reconcile")
 
     leave = sub.add_parser("leave")
@@ -2415,6 +2573,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "node-create":
             return cmd_node_create(args)
+        if args.command == "node-configure":
+            return cmd_node_configure(args)
         if args.command == "token-create":
             return cmd_token_create(args)
         if args.command == "list":
@@ -2430,6 +2590,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise EnrollmentError("node is not joined")
             install_runtime_service(args.state_dir)
             print("BPC Node runtime service installed.")
+            return 0
+        if args.command == "controller-runtime-install":
+            if os.geteuid() != 0:
+                raise EnrollmentError("run Controller runtime installation as root")
+            reconcile_controller_runtime(args.state_dir)
+            print("Existing Controller runtime reconciled; identity and PKI preserved.")
             return 0
         if args.command == "local-reconcile":
             return cmd_local_reconcile(args)
