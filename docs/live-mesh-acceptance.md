@@ -11,12 +11,13 @@ scenarios additionally require three reachable Controller voters; they may be
 roles on these Nodes or separate test Nodes. Confirm actual membership before
 choosing which services to stop. Two voters cannot retain quorum after one loss.
 
-Provide SSH destinations/ports for the Linux Nodes, provisioned key authentication
+When running the tests yourself, use your own SSH destinations/ports for the Linux Nodes, provisioned key authentication
 and verified host keys, and a Windows runner name/labels or remote session with
 administrative access. Keep management reachable independently of the BPC paths
 being faulted. Use designated test Nodes and preserve the legacy home WireGuard
 link. Do not provide private key contents or passwords in chat.
 
+Use [the pinned candidate build and installation commands](mesh-candidate.md).
 Deploy the candidate mesh commit containing PR #74 to the test Nodes/Device;
 the stable `latest` release does not include this development branch. Record the
 exact source SHA and binary SHA256 on every host. Perform the documented Raft
@@ -77,7 +78,7 @@ echo host is not a mesh failover measurement.
 ## Evidence and restoration
 
 For each scenario retain traffic JSON, exact fault/restoration timestamps and
-command exit statuses, before/during/after `bpc paths list`, `bpc route explain`,
+command exit statuses, before/during/after `bpc path list`, `bpc route explain`,
 `bpc cluster status`, Node/runtime status, and selected journal messages. Capture
 Windows tunnel/routes and Linux kernel routes/firewall state without private
 keys or bearer credentials. Verify authorized and forbidden CIDRs with actual

@@ -95,6 +95,8 @@ jobs:
     needs: [python, go, shellcheck, control-runtime]
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -102,7 +104,9 @@ jobs:
         with:
           go-version: "1.23.x"
           cache: false
-      - run: pip install build
+      - run: pip install build pytest
+      - name: Exercise candidate updates in isolated temporary installations
+        run: sudo "$(command -v python)" -m pytest tests/test_mesh_candidate.py -q
       - run: python -m build
       - name: Build deployment bundle
         run: |
@@ -113,16 +117,20 @@ jobs:
           print(data['project']['version'])
           PY
           )"
-          chmod +x scripts/build-release.sh
-          ./scripts/build-release.sh "${VERSION}" release-dist
+          if [[ "${GITHUB_REF}" == refs/heads/main ]]; then
+            bash scripts/build-release.sh "${VERSION}" release-dist
+          else
+            bash scripts/build-mesh-candidate.sh release-dist
+          fi
           test -s release-dist/bpc-connect-deploy.tar.gz
           test -s release-dist/SHA256SUMS
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './VERSION'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './install.sh'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-controld-linux-amd64'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-controld-linux-arm64'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-routed-node-linux-amd64'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-routed-node-linux-arm64'
+          tar -tzf release-dist/bpc-connect-deploy.tar.gz > /tmp/bpc-bundle-contents.txt
+          grep -Fxq './VERSION' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './install.sh' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-controld-linux-amd64' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-controld-linux-arm64' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-routed-node-linux-amd64' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-routed-node-linux-arm64' /tmp/bpc-bundle-contents.txt
       - uses: actions/upload-artifact@v4
         with:
           name: bpc-connect-dist
