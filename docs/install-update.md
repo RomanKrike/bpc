@@ -236,3 +236,10 @@ Python wheel / source distribution
 
 BPC uses semantic versions. A release version change belongs in a tested pull
 request. After merge, successful main-branch CI publishes the matching release.
+
+## Unreleased mesh testing
+
+Use [pinned candidate builds](mesh-candidate.md) for mesh acceptance. A candidate
+uses explicit local bundles and preserves current state during code rollback.
+Bare `bpc-update` refuses a candidate installation to avoid switching it to the
+stable channel. Production publication remains gated on live A–H results.

@@ -33,8 +33,12 @@ if ! command -v curl >/dev/null 2>&1 || ! command -v python3 >/dev/null 2>&1; th
   echo "curl and python3 are required to package the Windows BPC Agent runtime" >&2
   exit 3
 fi
+if [[ -n "${BPC_WINTUN_ARCHIVE:-}" ]]; then
+  cp "${BPC_WINTUN_ARCHIVE}" "${WINTUN_ZIP}"
+else
 curl --fail --location --proto '=https' --tlsv1.2 \
   "https://www.wintun.net/builds/wintun-${WINTUN_VERSION}.zip" -o "${WINTUN_ZIP}"
+fi
 printf '%s  %s\n' "${WINTUN_SHA256}" "${WINTUN_ZIP}" | sha256sum --check --strict -
 python3 - "${WINTUN_ZIP}" "${staging}/bin" <<'PY'
 import sys
@@ -53,26 +57,26 @@ rm -f "${WINTUN_ZIP}"
 
 (
   cd "${ROOT_DIR}"
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-wgshim-linux-amd64" ./cmd/bpc-wgshim
-  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-wgshim-linux-arm64" ./cmd/bpc-wgshim
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-agent-relay-linux-amd64" ./cmd/bpc-agent-relay
-  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-agent-relay-linux-arm64" ./cmd/bpc-agent-relay
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-controld-linux-amd64" ./cmd/bpc-controld
-  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-controld-linux-arm64" ./cmd/bpc-controld
-  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-routed-node-linux-amd64" ./cmd/bpc-routed-node
-  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-routed-node-linux-arm64" ./cmd/bpc-routed-node
-  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
+  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-wgshim-windows-amd64.exe" ./cmd/bpc-wgshim
-  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-    -o "${staging}/bin/bpc-agent-windows-amd64.exe" ./cmd/bpc-agent
+  CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath \
+    -ldflags="-s -w -X main.version=${VERSION}" -o "${staging}/bin/bpc-agent-windows-amd64.exe" ./cmd/bpc-agent
 )
 chmod 0755 "${staging}/bin/bpc-wgshim-linux-amd64" "${staging}/bin/bpc-wgshim-linux-arm64" \
   "${staging}/bin/bpc-agent-relay-linux-amd64" "${staging}/bin/bpc-agent-relay-linux-arm64" \
@@ -80,9 +84,29 @@ chmod 0755 "${staging}/bin/bpc-wgshim-linux-amd64" "${staging}/bin/bpc-wgshim-li
   "${staging}/bin/bpc-routed-node-linux-amd64" "${staging}/bin/bpc-routed-node-linux-arm64"
 cp "${staging}/bin/"* "${OUT_DIR}/"
 
+if [[ -n "${BPC_CANDIDATE_SOURCE_SHA:-}" ]]; then
+  python3 - "${staging}" "${VERSION}" "${BPC_CANDIDATE_SOURCE_SHA}" "$(go version)" <<'PYINFO'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+files = {p.relative_to(root).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
+         for p in sorted(root.rglob("*")) if p.is_file()}
+(root / "CANDIDATE.json").write_text(json.dumps({
+    "schema": 1, "channel": "mesh-test", "version": sys.argv[2],
+    "source_sha": sys.argv[3], "go_toolchain": sys.argv[4],
+    "live_acceptance": "pending", "files": files,
+}, sort_keys=True, indent=2) + "\n")
+PYINFO
+fi
+
 versioned="${OUT_DIR}/bpc-connect-${VERSION}-deploy.tar.gz"
 stable="${OUT_DIR}/bpc-connect-deploy.tar.gz"
-tar -C "${staging}" -czf "${versioned}" .
+if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
+  tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 --numeric-owner \
+    -C "${staging}" -cf - . | gzip -n > "${versioned}"
+else
+  tar -C "${staging}" -czf "${versioned}" .
+fi
 cp "${versioned}" "${stable}"
 cp "${ROOT_DIR}/install.sh" "${OUT_DIR}/install.sh"
 
