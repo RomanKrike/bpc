@@ -151,3 +151,66 @@ def test_rejected_bundle_never_switches_release(tmp_path, installation):
     path, _, _ = bundle(tmp_path)
     assert update(env, path, "0" * 64).returncode == 2
     assert (root / "current").resolve().name == "previous"
+
+
+def agent_update_environment(tmp_path, candidate_release):
+    root = tmp_path / "root"
+    current = root / "current"
+    current.mkdir(parents=True)
+    (current / "VERSION").write_text("0.20.2-mesh." + "a" * 40 if candidate_release
+                                    else "0.20.2")
+    if candidate_release:
+        (current / "CANDIDATE.json").write_text('{"channel":"mesh-test"}')
+    state = tmp_path / "state"
+    control = state / "control"
+    updates = control / "update"
+    updates.mkdir(parents=True)
+    (updates / "manifest.json").write_bytes(b"existing signed stable manifest")
+    (updates / "bpc-agent.exe").write_bytes(b"existing stable executable")
+    env = {**os.environ, "BPC_ROOT": str(root), "BPC_STATE_DIR": str(state)}
+    return current, control, updates, env
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="Agent command requires root")
+@pytest.mark.parametrize("options,code", [
+    (["--automatic"], 0),
+    ([], 2),
+    (["--version", "0.20.2", "--file", "/missing/agent.exe"], 2),
+])
+def test_candidate_agent_publication_preserves_stable_channel(tmp_path, options, code):
+    _, _, updates, env = agent_update_environment(tmp_path, True)
+    before = {p.name: p.read_bytes() for p in updates.iterdir()}
+    result = subprocess.run(
+        ["bash", str(ROOT / "deploy/bpc-agent.sh"), "publish-update", *options],
+        env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == code, result.stderr
+    assert "Mesh candidate:" in result.stdout + result.stderr
+    assert {p.name: p.read_bytes() for p in updates.iterdir()} == before
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="Agent command requires root")
+@pytest.mark.parametrize("options", [[], ["--automatic"]])
+def test_stable_agent_publication_still_signs_update(tmp_path, options):
+    current, control, updates, env = agent_update_environment(tmp_path, False)
+    (control / "enabled").touch()
+    (control / "runtime.env").write_text("CONTROL_HOST=example.test\nCONTROL_PORT=8444\n")
+    binaries = current / "bin"
+    binaries.mkdir()
+    executable = b"stable agent executable"
+    (binaries / "bpc-agent-windows-amd64.exe").write_bytes(executable)
+    stub = tmp_path / "stubs"
+    stub.mkdir()
+    (stub / "systemctl").write_text("#!/bin/sh\nexit 0\n")
+    (stub / "systemctl").chmod(0o755)
+    env["PATH"] = str(stub) + os.pathsep + env["PATH"]
+    subprocess.run(["openssl", "genpkey", "-algorithm", "ED25519", "-out",
+                    str(control / "update-signing-key.pem")], check=True, capture_output=True)
+    result = subprocess.run(
+        ["bash", str(ROOT / "deploy/bpc-agent.sh"), "publish-update", *options],
+        env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads((updates / "manifest.json").read_text())
+    assert manifest["version"] == "0.20.2"
+    assert manifest["sha256"] == hashlib.sha256(executable).hexdigest()
+    assert manifest["signature"]
+    assert (updates / "bpc-agent.exe").read_bytes() == executable
