@@ -135,6 +135,20 @@ def test_local_update_idempotence_and_pinned_rollback_keep_state(tmp_path, insta
     assert update(env, first, first_sha).returncode == 3
 
 
+def test_local_update_through_command_symlink(tmp_path, installation):
+    root, state, env = installation
+    command = tmp_path / "sbin/bpc-update"
+    command.parent.mkdir()
+    command.symlink_to(ROOT / "deploy/bpc-update.sh")
+    path, sha, version = bundle(tmp_path)
+    result = subprocess.run(
+        ["bash", str(command), "--bundle", str(path), "--sha256", sha],
+        env=env, capture_output=True, text=True, timeout=15)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (root / "current/VERSION").read_text().strip() == version
+    assert (state / "raft-and-gateway").read_bytes() == b"current committed state"
+
+
 def test_failed_candidate_keeps_live_state_and_reports_previous(tmp_path, installation):
     root, state, env = installation
     path, sha, version = bundle(tmp_path, health=1)

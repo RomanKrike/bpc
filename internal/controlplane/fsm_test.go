@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/raft"
 )
@@ -20,6 +21,80 @@ func testFSM(t *testing.T) (*Store, *StateMachine, string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, NewStateMachine(store, root), root
+}
+
+func TestProjectionRetainsMatchingFilesAndRepairsDrift(t *testing.T) {
+	_, fsm, root := testFSM(t)
+	data := []byte(`{"id":"u1"}`)
+	result := applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: "projection-io", Kind: "CreateUser",
+		Operations: []Operation{{Op: "put", Path: "control/identity/users/u1.json", Data: data}}})
+	if !result.OK {
+		t.Fatal(result.Error)
+	}
+	path := filepath.Join(root, "control/identity/users/u1.json")
+	stamp := time.Unix(100, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := fsm.ReconcileProjection(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || !after.ModTime().Equal(stamp) {
+		t.Fatal("unchanged projection was rewritten")
+	}
+	for _, drift := range []string{"content", "missing", "permissions", "symlink"} {
+		t.Run(drift, func(t *testing.T) {
+			switch drift {
+			case "content":
+				if err := os.WriteFile(path, []byte(`{"id":"u2"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			case "permissions":
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err := os.WriteFile(outside, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := fsm.ReconcileProjection(); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !bytes.Equal(actual, data) {
+				t.Fatal("projection drift was not repaired")
+			}
+		})
+	}
 }
 
 func applyForTest(t *testing.T, fsm *StateMachine, command Mutation) MutationResult {

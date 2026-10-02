@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -383,11 +384,33 @@ func (f *StateMachine) projectOperations(ops []Operation) error {
 }
 
 func atomicProjectionWrite(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+	parent, err := os.Stat(directory)
+	if err != nil {
 		return err
+	}
+	if parent.Mode().Perm() != 0o700 {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			return err
+		}
+	}
+	// Strong reads reconcile the entire projection. Retain matching regular
+	// files instead of issuing an fsync and rename for every canonical entry.
+	info, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0o600 && info.Size() == int64(len(data)) {
+		existing, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && bytes.Equal(existing, data) {
+			return nil
+		}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".bpc-state-*.tmp")
 	if err != nil {

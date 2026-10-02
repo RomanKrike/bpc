@@ -78,7 +78,8 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 mkdir -p "${tmp}/release"
 if [[ -n "${LOCAL_BUNDLE}" ]]; then
-  verifier="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../scripts" && pwd)/verify-mesh-candidate.py"
+  updater_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+  verifier="$(cd -- "$(dirname -- "${updater_path}")/../scripts" && pwd)/verify-mesh-candidate.py"
   python3 "${verifier}" "${LOCAL_BUNDLE}" "${EXPECTED_SHA}" --extract "${tmp}/release"
 else
 reconcile_command_links "${BPC_ROOT}/current"
