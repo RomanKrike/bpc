@@ -11,31 +11,83 @@ import (
 )
 
 var (
-	bucketLogs      = []byte("raft_logs")
-	bucketStable    = []byte("raft_stable")
-	bucketCanonical = []byte("canonical")
-	bucketMeta      = []byte("canonical_meta")
-	keyRevision     = []byte("revision")
-	keySchema       = []byte("schema_version")
+	bucketLogs       = []byte("raft_logs")
+	bucketStable     = []byte("raft_stable")
+	bucketCanonical  = []byte("canonical")
+	bucketMeta       = []byte("canonical_meta")
+	keyRevision      = []byte("revision")
+	keySchema        = []byte("schema_version")
+	keyAppliedIndex  = []byte("applied_index")
+	keyRevisionFloor = []byte("revision_floor")
 )
+
+var ErrLegacyReplayUnsafe = errors.New("legacy canonical state has no applied index and no Raft snapshot; automatic replay is unsafe; preserve the DB and use a verified migration checkpoint")
+
+// prepareReplay records a local revision floor before Raft can restore an older
+// snapshot. It does not infer committed indexes from revisions or stored logs.
+// A legacy materialized DB needs an actual snapshot base for reconstruction.
+func (s *Store) prepareReplay(hasSnapshots bool) (uint64, error) {
+	var floor uint64
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		meta := tx.Bucket(bucketMeta)
+		for _, key := range [][]byte{keyRevision, keyAppliedIndex, keyRevisionFloor} {
+			if raw := meta.Get(key); raw != nil && len(raw) != 8 {
+				return fmt.Errorf("invalid canonical metadata %q", key)
+			}
+		}
+		revision := decodeU64(meta.Get(keyRevision))
+		first, _ := tx.Bucket(bucketCanonical).Cursor().First()
+		if decodeU64(meta.Get(keyAppliedIndex)) == 0 && (revision != 0 || first != nil) && !hasSnapshots {
+			return ErrLegacyReplayUnsafe
+		}
+		floor = decodeU64(meta.Get(keyRevisionFloor))
+		if revision > floor {
+			floor = revision
+		}
+		return meta.Put(keyRevisionFloor, u64key(floor))
+	})
+	return floor, err
+}
 
 type Store struct {
 	db *bolt.DB
 }
 
 func OpenStore(path string) (*Store, error) {
+	return openStore(path, true)
+}
+
+// Offline checkpoint import must not initialize or rewrite an existing DB
+// before the source and its checkpoint have been validated.
+func openStore(path string, initialize bool) (*Store, error) {
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 5 * time.Second})
 	if err != nil {
 		return nil, err
 	}
-	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{bucketLogs, bucketStable, bucketCanonical, bucketMeta} {
-			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
-				return err
+	names := [][]byte{bucketLogs, bucketStable, bucketCanonical, bucketMeta}
+	var missing bool
+	err = db.View(func(tx *bolt.Tx) error {
+		for _, name := range names {
+			if tx.Bucket(name) == nil {
+				if !initialize {
+					return fmt.Errorf("existing Raft DB is missing bucket %q", name)
+				}
+				missing = true
 			}
 		}
 		return nil
-	}); err != nil {
+	})
+	if err == nil && missing {
+		err = db.Update(func(tx *bolt.Tx) error {
+			for _, name := range names {
+				if _, err := tx.CreateBucketIfNotExists(name); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
+	if err != nil {
 		_ = db.Close()
 		return nil, err
 	}
@@ -255,6 +307,15 @@ func (s *Store) revision() (uint64, error) {
 		return nil
 	})
 	return revision, err
+}
+
+func (s *Store) revisionFloor() (uint64, error) {
+	var floor uint64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		floor = decodeU64(tx.Bucket(bucketMeta).Get(keyRevisionFloor))
+		return nil
+	})
+	return floor, err
 }
 
 func (s *Store) schemaVersion() (uint64, error) {

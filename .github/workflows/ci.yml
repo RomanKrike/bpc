@@ -144,6 +144,14 @@ jobs:
           cache: false
       - run: pip install -e '.[dev]'
       - run: go build -o /tmp/bpc-controld ./cmd/bpc-controld
+      - name: Build pre-watermark Controller for rolling migration regression
+        run: |
+          git fetch origin 2d2a3513a901ef6a7d1ac5fac80c0292a6a9a775
+          mkdir /tmp/bpc-legacy-source
+          git archive 2d2a3513a901ef6a7d1ac5fac80c0292a6a9a775 | tar -x -C /tmp/bpc-legacy-source
+          cd /tmp/bpc-legacy-source
+          go build -o /tmp/bpc-controld-legacy ./cmd/bpc-controld
       - run: pytest tests/test_control_processes.py -s
         env:
           BPC_CONTROLD_BINARY: /tmp/bpc-controld
+          BPC_LEGACY_CONTROLD_BINARY: /tmp/bpc-controld-legacy

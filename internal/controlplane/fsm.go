@@ -58,11 +58,12 @@ type Operation struct {
 }
 
 type Mutation struct {
-	Version    int         `json:"version"`
-	ID         string      `json:"id"`
-	Kind       string      `json:"kind"`
-	IssuedAt   int64       `json:"issued_at"`
-	Operations []Operation `json:"operations"`
+	Version         int         `json:"version"`
+	ID              string      `json:"id"`
+	Kind            string      `json:"kind"`
+	IssuedAt        int64       `json:"issued_at"`
+	Operations      []Operation `json:"operations"`
+	RevisionMinimum uint64      `json:"revision_minimum,omitempty"`
 }
 
 type MutationResult struct {
@@ -245,6 +246,13 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	if command.Version != CommandVersion || command.ID == "" || command.Kind == "" {
 		return MutationResult{Error: "unsupported or incomplete mutation"}
 	}
+	if command.Kind == "ReconcileRevision" {
+		if command.RevisionMinimum == 0 || len(command.Operations) != 0 {
+			return MutationResult{Error: "invalid revision reconciliation"}
+		}
+	} else if command.RevisionMinimum != 0 {
+		return MutationResult{Error: "revision minimum requires administrative reconciliation"}
+	}
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -264,9 +272,25 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 
 	var revision uint64
 	var conflict string
+	var replay bool
 	err := f.store.db.Update(func(tx *bolt.Tx) error {
 		canonical := tx.Bucket(bucketCanonical)
 		meta := tx.Bucket(bucketMeta)
+		revision = decodeU64(meta.Get(keyRevision))
+		// Canonical state survives process exit alongside the Raft log. Raft
+		// replays committed entries after restart; replaying that prefix into
+		// the already advanced state could temporarily undo a revocation.
+		if log.Index != 0 && log.Index <= decodeU64(meta.Get(keyAppliedIndex)) {
+			replay = true
+			return nil
+		}
+		if log.Index != 0 {
+			// Conflicts are applied entries too. Persist their watermark in the
+			// same transaction as the canonical state and revision.
+			if err := meta.Put(keyAppliedIndex, u64key(log.Index)); err != nil {
+				return err
+			}
+		}
 		for _, op := range normalized {
 			existing := canonical.Get([]byte(op.Path))
 			if op.IfAbsent && existing != nil {
@@ -291,7 +315,16 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 			revision = decodeU64(meta.Get(keyRevision))
 			return nil
 		}
-		revision = decodeU64(meta.Get(keyRevision)) + 1
+		if command.Kind == "ReconcileRevision" {
+			if command.RevisionMinimum > revision {
+				revision = command.RevisionMinimum
+			}
+		} else {
+			if revision == ^uint64(0) {
+				return errors.New("canonical revision exhausted")
+			}
+			revision++
+		}
 		for _, op := range normalized {
 			switch op.Op {
 			case "put":
@@ -317,6 +350,11 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	}
 	if conflict != "" {
 		return MutationResult{Revision: revision, Error: conflict, Conflict: true}
+	}
+	if replay {
+		// Do not project historical operations. StrongRead/WaitApplied repairs
+		// the projection from the current canonical state when necessary.
+		return MutationResult{OK: true, Revision: revision}
 	}
 	if err := f.projectOperations(normalized); err != nil {
 		return MutationResult{Revision: revision, Error: "state committed but projection failed: " + err.Error()}
@@ -486,6 +524,9 @@ func (f *StateMachine) ExportSnapshot() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.checkSnapshotRevisionFloor(revision); err != nil {
+		return nil, err
+	}
 	schema, err := f.store.schemaVersion()
 	if err != nil {
 		return nil, err
@@ -506,6 +547,9 @@ func (f *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.checkSnapshotRevisionFloor(revision); err != nil {
+		return nil, err
+	}
 	schema, err := f.store.schemaVersion()
 	if err != nil {
 		return nil, err
@@ -517,6 +561,17 @@ func (f *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
 		return nil, err
 	}
 	return &stateSnapshot{data: raw}, nil
+}
+
+func (f *StateMachine) checkSnapshotRevisionFloor(revision uint64) error {
+	floor, err := f.store.revisionFloor()
+	if err != nil {
+		return err
+	}
+	if revision < floor {
+		return fmt.Errorf("cannot snapshot canonical revision %d below preserved floor %d", revision, floor)
+	}
+	return nil
 }
 
 type stateSnapshot struct{ data []byte }
@@ -572,6 +627,12 @@ func (f *StateMachine) Restore(reader io.ReadCloser) error {
 			}
 		}
 		meta := tx.Bucket(bucketMeta)
+		// Snapshot v1 deliberately remains unchanged. Restore replaces the
+		// durable state with the snapshot base; its subsequent Raft suffix must
+		// not be suppressed by a watermark from the previous DB contents.
+		if err := meta.Delete(keyAppliedIndex); err != nil {
+			return err
+		}
 		if err := meta.Put(keyRevision, u64key(envelope.Revision)); err != nil {
 			return err
 		}

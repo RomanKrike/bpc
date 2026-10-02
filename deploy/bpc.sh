@@ -31,6 +31,8 @@ Usage:
   bpc cluster remove NODE [--force]
   bpc cluster backup [--output FILE]
   bpc cluster restore BACKUP --confirm CLUSTER_ID [--force]
+  bpc cluster replay-checkpoint --source https://LEADER:9447
+  bpc cluster reconcile-revision [--gateway-receipt NODE_ID=SNAPSHOT_FILE]
   bpc user add USER [--password-stdin]
   bpc user disable USER
   bpc device list
