@@ -124,12 +124,13 @@ jobs:
           fi
           test -s release-dist/bpc-connect-deploy.tar.gz
           test -s release-dist/SHA256SUMS
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './VERSION'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './install.sh'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-controld-linux-amd64'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-controld-linux-arm64'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-routed-node-linux-amd64'
-          tar -tzf release-dist/bpc-connect-deploy.tar.gz | grep -q './bin/bpc-routed-node-linux-arm64'
+          tar -tzf release-dist/bpc-connect-deploy.tar.gz > /tmp/bpc-bundle-contents.txt
+          grep -Fxq './VERSION' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './install.sh' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-controld-linux-amd64' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-controld-linux-arm64' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-routed-node-linux-amd64' /tmp/bpc-bundle-contents.txt
+          grep -Fxq './bin/bpc-routed-node-linux-arm64' /tmp/bpc-bundle-contents.txt
       - uses: actions/upload-artifact@v4
         with:
           name: bpc-connect-dist
