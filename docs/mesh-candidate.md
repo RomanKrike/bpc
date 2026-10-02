@@ -68,6 +68,10 @@ links/special files, traversal and conflicting files for an existing version.
 Updates are serialized; the release pointer is switched atomically. Migration
 and health checks use the new release. The local path makes no release download.
 Once a candidate is installed, bare `bpc-update` refuses the stable channel.
+Controller reconciliation preserves the existing Windows Agent update manifest
+and executable. Explicit `bpc-agent publish-update` is disabled on candidates,
+including attempts to override the version with a stable number; update the
+test Windows Device manually from the verified bundle instead.
 
 If candidate validation fails, exit code is 5 and the updater prints the previous
 release path. The candidate and current state remain available for diagnosis;
