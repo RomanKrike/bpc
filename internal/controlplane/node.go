@@ -17,19 +17,30 @@ import (
 
 const ProtocolVersion = 1
 
+// Public Controllers use a WAN profile; the library retains upstream defaults
+// when callers leave the optional timing fields at zero.
+const (
+	DefaultRaftHeartbeatTimeout   = 3 * time.Second
+	DefaultRaftElectionTimeout    = 3 * time.Second
+	DefaultRaftLeaderLeaseTimeout = 2 * time.Second
+)
+
 var ErrNotLeader = errors.New("not raft leader")
 
 type NodeConfig struct {
-	NodeID            string
-	RaftBindAddress   string
-	RaftAddress       string
-	StateRoot         string
-	DataDir           string
-	TLS               TLSMaterial
-	Bootstrap         bool
-	SnapshotRetain    int
-	SnapshotThreshold uint64
-	SnapshotInterval  time.Duration
+	NodeID                 string
+	RaftBindAddress        string
+	RaftAddress            string
+	StateRoot              string
+	DataDir                string
+	TLS                    TLSMaterial
+	Bootstrap              bool
+	SnapshotRetain         int
+	SnapshotThreshold      uint64
+	SnapshotInterval       time.Duration
+	RaftHeartbeatTimeout   time.Duration
+	RaftElectionTimeout    time.Duration
+	RaftLeaderLeaseTimeout time.Duration
 }
 
 type ControllerMember struct {
@@ -71,6 +82,30 @@ type Node struct {
 	mutationMu    sync.RWMutex
 }
 
+func raftRuntimeConfig(config NodeConfig) (*raft.Config, error) {
+	result := raft.DefaultConfig()
+	result.LocalID = raft.ServerID(config.NodeID)
+	result.SnapshotThreshold = config.SnapshotThreshold
+	result.SnapshotInterval = config.SnapshotInterval
+	result.ShutdownOnRemove = true
+	for _, setting := range []struct {
+		value  time.Duration
+		target *time.Duration
+	}{
+		{config.RaftHeartbeatTimeout, &result.HeartbeatTimeout},
+		{config.RaftElectionTimeout, &result.ElectionTimeout},
+		{config.RaftLeaderLeaseTimeout, &result.LeaderLeaseTimeout},
+	} {
+		if setting.value != 0 {
+			*setting.target = setting.value
+		}
+	}
+	if err := raft.ValidateConfig(result); err != nil {
+		return nil, fmt.Errorf("invalid Raft configuration: %w", err)
+	}
+	return result, nil
+}
+
 func NewNode(config NodeConfig) (*Node, error) {
 	if strings.TrimSpace(config.NodeID) == "" || strings.TrimSpace(config.RaftAddress) == "" {
 		return nil, errors.New("node id and raft advertise address are required")
@@ -86,6 +121,10 @@ func NewNode(config NodeConfig) (*Node, error) {
 	}
 	if config.SnapshotInterval <= 0 {
 		config.SnapshotInterval = 30 * time.Second
+	}
+	raftConfig, err := raftRuntimeConfig(config)
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(config.DataDir, 0o700); err != nil {
 		return nil, err
@@ -125,12 +164,6 @@ func NewNode(config NodeConfig) (*Node, error) {
 		MaxPool: 4,
 		Timeout: 5 * time.Second,
 	})
-
-	raftConfig := raft.DefaultConfig()
-	raftConfig.LocalID = raft.ServerID(config.NodeID)
-	raftConfig.SnapshotThreshold = config.SnapshotThreshold
-	raftConfig.SnapshotInterval = config.SnapshotInterval
-	raftConfig.ShutdownOnRemove = true
 
 	existing, err := raft.HasExistingState(store, store, snapshots)
 	if err != nil {

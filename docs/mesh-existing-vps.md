@@ -24,6 +24,33 @@ telemetry lives at `/etc/bpc-connect/runtime-topology`, outside versioned Node
 runtime symlinks. Fresh heartbeats repopulate it. Only byte-for-byte matches of
 the two temporary mesh-test-2 repair drop-ins are removed; other drop-ins stay.
 
+## Controller timing on public VPS Nodes
+
+The Controller executable defaults to a WAN timing profile:
+`--raft-heartbeat-timeout=3s`, `--raft-election-timeout=3s`,
+`--raft-leader-lease-timeout=2s`. The follower timeout also determines Raft's
+heartbeat send interval (randomized between roughly 300 and 600 ms).
+The previous upstream defaults were 1s, 1s and 500ms respectively.
+
+These settings tolerate brief delayed TCP acknowledgements but increase failure
+detection time to several seconds. They do not change voting, write quorum,
+strong-read barriers, persistent storage or fsync. Two voters still require both
+Controllers. Actual WAN stability and A–H acceptance remain unverified.
+
+All three duration flags must be positive, election timeout must be at least
+heartbeat timeout, and leader lease must not exceed heartbeat timeout. Invalid
+settings are rejected before opening the persistent Raft database. Set the same
+profile on every Controller. Generated service units use the executable defaults;
+custom command-line overrides must be maintained separately when regenerating
+a unit. Library callers which omit timing settings retain upstream defaults.
+
+After updating each Controller, verify the executable matches the release and
+inspect `journalctl -u bpc-controld.service -n 80 --no-pager -o cat` for
+`raft timing heartbeat=3s election=3s leader_lease=2s`. Observe term, leader,
+replication and file descriptors under normal load for at least 15 minutes.
+A short healthy sample is not proof of stability. Only test Controller loss
+with a three-voter quorum; complete loss of either of two voters prevents writes.
+
 ## Promote the enrolled second Controller
 
 Run on a healthy Controller with the new candidate installed:

@@ -70,6 +70,9 @@ type removeMemberRequest struct {
 
 func main() {
 	var (
+		raftHeartbeat    = flag.Duration("raft-heartbeat-timeout", controlplane.DefaultRaftHeartbeatTimeout, "follower contact timeout (WAN default)")
+		raftElection     = flag.Duration("raft-election-timeout", controlplane.DefaultRaftElectionTimeout, "candidate election timeout; at least heartbeat timeout")
+		raftLeaderLease  = flag.Duration("raft-leader-lease-timeout", controlplane.DefaultRaftLeaderLeaseTimeout, "leader quorum contact timeout; at most heartbeat timeout")
 		nodeID           = flag.String("node-id", "", "canonical BPC Node ID")
 		raftBind         = flag.String("raft-bind-address", "", "Controller Raft listen address")
 		raftAddress      = flag.String("raft-address", "", "Controller Raft advertised address")
@@ -86,6 +89,9 @@ func main() {
 		checkpointSource = flag.String("replay-checkpoint-source", "", "offline: import a replay checkpoint from an upgraded HTTPS Leader and exit")
 	)
 	flag.Parse()
+	if *raftHeartbeat <= 0 || *raftElection <= 0 || *raftLeaderLease <= 0 {
+		log.Fatal("Raft timeout flags must be positive")
+	}
 	for name, value := range map[string]string{
 		"node-id": *nodeID, "raft-address": *raftAddress, "cluster-api-address": *clusterAPI,
 		"cert-file": *certFile, "key-file": *keyFile, "ca-file": *caFile,
@@ -124,11 +130,15 @@ func main() {
 		NodeID: *nodeID, RaftBindAddress: *raftBind, RaftAddress: *raftAddress,
 		StateRoot: *stateRoot, DataDir: *dataDir,
 		TLS: material, Bootstrap: *bootstrap,
+		RaftHeartbeatTimeout:   *raftHeartbeat,
+		RaftElectionTimeout:    *raftElection,
+		RaftLeaderLeaseTimeout: *raftLeaderLease,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer node.Shutdown() //nolint:errcheck
+	log.Printf("raft timing heartbeat=%s election=%s leader_lease=%s", *raftHeartbeat, *raftElection, *raftLeaderLease)
 
 	service := &server{node: node, stateRoot: filepath.Clean(*stateRoot), tls: material, version: *version}
 	mux := http.NewServeMux()
