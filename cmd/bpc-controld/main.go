@@ -70,21 +70,28 @@ type removeMemberRequest struct {
 
 func main() {
 	var (
-		nodeID      = flag.String("node-id", "", "canonical BPC Node ID")
-		raftBind    = flag.String("raft-bind-address", "", "Controller Raft listen address")
-		raftAddress = flag.String("raft-address", "", "Controller Raft advertised address")
-		clusterAPI  = flag.String("cluster-api-address", "", "mTLS Controller API listen address")
-		localAPI    = flag.String("local-api-address", "127.0.0.1:9446", "loopback control API")
-		stateRoot   = flag.String("state-root", "/etc/bpc-connect", "BPC canonical state root")
-		dataDir     = flag.String("data-dir", "/etc/bpc-connect/cluster/raft", "persistent Raft directory")
-		certFile    = flag.String("cert-file", "", "Controller certificate")
-		keyFile     = flag.String("key-file", "", "Controller private key")
-		caFile      = flag.String("ca-file", "", "BPC cluster CA")
-		bootstrap   = flag.Bool("bootstrap", false, "bootstrap the first Controller")
-		version     = flag.String("software-version", "source", "BPC software version")
-		localToken  = flag.String("local-api-token-file", "", "root-only local API bearer token file")
+		raftHeartbeat    = flag.Duration("raft-heartbeat-timeout", controlplane.DefaultRaftHeartbeatTimeout, "follower contact timeout (WAN default)")
+		raftElection     = flag.Duration("raft-election-timeout", controlplane.DefaultRaftElectionTimeout, "candidate election timeout; at least heartbeat timeout")
+		raftLeaderLease  = flag.Duration("raft-leader-lease-timeout", controlplane.DefaultRaftLeaderLeaseTimeout, "leader quorum contact timeout; at most heartbeat timeout")
+		nodeID           = flag.String("node-id", "", "canonical BPC Node ID")
+		raftBind         = flag.String("raft-bind-address", "", "Controller Raft listen address")
+		raftAddress      = flag.String("raft-address", "", "Controller Raft advertised address")
+		clusterAPI       = flag.String("cluster-api-address", "", "mTLS Controller API listen address")
+		localAPI         = flag.String("local-api-address", "127.0.0.1:9446", "loopback control API")
+		stateRoot        = flag.String("state-root", "/etc/bpc-connect", "BPC canonical state root")
+		dataDir          = flag.String("data-dir", "/etc/bpc-connect/cluster/raft", "persistent Raft directory")
+		certFile         = flag.String("cert-file", "", "Controller certificate")
+		keyFile          = flag.String("key-file", "", "Controller private key")
+		caFile           = flag.String("ca-file", "", "BPC cluster CA")
+		bootstrap        = flag.Bool("bootstrap", false, "bootstrap the first Controller")
+		version          = flag.String("software-version", "source", "BPC software version")
+		localToken       = flag.String("local-api-token-file", "", "root-only local API bearer token file")
+		checkpointSource = flag.String("replay-checkpoint-source", "", "offline: import a replay checkpoint from an upgraded HTTPS Leader and exit")
 	)
 	flag.Parse()
+	if *raftHeartbeat <= 0 || *raftElection <= 0 || *raftLeaderLease <= 0 {
+		log.Fatal("Raft timeout flags must be positive")
+	}
 	for name, value := range map[string]string{
 		"node-id": *nodeID, "raft-address": *raftAddress, "cluster-api-address": *clusterAPI,
 		"cert-file": *certFile, "key-file": *keyFile, "ca-file": *caFile,
@@ -109,15 +116,29 @@ func main() {
 		MembershipDir:   filepath.Join(*stateRoot, "cluster", "controllers"),
 		ClusterID:       clusterID,
 	}
+	if *checkpointSource != "" {
+		result, err := controlplane.ImportReplayCheckpoint(controlplane.NodeConfig{
+			NodeID: *nodeID, RaftAddress: *raftAddress, StateRoot: *stateRoot, DataDir: *dataDir, TLS: material,
+		}, *checkpointSource)
+		if err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("replay checkpoint imported index=%d revision_floor=%d backup=%s; start Controller and verify quorum catch-up", result.SnapshotIndex, result.RevisionFloor, result.BackupFile)
+		return
+	}
 	node, err := controlplane.NewNode(controlplane.NodeConfig{
 		NodeID: *nodeID, RaftBindAddress: *raftBind, RaftAddress: *raftAddress,
 		StateRoot: *stateRoot, DataDir: *dataDir,
 		TLS: material, Bootstrap: *bootstrap,
+		RaftHeartbeatTimeout:   *raftHeartbeat,
+		RaftElectionTimeout:    *raftElection,
+		RaftLeaderLeaseTimeout: *raftLeaderLease,
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer node.Shutdown() //nolint:errcheck
+	log.Printf("raft timing heartbeat=%s election=%s leader_lease=%s", *raftHeartbeat, *raftElection, *raftLeaderLease)
 
 	service := &server{node: node, stateRoot: filepath.Clean(*stateRoot), tls: material, version: *version}
 	mux := http.NewServeMux()
@@ -189,7 +210,23 @@ func (s *server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/members/remove", s.removeMember)
 	mux.HandleFunc("POST /v1/snapshot", s.snapshot)
 	mux.HandleFunc("GET /v1/export", s.export)
+	mux.HandleFunc("POST /v1/replay-checkpoint", s.replayCheckpoint)
+	mux.HandleFunc("POST /v1/recovery-state", s.recoveryState)
+	mux.HandleFunc("POST /v1/reconcile-revision", s.reconcileRevision)
 	mux.HandleFunc("POST /v1/restore", s.restore)
+}
+
+func (s *server) replayCheckpoint(w http.ResponseWriter, r *http.Request) {
+	if !s.node.IsLeader() {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "checkpoint source must be the upgraded Leader"})
+		return
+	}
+	checkpoint, err := s.node.ExportReplayCheckpoint(10 * time.Second)
+	if err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, checkpoint)
 }
 
 func (s *server) health(w http.ResponseWriter, _ *http.Request) {
@@ -199,16 +236,18 @@ func (s *server) health(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                   true,
-		"node_id":              status.NodeID,
-		"raft_role":            status.RaftRole,
-		"leader_id":            status.LeaderID,
-		"commit_index":         status.CommitIndex,
-		"last_applied":         status.LastApplied,
-		"revision":             status.Revision,
-		"software_version":     s.version,
-		"protocol_version":     controlplane.ProtocolVersion,
-		"state_schema_version": controlplane.ControlSchemaVersion,
+		"ok":                        status.Revision >= status.RevisionFloor,
+		"node_id":                   status.NodeID,
+		"raft_role":                 status.RaftRole,
+		"leader_id":                 status.LeaderID,
+		"commit_index":              status.CommitIndex,
+		"last_applied":              status.LastApplied,
+		"revision":                  status.Revision,
+		"revision_floor":            status.RevisionFloor,
+		"revision_recovery_version": controlplane.RevisionRecoveryVersion,
+		"software_version":          s.version,
+		"protocol_version":          controlplane.ProtocolVersion,
+		"state_schema_version":      controlplane.ControlSchemaVersion,
 	})
 }
 
@@ -246,13 +285,50 @@ func (s *server) mutate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !s.node.IsLeader() {
-		s.forward(w, r.Method, r.URL.Path, raw)
-		return
-	}
 	var command controlplane.Mutation
 	if err := json.Unmarshal(raw, &command); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid mutation"})
+		return
+	}
+	if command.Kind == "ReconcileRevision" || command.RevisionMinimum != 0 {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": "use local administrative revision reconciliation"})
+		return
+	}
+	if !s.node.IsLeader() {
+		response, status, err := s.forwardBytes(r.Method, r.URL.Path, raw)
+		if err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+			return
+		}
+		if status == http.StatusOK {
+			var result controlplane.MutationResult
+			if err := json.Unmarshal(response, &result); err != nil || !result.OK {
+				writeJSON(w, http.StatusBadGateway, map[string]any{"error": "invalid leader mutation response"})
+				return
+			}
+			// Callers read local projected files immediately after a mutation.
+			// Leader acknowledgement alone does not provide read-your-writes here.
+			if result.CommitIndex == 0 {
+				// Older leaders do not include the exact log index. Their barrier
+				// still provides a Raft index at or after the acknowledged write.
+				barrier, barrierStatus, err := s.forwardBytes(http.MethodPost, "/v1/barrier", nil)
+				if err != nil || barrierStatus != http.StatusOK {
+					writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "cannot confirm legacy leader mutation"})
+					return
+				}
+				if err := json.Unmarshal(barrier, &result); err != nil || result.CommitIndex == 0 {
+					writeJSON(w, http.StatusBadGateway, map[string]any{"error": "invalid legacy leader barrier response"})
+					return
+				}
+			}
+			if err := s.node.WaitApplied(result.CommitIndex, 10*time.Second); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(response)
 		return
 	}
 	result, err := s.node.Submit(command, 10*time.Second)
@@ -713,7 +789,7 @@ func (s *server) controllerHealth(status controlplane.Status) map[string]map[str
 	for _, member := range status.Members {
 		if member.ID == status.NodeID {
 			result[member.ID] = map[string]any{
-				"healthy":      true,
+				"healthy":      status.Revision >= status.RevisionFloor,
 				"raft_role":    status.RaftRole,
 				"commit_index": status.CommitIndex,
 				"last_applied": status.LastApplied,
@@ -737,7 +813,7 @@ func (s *server) controllerHealth(status controlplane.Status) map[string]map[str
 			result[member.ID] = map[string]any{"healthy": false, "error": err.Error()}
 			continue
 		}
-		health["healthy"] = true
+		health["healthy"], _ = health["ok"].(bool)
 		result[member.ID] = health
 	}
 	return result
@@ -752,9 +828,11 @@ func (s *server) probeController(record controllerRecord) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Timeout:   1500 * time.Millisecond,
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		Transport: transport,
 	}
 	response, err := client.Get("https://" + record.APIAddress + "/v1/health")
 	if err != nil {
@@ -814,7 +892,9 @@ func (s *server) forwardBytes(method, path string, body []byte) ([]byte, int, er
 	if err != nil {
 		return nil, 0, err
 	}
-	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: tlsConfig}}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
 	request, err := http.NewRequest(method, "https://"+address+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err

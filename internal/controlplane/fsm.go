@@ -1,12 +1,14 @@
 package controlplane
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -37,6 +39,7 @@ var replicatedPrefixes = []string{
 	"control/node-public-keys/",
 	"control/node-credentials/",
 	"control/routes/",
+	"control/topology/links/",
 	"control/revocations/",
 	"cluster/controllers/",
 }
@@ -56,18 +59,20 @@ type Operation struct {
 }
 
 type Mutation struct {
-	Version    int         `json:"version"`
-	ID         string      `json:"id"`
-	Kind       string      `json:"kind"`
-	IssuedAt   int64       `json:"issued_at"`
-	Operations []Operation `json:"operations"`
+	Version         int         `json:"version"`
+	ID              string      `json:"id"`
+	Kind            string      `json:"kind"`
+	IssuedAt        int64       `json:"issued_at"`
+	Operations      []Operation `json:"operations"`
+	RevisionMinimum uint64      `json:"revision_minimum,omitempty"`
 }
 
 type MutationResult struct {
-	OK       bool   `json:"ok"`
-	Revision uint64 `json:"revision"`
-	Error    string `json:"error,omitempty"`
-	Conflict bool   `json:"conflict,omitempty"`
+	CommitIndex uint64 `json:"commit_index,omitempty"`
+	OK          bool   `json:"ok"`
+	Revision    uint64 `json:"revision"`
+	Error       string `json:"error,omitempty"`
+	Conflict    bool   `json:"conflict,omitempty"`
 }
 
 type snapshotEnvelope struct {
@@ -110,6 +115,130 @@ func sha256Hex(value []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
+type routeOwnershipRecord struct {
+	CIDR        string `json:"cidr"`
+	NodeID      string `json:"node_id"`
+	OwnerNodeID string `json:"owner_node_id"`
+}
+
+type routeOwnerNodeRecord struct {
+	AuthorizedRoutes *[]string       `json:"authorized_routes"`
+	AdvertisedRoutes []string        `json:"advertised_routes"`
+	NodeID           string          `json:"node_id"`
+	Revoked          bool            `json:"revoked"`
+	Roles            map[string]bool `json:"roles"`
+}
+
+type validatedRouteOwnership struct {
+	path   string
+	owner  string
+	prefix netip.Prefix
+}
+
+func resultingPrefixRecords(
+	canonical *bolt.Bucket,
+	prefix string,
+	ops []Operation,
+) map[string][]byte {
+	result := make(map[string][]byte)
+	cursor := canonical.Cursor()
+	for key, value := cursor.Seek([]byte(prefix)); key != nil && strings.HasPrefix(string(key), prefix); key, value = cursor.Next() {
+		result[string(key)] = append([]byte(nil), value...)
+	}
+	for _, op := range ops {
+		if !strings.HasPrefix(op.Path, prefix) {
+			continue
+		}
+		switch op.Op {
+		case "put":
+			result[op.Path] = append([]byte(nil), op.Data...)
+		case "delete":
+			delete(result, op.Path)
+		}
+	}
+	return result
+}
+
+func validateRouteOwnershipInvariant(
+	canonical *bolt.Bucket,
+	ops []Operation,
+) string {
+	routes := resultingPrefixRecords(canonical, "control/routes/", ops)
+	nodes := resultingPrefixRecords(canonical, "control/nodes/", ops)
+	validated := make([]validatedRouteOwnership, 0, len(routes))
+
+	for path, raw := range routes {
+		var record routeOwnershipRecord
+		if err := json.Unmarshal(raw, &record); err != nil {
+			return "invalid route ownership record: " + path
+		}
+		owner := strings.TrimSpace(record.OwnerNodeID)
+		if owner == "" {
+			owner = strings.TrimSpace(record.NodeID)
+		}
+		if owner == "" || (record.NodeID != "" && strings.TrimSpace(record.NodeID) != owner) {
+			return "route owner identity mismatch: " + path
+		}
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(record.CIDR))
+		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 {
+			return "invalid or default route ownership: " + path
+		}
+		prefix = prefix.Masked()
+
+		nodeRaw, ok := nodes["control/nodes/"+owner+".json"]
+		if !ok {
+			return "route owner Node does not exist: " + owner
+		}
+		var node routeOwnerNodeRecord
+		if err := json.Unmarshal(nodeRaw, &node); err != nil {
+			return "invalid route owner Node record: " + owner
+		}
+		if strings.TrimSpace(node.NodeID) != owner || node.Revoked || !node.Roles["site_router"] {
+			return "route owner is not an active site_router: " + owner
+		}
+		grants := node.AdvertisedRoutes
+		if node.AuthorizedRoutes != nil {
+			grants = *node.AuthorizedRoutes
+		}
+		authorized := false
+		for _, rawGrant := range grants {
+			grant, err := netip.ParsePrefix(rawGrant)
+			if err == nil && grant.Addr().Is4() && grant.Bits() > 0 &&
+				grant.Bits() <= prefix.Bits() && grant.Masked().Contains(prefix.Addr()) {
+				authorized = true
+				break
+			}
+		}
+		if !authorized {
+			return "route is outside Controller route policy: " + path
+		}
+		validated = append(validated, validatedRouteOwnership{
+			path: path, owner: owner, prefix: prefix,
+		})
+	}
+
+	sort.Slice(validated, func(i, j int) bool {
+		return validated[i].path < validated[j].path
+	})
+	for i := 0; i < len(validated); i++ {
+		for j := i + 1; j < len(validated); j++ {
+			if validated[i].owner == validated[j].owner {
+				continue
+			}
+			if validated[i].prefix.Overlaps(validated[j].prefix) {
+				return fmt.Sprintf(
+					"route ownership conflict: %s owned by %s overlaps %s owned by %s",
+					validated[i].prefix,
+					validated[i].owner,
+					validated[j].prefix,
+					validated[j].owner,
+				)
+			}
+		}
+	}
+	return ""
+}
+
 func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	var command Mutation
 	if err := json.Unmarshal(log.Data, &command); err != nil {
@@ -117,6 +246,13 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	}
 	if command.Version != CommandVersion || command.ID == "" || command.Kind == "" {
 		return MutationResult{Error: "unsupported or incomplete mutation"}
+	}
+	if command.Kind == "ReconcileRevision" {
+		if command.RevisionMinimum == 0 || len(command.Operations) != 0 {
+			return MutationResult{Error: "invalid revision reconciliation"}
+		}
+	} else if command.RevisionMinimum != 0 {
+		return MutationResult{Error: "revision minimum requires administrative reconciliation"}
 	}
 
 	f.mu.Lock()
@@ -137,9 +273,25 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 
 	var revision uint64
 	var conflict string
+	var replay bool
 	err := f.store.db.Update(func(tx *bolt.Tx) error {
 		canonical := tx.Bucket(bucketCanonical)
 		meta := tx.Bucket(bucketMeta)
+		revision = decodeU64(meta.Get(keyRevision))
+		// Canonical state survives process exit alongside the Raft log. Raft
+		// replays committed entries after restart; replaying that prefix into
+		// the already advanced state could temporarily undo a revocation.
+		if log.Index != 0 && log.Index <= decodeU64(meta.Get(keyAppliedIndex)) {
+			replay = true
+			return nil
+		}
+		if log.Index != 0 {
+			// Conflicts are applied entries too. Persist their watermark in the
+			// same transaction as the canonical state and revision.
+			if err := meta.Put(keyAppliedIndex, u64key(log.Index)); err != nil {
+				return err
+			}
+		}
 		for _, op := range normalized {
 			existing := canonical.Get([]byte(op.Path))
 			if op.IfAbsent && existing != nil {
@@ -157,11 +309,23 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 				}
 			}
 		}
+		if conflict == "" {
+			conflict = validateRouteOwnershipInvariant(canonical, normalized)
+		}
 		if conflict != "" {
 			revision = decodeU64(meta.Get(keyRevision))
 			return nil
 		}
-		revision = decodeU64(meta.Get(keyRevision)) + 1
+		if command.Kind == "ReconcileRevision" {
+			if command.RevisionMinimum > revision {
+				revision = command.RevisionMinimum
+			}
+		} else {
+			if revision == ^uint64(0) {
+				return errors.New("canonical revision exhausted")
+			}
+			revision++
+		}
 		for _, op := range normalized {
 			switch op.Op {
 			case "put":
@@ -187,6 +351,11 @@ func (f *StateMachine) Apply(log *raft.Log) interface{} {
 	}
 	if conflict != "" {
 		return MutationResult{Revision: revision, Error: conflict, Conflict: true}
+	}
+	if replay {
+		// Do not project historical operations. StrongRead/WaitApplied repairs
+		// the projection from the current canonical state when necessary.
+		return MutationResult{OK: true, Revision: revision}
 	}
 	if err := f.projectOperations(normalized); err != nil {
 		return MutationResult{Revision: revision, Error: "state committed but projection failed: " + err.Error()}
@@ -215,11 +384,33 @@ func (f *StateMachine) projectOperations(ops []Operation) error {
 }
 
 func atomicProjectionWrite(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(filepath.Dir(path), 0o700); err != nil {
+	parent, err := os.Stat(directory)
+	if err != nil {
 		return err
+	}
+	if parent.Mode().Perm() != 0o700 {
+		if err := os.Chmod(directory, 0o700); err != nil {
+			return err
+		}
+	}
+	// Strong reads reconcile the entire projection. Retain matching regular
+	// files instead of issuing an fsync and rename for every canonical entry.
+	info, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err == nil && info.Mode().IsRegular() && info.Mode().Perm() == 0o600 && info.Size() == int64(len(data)) {
+		existing, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && bytes.Equal(existing, data) {
+			return nil
+		}
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".bpc-state-*.tmp")
 	if err != nil {
@@ -356,6 +547,9 @@ func (f *StateMachine) ExportSnapshot() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.checkSnapshotRevisionFloor(revision); err != nil {
+		return nil, err
+	}
 	schema, err := f.store.schemaVersion()
 	if err != nil {
 		return nil, err
@@ -376,6 +570,9 @@ func (f *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := f.checkSnapshotRevisionFloor(revision); err != nil {
+		return nil, err
+	}
 	schema, err := f.store.schemaVersion()
 	if err != nil {
 		return nil, err
@@ -387,6 +584,17 @@ func (f *StateMachine) Snapshot() (raft.FSMSnapshot, error) {
 		return nil, err
 	}
 	return &stateSnapshot{data: raw}, nil
+}
+
+func (f *StateMachine) checkSnapshotRevisionFloor(revision uint64) error {
+	floor, err := f.store.revisionFloor()
+	if err != nil {
+		return err
+	}
+	if revision < floor {
+		return fmt.Errorf("cannot snapshot canonical revision %d below preserved floor %d", revision, floor)
+	}
+	return nil
 }
 
 type stateSnapshot struct{ data []byte }
@@ -442,6 +650,12 @@ func (f *StateMachine) Restore(reader io.ReadCloser) error {
 			}
 		}
 		meta := tx.Bucket(bucketMeta)
+		// Snapshot v1 deliberately remains unchanged. Restore replaces the
+		// durable state with the snapshot base; its subsequent Raft suffix must
+		// not be suppressed by a watermark from the previous DB contents.
+		if err := meta.Delete(keyAppliedIndex); err != nil {
+			return err
+		}
 		if err := meta.Put(keyRevision, u64key(envelope.Revision)); err != nil {
 			return err
 		}

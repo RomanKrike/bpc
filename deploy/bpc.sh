@@ -9,6 +9,7 @@ ACCESS="${BPC_ROOT}/current/deploy/bpc_access.py"
 CLUSTER="${BPC_ROOT}/current/deploy/bpc_cluster.py"
 CLUSTER_OPS="${BPC_ROOT}/current/deploy/bpc_cluster_ops.py"
 STATE_MIGRATE="${BPC_ROOT}/current/deploy/bpc-state-migrate.py"
+TOPOLOGY="${BPC_ROOT}/current/deploy/bpc_topology.py"
 CONTROL_DIR="${BPC_STATE_DIR}/control"
 
 usage() {
@@ -21,14 +22,19 @@ Usage:
   bpc node info
   bpc node status
   bpc node token create --roles ROLE[,ROLE...] [--name NAME] [--expires 15m]
+  bpc node route-authorize NODE_ID --route CIDR [--route CIDR ...]
   bpc node list
   bpc node create --name NAME --preset public-node --host HOST
+  bpc node mesh-enable --host HOST --preserve-compat
+  bpc node configure NODE_ID --preset public-node --host HOST --dataplane routed
   bpc node create --name NAME --preset site-router --route CIDR
   bpc cluster status
   bpc cluster members
   bpc cluster remove NODE [--force]
   bpc cluster backup [--output FILE]
   bpc cluster restore BACKUP --confirm CLUSTER_ID [--force]
+  bpc cluster replay-checkpoint --source https://LEADER:9447
+  bpc cluster reconcile-revision [--gateway-receipt NODE_ID=SNAPSHOT_FILE]
   bpc user add USER [--password-stdin]
   bpc user disable USER
   bpc device list
@@ -36,6 +42,9 @@ Usage:
   bpc access list [--user USER | --device DEVICE]
   bpc access grant (--user USER | --device DEVICE) CIDR [CIDR ...]
   bpc access revoke (--user USER | --device DEVICE) CIDR [CIDR ...]
+  bpc path list [--from-node NODE]
+  bpc path show PATH [--from-node NODE]
+  bpc route explain IP [--from-node NODE]
   bpc state migrate
 
 Compatibility:
@@ -77,8 +86,7 @@ case "${scope}" in
   status)
     require_file "${ENROLL}" "BPC Node enrollment helper"
     shift
-    python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" status || true
-    exec "${BPC_ROOT}/current/deploy/bpc-node.sh" status
+    exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" status
     ;;
   leave)
     require_file "${ENROLL}" "BPC Node enrollment helper"
@@ -88,6 +96,21 @@ case "${scope}" in
   node)
     shift
     case "${1:-}" in
+      mesh-enable)
+        require_file "${ENROLL}" "BPC Node enrollment helper"
+        shift
+        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" mesh-enable "$@"
+        ;;
+      configure)
+        require_file "${ENROLL}" "BPC Node enrollment helper"
+        shift
+        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" node-configure "$@"
+        ;;
+      route-authorize)
+        require_file "${ENROLL}" "BPC Node enrollment helper"
+        shift
+        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" route-authorize "$@"
+        ;;
       create)
         require_file "${ENROLL}" "BPC Node enrollment helper"
         shift
@@ -183,6 +206,16 @@ case "${scope}" in
         exit 2
         ;;
     esac
+    ;;
+  path)
+    require_file "${TOPOLOGY}" "BPC topology helper"
+    shift
+    exec python3 "${TOPOLOGY}" --control-dir "${CONTROL_DIR}" path "$@"
+    ;;
+  route)
+    require_file "${TOPOLOGY}" "BPC topology helper"
+    shift
+    exec python3 "${TOPOLOGY}" --control-dir "${CONTROL_DIR}" route "$@"
     ;;
   state)
     if [[ "${2:-}" != "migrate" || $# -ne 2 ]]; then

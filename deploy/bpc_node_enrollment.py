@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import concurrent.futures
 import fcntl
 import hashlib
 import http.client
@@ -51,11 +52,21 @@ from bpc_gateway_snapshot import (  # noqa: E402
     controller_public_urls,
     install_security_snapshot,
     load_valid_security_snapshot,
+    security_runtime_lock,
+)
+from bpc_topology import (  # noqa: E402
+    TopologyError,
+    ensure_topology_links,
+    merge_node_telemetry,
+    routing_config_for_node,
+    validate_route_ownership,
+    write_node_telemetry,
 )
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
     reconcile_transport_roles,
+    routed_dataplane,
 )
 from bpc_connect.compat.runtime import (  # noqa: E402
     agent_runtime_env as compatibility_agent_runtime_env,
@@ -78,7 +89,7 @@ from bpc_connect.state import StateLayout  # noqa: E402
 DEFAULT_STATE_DIR = Path("/etc/bpc-connect")
 DEFAULT_CONTROL_DIR = StateLayout.from_root(DEFAULT_STATE_DIR).control_dir
 TOKEN_PREFIX = "BPC-"
-HEARTBEAT_INTERVAL = 30
+HEARTBEAT_INTERVAL = 5
 BPC_PROTOCOL_VERSION = 1
 STATE_SCHEMA_VERSION = 1
 MAX_CLOCK_SKEW = 300
@@ -371,8 +382,16 @@ def discover_controller_url(control_dir: Path) -> str:
     return normalize_controller_url(f"https://{host}:{port}")
 
 
-def default_role_config(state_dir: Path, roles: list[str]) -> dict[str, Any]:
-    return compatibility_role_config(state_dir, roles)
+def default_role_config(
+    state_dir: Path, roles: list[str], *, dataplane: str = "compat",
+) -> dict[str, Any]:
+    return compatibility_role_config(state_dir, roles, dataplane=dataplane)
+
+
+def enrollment_uses_routed_dataplane(enrollment: dict[str, Any]) -> bool:
+    config = enrollment.get("config", {})
+    role_config = config.get("role_config", {}) if isinstance(config, dict) else {}
+    return isinstance(role_config, dict) and routed_dataplane(role_config)
 
 
 def create_join_token(
@@ -518,6 +537,7 @@ def enroll_node(
         "role_config": role_config,
         "endpoints": [item.to_mapping() for item in canonical_endpoints(record.get("endpoints"))],
         "advertised_routes": list(canonical_advertised_routes(record.get("advertised_routes"))),
+        "authorized_routes": list(canonical_advertised_routes(record.get("advertised_routes"))),
         "created_at": timestamp,
         "last_seen": timestamp,
         "revoked": False,
@@ -653,6 +673,91 @@ def authorize_node(control_dir: Path, credential: str) -> tuple[Path, dict[str, 
     return node_path, node
 
 
+def authorize_node_telemetry(
+    control_dir: Path,
+    credential: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Authorize only expiring local telemetry, without a Raft barrier."""
+    value = credential.strip()
+    if len(value) != 64:
+        raise EnrollmentError("invalid node credential", 401)
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise EnrollmentError("invalid node credential", 401) from exc
+    index = token_index(value)
+    credential_path = control_dir / "node-credentials" / f"{index}.json"
+    if not credential_path.is_file():
+        raise EnrollmentError("invalid node credential", 401)
+    mapping = read_json(credential_path)
+    node_id = str(mapping.get("node_id", ""))
+    node_path = control_dir / "nodes" / f"{node_id}.json"
+    if not node_path.is_file():
+        raise EnrollmentError("invalid node credential", 401)
+    node = read_json(node_path)
+    if bool(node.get("revoked", False)):
+        raise EnrollmentError("node has left the cluster", 403)
+    return node_path, node
+
+
+def _runtime_telemetry(
+    control_dir: Path,
+    node: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    now: int,
+) -> dict[str, Any]:
+    roles = node.get("roles", {})
+    if not isinstance(roles, dict):
+        roles = {}
+    try:
+        protocol_version = int(payload.get("protocol_version", 0) or 0)
+        schema_version = int(payload.get("state_schema_version", 0) or 0)
+    except (TypeError, ValueError):
+        protocol_version = 0
+        schema_version = 0
+    compatible = (
+        protocol_version == BPC_PROTOCOL_VERSION
+        and schema_version == STATE_SCHEMA_VERSION
+    )
+    transport = (
+        normalize_transport_runtime(payload.get("transport", {}))
+        if bool(roles.get("relay"))
+        else {}
+    )
+    return write_node_telemetry(
+        control_dir,
+        str(node["node_id"]),
+        payload=payload,
+        compatibility="compatible" if compatible else "incompatible",
+        transport=transport,
+        now=now,
+    )
+
+
+def node_telemetry(
+    control_dir: Path,
+    *,
+    credential: str,
+    payload: dict[str, Any],
+    now: int | None = None,
+) -> dict[str, Any]:
+    timestamp = int(time.time()) if now is None else int(now)
+    _, node = authorize_node_telemetry(control_dir, credential)
+    telemetry = _runtime_telemetry(
+        control_dir,
+        node,
+        payload,
+        now=timestamp,
+    )
+    return {
+        "ok": True,
+        "server_time": timestamp,
+        "node_id": str(node["node_id"]),
+        "compatibility": str(telemetry.get("compatibility", "incompatible")),
+    }
+
+
 def normalize_advertised_routes(values: object) -> list[str]:
     if values in (None, ""):
         return []
@@ -672,6 +777,26 @@ def normalize_advertised_routes(values: object) -> list[str]:
             seen.add(canonical)
             routes.append(canonical)
     return sorted(routes)
+
+
+def authorized_node_routes(node: dict[str, Any]) -> list[str]:
+    # Upgrade old Nodes by freezing their last canonical advertisements. A
+    # heartbeat may never use its own payload as the source of authorization.
+    return normalize_advertised_routes(
+        node.get("authorized_routes", node.get("advertised_routes", []))
+    )
+
+
+def route_is_authorized(cidr: str, grants: list[str]) -> bool:
+    prefix = ipaddress.ip_network(cidr)
+    return any(prefix.subnet_of(ipaddress.ip_network(grant)) for grant in grants)
+
+
+def node_record_digest(path: Path, node: dict[str, Any]) -> str:
+    raw = path.read_bytes()
+    if json.loads(raw) != node:
+        raise EnrollmentError("Node changed concurrently; retry the request", 409)
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _route_path(control_dir: Path, node_id: str, cidr: str) -> Path:
@@ -706,111 +831,151 @@ def node_heartbeat(
 ) -> dict[str, Any]:
     timestamp = int(time.time()) if now is None else int(now)
     node_path, node = authorize_node(control_dir, credential)
+    node_digest = node_record_digest(node_path, node)
     node_id = str(node["node_id"])
-    node["last_seen"] = timestamp
-    node["last_status"] = str(payload.get("status", "online"))[:64]
-    node["last_version"] = str(payload.get("version", ""))[:64]
-    protocol_version = int(payload.get("protocol_version", 0) or 0)
-    schema_version = int(payload.get("state_schema_version", 0) or 0)
-    node["protocol_version"] = protocol_version
-    node["state_schema_version"] = schema_version
-    compatible = (
-        protocol_version == BPC_PROTOCOL_VERSION
-        and schema_version == STATE_SCHEMA_VERSION
-    )
-    node["compatibility"] = "compatible" if compatible else "incompatible"
-
-    services = payload.get("services", {})
-    if isinstance(services, dict):
-        node["services"] = {
-            str(key)[:64]: str(value)[:64] for key, value in services.items()
-        }
-
     roles = node.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
-    if bool(roles.get("relay")):
-        node["transport"] = normalize_transport_runtime(payload.get("transport", {}))
-    else:
-        node.pop("transport", None)
+
+    telemetry = _runtime_telemetry(
+        control_dir,
+        node,
+        payload,
+        now=timestamp,
+    )
     advertised = (
         normalize_advertised_routes(payload.get("advertised_routes", []))
         if bool(roles.get("site_router"))
         else []
     )
-    node["advertised_routes"] = advertised
-    existing_routes = _existing_node_routes(control_dir, node_id)
+    grants = authorized_node_routes(node)
+    if any(not route_is_authorized(cidr, grants) for cidr in advertised):
+        raise EnrollmentError("advertised route is outside Controller route policy", 403)
+    try:
+        validate_route_ownership(control_dir, node_id, advertised)
+    except TopologyError as exc:
+        raise EnrollmentError(str(exc), 409) from exc
 
-    operations: list[dict[str, Any]] = [
-        {
-            "op": "put",
-            "path": node_path,
-            "data": json.dumps(
-                node, sort_keys=True, separators=(",", ":")
-            ).encode("utf-8"),
-        }
-    ]
+    # Identity, capabilities, endpoints and route ownership are canonical.
+    # Liveness/service/transport/link samples are ephemeral and never enter Raft.
+    canonical_node = dict(node)
+    for key in (
+        "last_seen",
+        "last_status",
+        "last_version",
+        "protocol_version",
+        "state_schema_version",
+        "compatibility",
+        "services",
+        "transport",
+    ):
+        canonical_node.pop(key, None)
+    canonical_node["advertised_routes"] = advertised
+    canonical_node["authorized_routes"] = grants
+
+    existing_routes = _existing_node_routes(control_dir, node_id)
     wanted = set(advertised)
-    for cidr in advertised:
-        path = _route_path(control_dir, node_id, cidr)
-        route = {
-            "version": 1,
-            "cidr": cidr,
-            "node_id": node_id,
-            "updated_at": timestamp,
-        }
+    operations: list[dict[str, Any]] = []
+    if canonical_node != node:
         operations.append(
             {
                 "op": "put",
-                "path": path,
+                "path": node_path,
+                "expected_sha256": node_digest,
                 "data": json.dumps(
-                    route, sort_keys=True, separators=(",", ":")
+                    canonical_node, sort_keys=True, separators=(",", ":")
                 ).encode("utf-8"),
             }
         )
-    for cidr, path in existing_routes.items():
-        if cidr not in wanted:
-            operations.append({"op": "delete", "path": path})
 
-    if bpc_control_state.cluster_enabled(control_dir):
+    for cidr in advertised:
+        path = _route_path(control_dir, node_id, cidr)
+        rewrite = cidr not in existing_routes
+        if not rewrite:
+            try:
+                current_route = read_json(existing_routes[cidr])
+            except (OSError, ValueError, json.JSONDecodeError):
+                rewrite = True
+            else:
+                rewrite = (
+                    str(current_route.get("owner_node_id", "")) != node_id
+                    or str(current_route.get("node_id", "")) != node_id
+                    or str(current_route.get("cidr", "")) != cidr
+                )
+        if rewrite:
+            route = {
+                "version": 2,
+                "cidr": cidr,
+                "node_id": node_id,
+                "owner_node_id": node_id,
+                "updated_at": timestamp,
+            }
+            operations.append(
+                {
+                    "op": "put",
+                    "path": path,
+                    "data": json.dumps(
+                        route, sort_keys=True, separators=(",", ":")
+                    ).encode("utf-8"),
+                }
+            )
+    for cidr, route_path in existing_routes.items():
+        if cidr not in wanted:
+            operations.append({"op": "delete", "path": route_path})
+
+    if operations and not any(op["path"] == node_path for op in operations):
+        operations.insert(0, {
+            "op": "put", "path": node_path, "expected_sha256": node_digest,
+            "data": json.dumps(canonical_node, sort_keys=True, separators=(",", ":")).encode(),
+        })
+    if operations and bpc_control_state.cluster_enabled(control_dir):
         try:
             bpc_control_state.mutation(
                 control_dir,
-                "NodeHeartbeat",
+                "ReconcileNodeCanonicalState",
                 operations,
                 issued_at=timestamp,
             )
         except bpc_control_state.ControlStateError as exc:
             _raise_control_state(exc)
-    else:
-        atomic_json(node_path, node)
-        for operation in operations[1:]:
-            path = Path(operation["path"])
+    elif operations:
+        for operation in operations:
+            target = Path(operation["path"])
             if operation["op"] == "delete":
-                path.unlink(missing_ok=True)
+                target.unlink(missing_ok=True)
             else:
-                path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                path.write_bytes(operation["data"])
-                os.chmod(path, 0o600)
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                target.write_bytes(operation["data"])
+                os.chmod(target, 0o600)
+
+    try:
+        ensure_topology_links(control_dir, now=timestamp)
+        routing = routing_config_for_node(
+            control_dir,
+            node_id,
+            now=timestamp,
+        )
+    except TopologyError as exc:
+        raise EnrollmentError(str(exc), 409) from exc
 
     return {
         "ok": True,
         "server_time": timestamp,
         "node_id": node_id,
-        "name": str(node["name"]),
+        "name": str(canonical_node["name"]),
         "roles": dict(roles),
-        "compatibility": node["compatibility"],
+        "compatibility": str(telemetry.get("compatibility", "incompatible")),
         "config": {
             "version": 1,
             "heartbeat_interval": HEARTBEAT_INTERVAL,
             "protocol_version": BPC_PROTOCOL_VERSION,
             "state_schema_version": STATE_SCHEMA_VERSION,
             "controllers": controller_public_urls(control_dir.parent),
-            "role_config": dict(node.get("role_config", {})),
-            "endpoints": node.get("endpoints", []),
+            "role_config": dict(canonical_node.get("role_config", {})),
+            "endpoints": canonical_node.get("endpoints", []),
+            "routing": routing,
         },
     }
-
 
 def leave_node(control_dir: Path, *, credential: str, now: int | None = None) -> dict[str, Any]:
     timestamp = int(time.time()) if now is None else int(now)
@@ -854,6 +1019,10 @@ def leave_node(control_dir: Path, *, credential: str, now: int | None = None) ->
         ]
         if public_path is not None:
             operations.append({"op": "delete", "path": public_path})
+        for _, route_path in _existing_node_routes(
+            control_dir, str(node["node_id"])
+        ).items():
+            operations.append({"op": "delete", "path": route_path})
         try:
             bpc_control_state.mutation(
                 control_dir,
@@ -868,6 +1037,10 @@ def leave_node(control_dir: Path, *, credential: str, now: int | None = None) ->
         credential_path.unlink(missing_ok=True)
         if public_path is not None:
             public_path.unlink(missing_ok=True)
+        for _, route_path in _existing_node_routes(
+            control_dir, str(node["node_id"])
+        ).items():
+            route_path.unlink(missing_ok=True)
     return {"ok": True, "node_id": str(node["node_id"])}
 
 
@@ -879,15 +1052,8 @@ def list_nodes(control_dir: Path, now: int | None = None) -> list[dict[str, Any]
             node = read_json(path)
         except (OSError, ValueError, json.JSONDecodeError):
             continue
-        last_seen = int(node.get("last_seen", 0))
-        node["online"] = (
-            not bool(node.get("revoked", False))
-            and last_seen > 0
-            and timestamp - last_seen <= HEARTBEAT_INTERVAL * 3
-        )
-        result.append(node)
+        result.append(merge_node_telemetry(control_dir, node, now=timestamp))
     return result
-
 
 def generate_node_identity(state_dir: Path) -> str:
     identity_dir = state_dir / "identity"
@@ -1013,6 +1179,37 @@ def request_json(
     raise EnrollmentError("all Controller endpoints failed")
 
 
+def fanout_node_telemetry(
+    controller_url: str,
+    controller_urls: list[str] | tuple[str, ...],
+    payload: dict[str, Any],
+    *,
+    credential: str,
+) -> None:
+    # Best effort and parallel: health is expiring runtime state. A slow/dead
+    # Controller must not serialize the Node's normal heartbeat path.
+    targets = _controller_candidates(controller_url, controller_urls)
+
+    def send(target: str) -> None:
+        request_json(
+            target,
+            "/v1/nodes/telemetry",
+            payload,
+            credential=credential,
+            timeout=3,
+            controller_urls=[],
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(4, len(targets))
+    ) as executor:
+        futures = [executor.submit(send, target) for target in targets]
+        for future in futures:
+            try:
+                future.result()
+            except EnrollmentError:
+                continue
+
 def write_local_enrollment(state_dir: Path, value: dict[str, Any]) -> None:
     atomic_json(state_dir / "enrollment.json", value)
 
@@ -1072,15 +1269,24 @@ def service_state(name: str) -> str:
     return completed.stdout.strip() or "inactive"
 
 
-def local_services(roles: dict[str, Any]) -> dict[str, str]:
+def local_services(
+    roles: dict[str, Any], role_config: dict[str, Any] | None = None,
+) -> dict[str, str]:
     services: dict[str, str] = {"bpc-node": service_state("bpc-node.service")}
+    mesh_only = routed_dataplane(role_config or {})
     if bool(roles.get("gateway")):
-        services["gateway"] = service_state("xray.service")
+        services["gateway"] = service_state(
+            "bpc-routed-node.service" if mesh_only else "xray.service"
+        )
     if bool(roles.get("relay")):
-        services["relay"] = service_state("bpc-agent-relay.service")
+        services["relay"] = service_state(
+            "bpc-routed-node.service" if mesh_only else "bpc-agent-relay.service"
+        )
     if bool(roles.get("controller")):
         services["controller"] = service_state("bpc-control.service")
         services["distributed-controller"] = service_state("bpc-controld.service")
+    if bool(roles.get("gateway")) or bool(roles.get("site_router")):
+        services["routed-mesh"] = service_state("bpc-routed-node.service")
     return services
 
 
@@ -1117,6 +1323,65 @@ def local_transport_runtime(
     )
 
 
+def local_routed_links() -> list[dict[str, Any]]:
+    path = Path("/run/bpc-connect/routed-status.json")
+    if not path.is_file():
+        return []
+    try:
+        value = read_json(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return []
+    links = value.get("links", [])
+    if not isinstance(links, list):
+        return []
+    return [dict(item) for item in links if isinstance(item, dict)][:64]
+
+
+def _routed_binary() -> Path:
+    machine = os.uname().machine.lower()
+    if machine in {"x86_64", "amd64"}:
+        arch = "amd64"
+    elif machine in {"aarch64", "arm64"}:
+        arch = "arm64"
+    else:
+        raise EnrollmentError(f"unsupported routed mesh architecture: {machine}")
+    root = Path(os.environ.get("BPC_ROOT", "/opt/bpc"))
+    return root / "current" / "bin" / f"bpc-routed-node-linux-{arch}"
+
+
+def reconcile_routed_runtime(
+    state_dir: Path,
+    enrollment: dict[str, Any],
+) -> None:
+    roles = enrollment.get("roles", {})
+    config = enrollment.get("config", {})
+    routing = config.get("routing", {}) if isinstance(config, dict) else {}
+    enabled = (
+        isinstance(roles, dict)
+        and (bool(roles.get("gateway")) or bool(roles.get("site_router")))
+        and isinstance(routing, dict)
+        and int(routing.get("version", 0) or 0) > 0
+        and bool(routing.get("links"))
+    )
+    unit = Path("/etc/systemd/system/bpc-routed-node.service")
+    if not unit.is_file():
+        return
+    if enabled:
+        binary = _routed_binary()
+        if not binary.is_file():
+            raise EnrollmentError(f"routed mesh binary is missing: {binary}")
+        subprocess.run(
+            ["systemctl", "enable", "--now", "bpc-routed-node.service"],
+            check=True,
+        )
+    else:
+        subprocess.run(
+            ["systemctl", "disable", "--now", "bpc-routed-node.service"],
+            check=False,
+            capture_output=True,
+        )
+
+
 def reconcile_roles(
     state_dir: Path,
     roles: dict[str, Any],
@@ -1134,6 +1399,11 @@ def reconcile_roles(
 
 
 def stage_node_runtime(state_dir: Path) -> Path:
+    with security_runtime_lock(state_dir):
+        return _stage_node_runtime_locked(state_dir)
+
+
+def _stage_node_runtime_locked(state_dir: Path) -> Path:
     version_path = ROOT / "VERSION"
     version = (
         version_path.read_text(encoding="utf-8").strip()
@@ -1160,6 +1430,13 @@ def stage_node_runtime(state_dir: Path) -> Path:
         shutil.copytree(release_package, runtime_tmp / "src" / "bpc_connect")
         (runtime_tmp / "VERSION").write_text(version + "\n", encoding="utf-8")
 
+        # Security state is runtime data, not release content. Keep the signed
+        # bytes, trust and revision floor across upgrades and same-version repair.
+        for name in ("security-snapshot.json", "security-trust.json"):
+            previous = runtime_link / name
+            if previous.is_file():
+                shutil.copyfile(previous, runtime_tmp / name)
+
         for directory in [runtime_tmp, *runtime_tmp.rglob("*")]:
             if directory.is_dir():
                 os.chmod(directory, 0o700)
@@ -1183,6 +1460,38 @@ def stage_node_runtime(state_dir: Path) -> Path:
     link_tmp.symlink_to(runtime_version.name)
     os.replace(link_tmp, runtime_link)
     return runtime_link
+
+
+def running_routed_executable() -> Path | None:
+    completed = subprocess.run(
+        ["systemctl", "show", "--property=MainPID", "--value", "bpc-routed-node.service"],
+        check=False, capture_output=True, text=True,
+    )
+    pid = completed.stdout.strip()
+    if completed.returncode != 0:
+        raise EnrollmentError("cannot inspect running routed runtime during update")
+    if pid == "0":
+        return None
+    if not pid.isdecimal() or int(pid) <= 0:
+        raise EnrollmentError("invalid routed runtime MainPID")
+    return Path("/proc") / pid / "exe"
+
+
+def restart_changed_routed_runtime() -> bool:
+    running = running_routed_executable()
+    if running is None:
+        return False
+    try:
+        with running.open("rb") as handle:
+            before = hashlib.file_digest(handle, "sha256").digest()
+        with _routed_binary().open("rb") as handle:
+            after = hashlib.file_digest(handle, "sha256").digest()
+    except OSError as exc:
+        raise EnrollmentError("cannot verify routed binary during update") from exc
+    if before == after:
+        return False
+    subprocess.run(["systemctl", "restart", "bpc-routed-node.service"], check=True)
+    return True
 
 
 def install_runtime_service(state_dir: Path) -> None:
@@ -1266,6 +1575,60 @@ WantedBy=multi-user.target
     )
     os.chmod(reconcile_path, 0o644)
 
+    routed_binary = _routed_binary()
+    routed_unit = Path("/etc/systemd/system/bpc-routed-node.service")
+    routed_unit.write_text(
+        f"""[Unit]
+Description=BPC routed mesh dataplane
+After=network-online.target bpc-node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart={routed_binary} \\
+  --enrollment {state_dir / "enrollment.json"} \\
+  --interface bpcrt0 \\
+  --status /run/bpc-connect/routed-status.json
+Restart=always
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths={state_dir}
+RuntimeDirectory=bpc-connect
+RuntimeDirectoryMode=0755
+ReadWritePaths=/run/bpc-connect
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
+""",
+        encoding="utf-8",
+    )
+    os.chmod(routed_unit, 0o644)
+
+    current = enrolled_state(state_dir)
+    current_roles = current.get("roles", {}) if isinstance(current, dict) else {}
+    if (
+        isinstance(current_roles, dict)
+        and (
+            bool(current_roles.get("gateway"))
+            or bool(current_roles.get("site_router"))
+        )
+    ):
+        sysctl = Path("/etc/sysctl.d/93-bpc-routed.conf")
+        sysctl.write_text("net.ipv4.ip_forward=1\n", encoding="ascii")
+        os.chmod(sysctl, 0o644)
+        subprocess.run(["sysctl", "-q", "-p", str(sysctl)], check=True)
+
     subprocess.run(["systemctl", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "enable", "bpc-node.service"], check=True)
     subprocess.run(
@@ -1273,6 +1636,9 @@ WantedBy=multi-user.target
         check=True,
     )
     subprocess.run(["systemctl", "restart", "bpc-node.service"], check=True)
+    routing = current.get("config", {}).get("routing", {}) if isinstance(current, dict) else {}
+    if isinstance(routing, dict) and routing.get("links"):
+        restart_changed_routed_runtime()
 
 
 def enrolled_state(state_dir: Path) -> dict[str, Any] | None:
@@ -1319,6 +1685,9 @@ def reconcile_startup_gateway_state(
     """
     if not bool(roles.get("gateway")):
         return False
+    if (enrollment_uses_routed_dataplane(enrolled_state(state_dir) or {})
+            and not primary_compat_runtime(state_dir)):
+        return False
     if not (state_dir / "control" / "config.json").is_file():
         return False
     try:
@@ -1348,19 +1717,31 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         if (ROOT / "VERSION").is_file()
         else "source"
     )
+    payload = {
+        "status": "online",
+        "version": software_version,
+        "protocol_version": BPC_PROTOCOL_VERSION,
+        "state_schema_version": STATE_SCHEMA_VERSION,
+        "advertised_routes": _local_advertised_routes(state_dir),
+        "services": local_services(roles, enrollment.get("config", {}).get("role_config", {})),
+        "transport": (
+            {} if enrollment_uses_routed_dataplane(enrollment)
+            else local_transport_runtime(state_dir, roles)
+        ),
+        "links": local_routed_links(),
+    }
+    credential = str(enrollment["credential"])
+    fanout_node_telemetry(
+        str(enrollment["controller_url"]),
+        [str(item) for item in controllers],
+        payload,
+        credential=credential,
+    )
     response = request_json(
         str(enrollment["controller_url"]),
         "/v1/nodes/heartbeat",
-        {
-            "status": "online",
-            "version": software_version,
-            "protocol_version": BPC_PROTOCOL_VERSION,
-            "state_schema_version": STATE_SCHEMA_VERSION,
-            "advertised_routes": _local_advertised_routes(state_dir),
-            "services": local_services(roles),
-            "transport": local_transport_runtime(state_dir, roles),
-        },
-        credential=str(enrollment["credential"]),
+        payload,
+        credential=credential,
         controller_urls=[str(item) for item in controllers],
     )
     selected = str(response.pop("_controller_url", enrollment["controller_url"]))
@@ -1400,7 +1781,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         enrollment["security_revision"] = int(installed.get("revision", 0))
         enrollment["security_expires_at"] = int(installed.get("expires_at", 0))
         control_config = state_dir / "control" / "config.json"
-        if control_config.is_file():
+        if control_config.is_file() and not enrollment_uses_routed_dataplane(enrollment):
             try:
                 reconcile_local_gateway_state(state_dir)
             except (
@@ -1416,6 +1797,7 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
 
     enrollment["last_heartbeat"] = int(response.get("server_time", time.time()))
     write_local_enrollment(state_dir, enrollment)
+    reconcile_routed_runtime(state_dir, enrollment)
     public_key = (state_dir / "identity" / "node.pub").read_text(
         encoding="utf-8"
     ).strip()
@@ -1432,22 +1814,242 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
     return response
 
 
+def authorize_site_routes(control_dir: Path, node_id: str, routes: list[str]) -> None:
+    """Controller-admin operation; never exposed through Node heartbeat."""
+    if not re.fullmatch(r"[0-9a-f]{32}", node_id):
+        raise EnrollmentError("invalid Node ID")
+    strong_read(control_dir)
+    path = control_dir / "nodes" / f"{node_id}.json"
+    node = read_json(path)
+    digest = node_record_digest(path, node)
+    if node.get("revoked") or not node.get("roles", {}).get("site_router"):
+        raise EnrollmentError("route policy requires an active site_router", 409)
+    grants = normalize_advertised_routes(authorized_node_routes(node) + routes)
+    try:
+        validate_route_ownership(control_dir, node_id, grants)
+    except TopologyError as exc:
+        raise EnrollmentError(str(exc), 409) from exc
+    node["authorized_routes"] = grants
+    if bpc_control_state.cluster_enabled(control_dir):
+        try:
+            bpc_control_state.mutation(control_dir, "AuthorizeSiteRoutes", [{
+                "op": "put", "path": path, "expected_sha256": digest,
+                "data": json.dumps(node, sort_keys=True, separators=(",", ":")).encode(),
+            }])
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+    else:
+        atomic_json(path, node)
+
+
+def public_node_endpoints(hosts: list[str]) -> list[dict[str, Any]]:
+    endpoints = [item.to_mapping() for item in canonical_endpoints(
+        [{"host": host} for host in hosts]
+    )]
+    if not endpoints:
+        raise EnrollmentError("public-node requires --host with a public DNS hostname")
+    for endpoint in endpoints:
+        host = endpoint["host"]
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            if "." in host:
+                continue
+        raise EnrollmentError("public-node requires a public DNS hostname")
+    return endpoints
+
+
+def primary_compat_runtime(state_dir: Path) -> bool:
+    """The bootstrap API owns the existing Agent transport independently of mesh."""
+    if read_env_value(state_dir / "control" / "runtime.env", "CONTROL_MODE") != "primary":
+        return False
+    node = load_node_config(state_dir / "node.yaml")
+    cluster = read_json(state_dir / "cluster" / "cluster.json")
+    marker = read_json(state_dir / "cluster" / "controller.json")
+    return (cluster.get("controller_node_id") == node.node.id
+            and marker.get("node_id") == node.node.id)
+
+
+def durable_local_json(path: Path, value: dict[str, Any]) -> None:
+    """Persist a registration credential before committing its hash through Raft."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def cmd_mesh_enable(args: argparse.Namespace) -> int:
+    """Enroll the existing bootstrap identity; never bootstrap or replace transports."""
+    if os.geteuid() != 0:
+        raise EnrollmentError("run mesh-enable as root")
+    if args.control_dir.resolve() != (args.state_dir / "control").resolve():
+        raise EnrollmentError("mesh-enable requires the local canonical control directory")
+    endpoints = public_node_endpoints(args.host)
+    if not primary_compat_runtime(args.state_dir):
+        raise EnrollmentError("mesh-enable requires the existing bootstrap primary API")
+    node = load_node_config(args.state_dir / "node.yaml").node
+    if not all(node.roles.has(role) for role in ("controller", "gateway", "relay")):
+        raise EnrollmentError("bootstrap Node must already have controller,gateway,relay roles")
+    if load_node_config(args.state_dir / "node.yaml").advertised_routes:
+        raise EnrollmentError("bootstrap mesh enrollment does not authorize site routes")
+    # Derive, but never regenerate or rewrite, the existing identity.
+    derived = subprocess.run([
+        "openssl", "pkey", "-in", str(args.state_dir / "identity" / "node.key"),
+        "-pubout", "-outform", "DER",
+    ], check=True, capture_output=True)
+    public_key = base64.b64encode(derived.stdout).decode("ascii")
+    if public_key != node.public_key or public_key != (
+        args.state_dir / "identity" / "node.pub"
+    ).read_text().strip():
+        raise EnrollmentError("existing Node identity does not match its private key")
+    strong_read(args.control_dir)
+    member = read_json(args.state_dir / "cluster" / "controllers" / f"{node.id}.json")
+    marker = read_json(args.state_dir / "cluster" / "controller.json")
+    if (member.get("node_id") != node.id or member.get("state") != "voter"
+            or member.get("raft_address") != marker.get("raft_address")):
+        raise EnrollmentError("bootstrap Controller membership does not match local runtime")
+    public_url = normalize_controller_url(str(member.get("public_url", "")))
+    if urllib.parse.urlparse(public_url).hostname not in [item["host"] for item in endpoints]:
+        raise EnrollmentError("mesh host must include the existing public API hostname")
+    role_map = dict(node.roles.values)
+    role_config = default_role_config(args.state_dir, [r for r, on in role_map.items() if on],
+                                      dataplane="routed")
+    journal_path = args.state_dir / "runtime" / "bootstrap-mesh-registration.json"
+    lock_path = args.state_dir / ".bootstrap-mesh-registration.lock"
+    with lock_path.open("a") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = enrolled_state(args.state_dir)
+        journal = read_json(journal_path) if journal_path.is_file() else current
+        if journal is not None:
+            if (journal.get("node_id") != node.id or journal.get("runtime_mode") != "primary"
+                    or journal.get("config", {}).get("endpoints") != endpoints
+                    or journal.get("roles") != role_map):
+                raise EnrollmentError("existing enrollment/registration conflicts with mesh-enable")
+        else:
+            journal = {
+                "version": 1, "runtime_mode": "primary", "node_id": node.id,
+                "name": node.name, "created_at": node.created_at,
+                "joined_at": int(time.time()), "last_heartbeat": 0,
+                "controller_url": public_url, "controllers": controller_public_urls(args.state_dir),
+                "credential": secrets.token_hex(32), "roles": role_map,
+                "config": {"version": 1, "heartbeat_interval": HEARTBEAT_INTERVAL,
+                           "role_config": role_config, "endpoints": endpoints,
+                           "advertised_routes": []},
+            }
+            # Before Raft: a lost response or interrupted local write can reuse this credential.
+            durable_local_json(journal_path, journal)
+        credential = str(journal.get("credential", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", credential):
+            raise EnrollmentError("invalid saved bootstrap mesh credential")
+        if current is not None and (current.get("credential") != credential
+                                    or current.get("node_id") != node.id):
+            raise EnrollmentError("local enrollment conflicts with saved registration")
+        strong_read(args.control_dir)
+        node_path = args.control_dir / "nodes" / f"{node.id}.json"
+        fingerprint = public_key_fingerprint(public_key)
+        indexes = [
+            args.control_dir / "node-public-keys" / f"{fingerprint}.json",
+            args.control_dir / "node-credentials" / f"{token_index(credential)}.json",
+        ]
+        if node_path.is_file():
+            record = read_json(node_path)
+            if (record.get("revoked") or record.get("public_key") != public_key
+                    or record.get("roles") != role_map or record.get("endpoints") != endpoints
+                    or record.get("role_config") != role_config
+                    or any(not p.is_file() or read_json(p).get("node_id") != node.id
+                           for p in indexes)):
+                raise EnrollmentError("canonical bootstrap registration conflicts or is revoked")
+        else:
+            if current is not None or any(p.exists() for p in indexes):
+                raise EnrollmentError("partial/conflicting canonical bootstrap registration")
+            record = {
+                "version": 1, "node_id": node.id, "name": node.name, "public_key": public_key,
+                "public_key_fingerprint": fingerprint, "roles": role_map,
+                "role_config": role_config, "endpoints": endpoints,
+                "advertised_routes": [], "authorized_routes": [],
+                "created_at": node.created_at, "last_seen": 0, "revoked": False,
+                "last_status": "registered", "last_version": "", "services": {},
+            }
+            operations = [{"op": "put", "path": node_path, "if_absent": True,
+                           "data": json.dumps(record, sort_keys=True,
+                                              separators=(",", ":")).encode()}]
+            operations.extend({"op": "put", "path": p, "if_absent": True,
+                               "data": json.dumps({"node_id": node.id}).encode()} for p in indexes)
+            try:
+                bpc_control_state.mutation(
+                    args.control_dir, "RegisterBootstrapMeshNode", operations,
+                )
+            except bpc_control_state.ControlStateError as exc:
+                _raise_control_state(exc)
+        if current is None:
+            durable_local_json(args.state_dir / "enrollment.json", journal)
+        # No Controller provisioning, transport reconciliation, or API restart here.
+        install_runtime_service(args.state_dir)
+        send_heartbeat(args.state_dir, enrolled_state(args.state_dir) or journal)
+    print(f"Bootstrap mesh enabled: {node.name} ({node.id}); primary API/compatibility preserved")
+    return 0
+
+
+def cmd_node_configure(args: argparse.Namespace) -> int:
+    """Promote an enrolled Controller without a new identity or join token.
+
+    Controller membership is deliberately not edited by role configuration.
+    Converting an existing compatibility Gateway requires a separate migration.
+    """
+    if not re.fullmatch(r"[0-9a-f]{32}", args.node_id):
+        raise EnrollmentError("invalid Node ID")
+    endpoints = public_node_endpoints(args.host)
+    if not bpc_control_state.cluster_enabled(args.control_dir):
+        raise EnrollmentError("node configure requires distributed control plane")
+    strong_read(args.control_dir)
+    path = args.control_dir / "nodes" / f"{args.node_id}.json"
+    node = read_json(path)
+    digest = node_record_digest(path, node)
+    roles = node.get("roles", {})
+    if node.get("revoked") or not isinstance(roles, dict) or not roles.get("controller"):
+        raise EnrollmentError("public-node promotion requires an active enrolled Controller", 409)
+    old_config = node.get("role_config", {})
+    if (roles.get("gateway") or roles.get("relay")) and not (
+        isinstance(old_config, dict) and routed_dataplane(old_config)
+    ):
+        raise EnrollmentError("existing compatibility transports require explicit migration", 409)
+    node["roles"] = {**roles, "gateway": True, "relay": True}
+    node["role_config"] = default_role_config(
+        args.state_dir, [role for role, enabled in node["roles"].items() if enabled],
+        dataplane="routed",
+    )
+    node["endpoints"] = endpoints
+    try:
+        bpc_control_state.mutation(args.control_dir, "ConfigurePublicNode", [{
+            "op": "put", "path": path, "expected_sha256": digest,
+            "data": json.dumps(node, sort_keys=True, separators=(",", ":")).encode(),
+        }])
+    except bpc_control_state.ControlStateError as exc:
+        _raise_control_state(exc)
+    print(f"Public Node configured: {node['name']} ({args.node_id}); dataplane=routed")
+    return 0
+
+
 def cmd_node_create(args: argparse.Namespace) -> int:
     roles = list(NODE_PRESETS[args.preset])
     endpoints = [item.to_mapping() for item in canonical_endpoints(
         [{"host": host} for host in args.host]
     )]
     if args.preset == "public-node":
-        if not endpoints:
-            raise EnrollmentError("public-node requires --host with a public DNS hostname")
-        for endpoint in endpoints:
-            host = endpoint["host"]
-            try:
-                ipaddress.ip_address(host)
-            except ValueError:
-                if "." in host:
-                    continue
-            raise EnrollmentError("public-node requires a public DNS hostname")
+        endpoints = public_node_endpoints(args.host)
         if not bpc_control_state.cluster_enabled(args.control_dir):
             raise EnrollmentError("public-node requires an initialized distributed control plane")
     controller_url = args.controller_url or discover_controller_url(args.control_dir)
@@ -1455,7 +2057,8 @@ def cmd_node_create(args: argparse.Namespace) -> int:
     token = create_join_token(
         args.control_dir, controller_url=controller_url, roles=roles, name=args.name,
         expires_in=parse_duration(args.expires), endpoints=endpoints,
-        advertised_routes=args.route, role_config=default_role_config(args.state_dir, roles),
+        advertised_routes=args.route,
+        role_config=default_role_config(args.state_dir, roles, dataplane=args.dataplane),
     )
     bootstrap = "https://github.com/RomanKrike/bpc/releases/latest/download/install.sh"
     print(f"Node invitation: {args.name} ({', '.join(roles)}); expires in {args.expires}")
@@ -1471,7 +2074,9 @@ def cmd_token_create(args: argparse.Namespace) -> int:
         if args.controller_url
         else discover_controller_url(args.control_dir)
     )
-    role_config = default_role_config(args.state_dir, roles)
+    if args.dataplane == "routed" and (args.gateway_port or args.gateway_reality_server_name):
+        raise EnrollmentError("legacy Gateway options cannot be used with --dataplane routed")
+    role_config = default_role_config(args.state_dir, roles, dataplane=args.dataplane)
     if "gateway" in role_config:
         if args.gateway_reality_server_name:
             role_config["gateway"]["reality_server_name"] = args.gateway_reality_server_name
@@ -1579,6 +2184,77 @@ def require_role_health(roles: dict[str, Any], results: dict[str, str]) -> None:
     for role, enabled in roles.items():
         if enabled and results.get(role) not in {"active", "configured"}:
             raise EnrollmentError(f"Node capability {role} is not ready: {results.get(role)}")
+
+
+def reconcile_controller_runtime(state_dir: Path) -> None:
+    """Update an existing Controller without bootstrap, identity or PKI changes."""
+    marker_path = state_dir / "cluster" / "controller.json"
+    if not marker_path.is_file():
+        raise EnrollmentError("existing Controller marker is required")
+    marker = read_json(marker_path)
+    node = load_node_config(state_dir / "node.yaml")
+    if marker.get("node_id") != node.node.id or not node.node.roles.has("controller"):
+        raise EnrollmentError("Controller marker does not match local Node identity")
+    enrollment = enrolled_state(state_dir)
+    if (enrollment is not None and enrollment.get("runtime_mode") == "primary"
+            and not primary_compat_runtime(state_dir)):
+        raise EnrollmentError("bootstrap primary API mode/identity is inconsistent")
+    if enrollment is not None:
+        progress = enrollment.get("controller_provision", {})
+        if isinstance(progress, dict) and progress and not progress.get("complete"):
+            resume_controller_provisioning(state_dir, enrollment)
+            return
+
+    def address(key: str) -> tuple[str, int]:
+        host, separator, raw_port = str(marker.get(key, "")).rpartition(":")
+        if not separator or not host or ":" in host:
+            raise EnrollmentError(f"invalid existing Controller {key}")
+        port = int(raw_port)
+        if not 1024 <= port <= 65535:
+            raise EnrollmentError(f"invalid existing Controller {key}")
+        return host, port
+
+    host, raft_port = address("raft_address")
+    api_host, api_port = address("cluster_api_address")
+    _, local_port = address("local_api_address")
+    if api_host != host:
+        raise EnrollmentError("Controller advertised hosts do not agree")
+    protected = [
+        state_dir / "identity" / "node.key",
+        state_dir / "identity" / "node.pub",
+        Path(str(marker["certificate_file"])),
+        Path(str(marker["key_file"])),
+        Path(str(marker["ca_file"])),
+        Path(str(marker["local_api_token_file"])),
+    ]
+    ca_key = state_dir / "cluster" / "pki" / "cluster-ca.key"
+    if ca_key.is_file():
+        protected.append(ca_key)
+    fingerprints = {path: hashlib.sha256(path.read_bytes()).digest() for path in protected}
+    env = dict(os.environ, BPC_STATE_DIR=str(state_dir))
+    runtime_env = state_dir / "control" / "runtime.env"
+    public_port = read_env_value(runtime_env, "CONTROL_PORT")
+    if public_port:
+        env["BPC_CONTROL_PORT"] = public_port
+    command = [
+        str(ROOT / "deploy" / "bpc-enable-cluster.sh"),
+        "--advertise-host", host, "--raft-port", str(raft_port),
+        "--cluster-api-port", str(api_port), "--local-api-port", str(local_port),
+    ]
+    completed = subprocess.run(command, check=False, env=env)
+    if completed.returncode:
+        raise EnrollmentError("existing Controller runtime reconciliation failed")
+    if any(hashlib.sha256(path.read_bytes()).digest() != digest
+           for path, digest in fingerprints.items()):
+        raise EnrollmentError("Controller runtime changed protected identity or PKI files")
+    if (enrollment is not None and enrollment.get("roles", {}).get("controller")
+            and not primary_compat_runtime(state_dir)):
+        completed = subprocess.run([
+            str(ROOT / "deploy" / "bpc-enable-control-replica.sh"), "--hostname", host,
+            "--port", public_port or "8444",
+        ], check=False, env=env)
+        if completed.returncode:
+            raise EnrollmentError("Controller public API runtime reconciliation failed")
 
 
 def cmd_join(args: argparse.Namespace) -> int:
@@ -1721,6 +2397,8 @@ def cmd_local_reconcile(args: argparse.Namespace) -> int:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict) or not bool(roles.get("gateway")):
         return 0
+    if enrollment_uses_routed_dataplane(enrollment) and not primary_compat_runtime(args.state_dir):
+        return 0
     control_config = args.state_dir / "control" / "config.json"
     if not control_config.is_file():
         return 0
@@ -1739,26 +2417,119 @@ def cmd_local_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def _display_routed_hops(
+    hops: object,
+    names: dict[str, str],
+) -> str:
+    if not isinstance(hops, list):
+        return ""
+    return " → ".join(names.get(str(item), str(item)) for item in hops)
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     enrollment = enrolled_state(args.state_dir)
     if enrollment is None:
-        print("Enrollment: not joined")
+        print("BPC: Not connected")
         return 1
+
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict):
         roles = {}
-    print("Enrollment: joined")
-    print(f"Node: {enrollment.get('name')} ({enrollment.get('node_id')})")
-    print(f"Controller: {enrollment.get('controller_url')}")
-    print(
-        "Roles: "
-        + (", ".join(sorted(role for role, value in roles.items() if value)) or "none")
+    config = enrollment.get("config", {})
+    if not isinstance(config, dict):
+        config = {}
+    routing = config.get("routing", {})
+    if not isinstance(routing, dict):
+        routing = {}
+    raw_names = routing.get("node_names", {})
+    names = (
+        {str(key): str(value) for key, value in raw_names.items()}
+        if isinstance(raw_names, dict)
+        else {}
     )
-    print(f"Last heartbeat: {enrollment.get('last_heartbeat', 0)}")
-    for service, state in sorted(local_services(roles).items()):
-        print(f"  {service}: {state}")
-    return 0
 
+    status_path = Path(
+        os.environ.get(
+            "BPC_ROUTED_STATUS",
+            "/run/bpc-connect/routed-status.json",
+        )
+    )
+    routed_status: dict[str, Any] = {}
+    if status_path.is_file():
+        try:
+            routed_status = read_json(status_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            routed_status = {}
+
+    selected_paths = routed_status.get("selected_paths", [])
+    if not isinstance(selected_paths, list):
+        selected_paths = []
+    selected = next(
+        (item for item in selected_paths if isinstance(item, dict)),
+        None,
+    )
+
+    routed_required = bool(roles.get("gateway")) or bool(roles.get("site_router"))
+    routed_service = service_state("bpc-routed-node.service")
+    if enrollment_uses_routed_dataplane(enrollment) and not routing.get("links"):
+        print("BPC: Not connected (routed mesh awaits topology links)")
+        print(f"Node: {enrollment.get('name')}")
+        return 1
+    if routed_required and routing.get("links"):
+        try:
+            policy_expires_at = int(routing.get("policy_expires_at", 0) or 0)
+        except (TypeError, ValueError):
+            policy_expires_at = 0
+        if policy_expires_at <= int(time.time()):
+            print("BPC: Not connected (routed policy expired or missing)")
+            print("Restore Controller connectivity to refresh routing policy.")
+            return 1
+    if routed_required and routing.get("links") and routed_service != "active":
+        print("BPC: Degraded")
+    else:
+        print("BPC: Connected")
+
+    if selected is not None:
+        hops = selected.get("hops", [])
+        print("")
+        print("Active path:")
+        print(f"  {_display_routed_hops(hops, names)}")
+        try:
+            latency = float(selected.get("rtt_ms", 0) or 0)
+        except (TypeError, ValueError):
+            latency = 0.0
+        print("")
+        print("Latency:")
+        print(f"  {latency:.1f} ms")
+
+        standby_ids = selected.get("standby_path_ids", [])
+        all_paths = routing.get("paths", [])
+        if isinstance(standby_ids, list) and isinstance(all_paths, list):
+            path_by_id = {
+                str(item.get("id", "")): item
+                for item in all_paths
+                if isinstance(item, dict)
+            }
+            standby = [
+                path_by_id.get(str(path_id))
+                for path_id in standby_ids
+                if str(path_id) in path_by_id
+            ]
+            if standby:
+                print("")
+                print("Standby:")
+                for path in standby:
+                    if path is None:
+                        continue
+                    print(
+                        "  "
+                        + _display_routed_hops(path.get("hops", []), names)
+                    )
+    else:
+        print(f"Node: {enrollment.get('name')}")
+        if routed_required:
+            print(f"Routed mesh: {routed_service}")
+    return 0
 
 def cmd_leave(args: argparse.Namespace) -> int:
     if os.geteuid() != 0:
@@ -1784,6 +2555,11 @@ def cmd_leave(args: argparse.Namespace) -> int:
             raise
         print(f"WARNING: controller leave failed: {exc}", file=sys.stderr)
 
+    subprocess.run(
+        ["systemctl", "disable", "--now", "bpc-routed-node.service"],
+        check=False,
+        capture_output=True,
+    )
     subprocess.run(
         ["systemctl", "disable", "--now", "bpc-node.service"],
         check=False,
@@ -1868,7 +2644,11 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                     )
                 except (GatewaySnapshotError, OSError, ValueError, json.JSONDecodeError):
                     subprocess.run(
-                        ["systemctl", "stop", "xray.service"],
+                        ["systemctl", "stop", (
+                            "bpc-routed-node.service"
+                            if enrollment_uses_routed_dataplane(enrollment)
+                            else "xray.service"
+                        )],
                         check=False,
                         capture_output=True,
                     )
@@ -1878,7 +2658,7 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
             interval = HEARTBEAT_INTERVAL
-        time.sleep(max(10, min(interval, 300)))
+        time.sleep(max(5, min(interval, 300)))
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1894,6 +2674,21 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--route", action="append", default=[])
     create.add_argument("--expires", default="15m")
     create.add_argument("--controller-url")
+    create.add_argument("--dataplane", choices=("compat", "routed"), default="compat")
+
+    mesh = sub.add_parser("mesh-enable")
+    mesh.add_argument("--host", action="append", required=True)
+    mesh.add_argument("--preserve-compat", action="store_true", required=True)
+
+    configure = sub.add_parser("node-configure")
+    configure.add_argument("node_id")
+    configure.add_argument("--preset", choices=("public-node",), required=True)
+    configure.add_argument("--host", action="append", required=True)
+    configure.add_argument("--dataplane", choices=("routed",), required=True)
+
+    route_policy = sub.add_parser("route-authorize")
+    route_policy.add_argument("node_id")
+    route_policy.add_argument("--route", action="append", required=True)
 
     token = sub.add_parser("token-create")
     token.add_argument("--roles", action="append", required=True)
@@ -1902,6 +2697,7 @@ def build_parser() -> argparse.ArgumentParser:
     token.add_argument("--controller-url")
     token.add_argument("--gateway-reality-server-name")
     token.add_argument("--gateway-port", type=int)
+    token.add_argument("--dataplane", choices=("compat", "routed"), default="compat")
 
     sub.add_parser("list")
 
@@ -1911,6 +2707,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status")
     sub.add_parser("runtime-install")
+    sub.add_parser("controller-runtime-install")
     sub.add_parser("local-reconcile")
 
     leave = sub.add_parser("leave")
@@ -1923,8 +2720,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.command == "route-authorize":
+            authorize_site_routes(args.control_dir, args.node_id, args.route)
+            print("Site route policy updated.")
+            return 0
         if args.command == "node-create":
             return cmd_node_create(args)
+        if args.command == "mesh-enable":
+            return cmd_mesh_enable(args)
+        if args.command == "node-configure":
+            return cmd_node_configure(args)
         if args.command == "token-create":
             return cmd_token_create(args)
         if args.command == "list":
@@ -1940,6 +2745,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise EnrollmentError("node is not joined")
             install_runtime_service(args.state_dir)
             print("BPC Node runtime service installed.")
+            return 0
+        if args.command == "controller-runtime-install":
+            if os.geteuid() != 0:
+                raise EnrollmentError("run Controller runtime installation as root")
+            reconcile_controller_runtime(args.state_dir)
+            print("Existing Controller runtime reconciled; identity and PKI preserved.")
             return 0
         if args.command == "local-reconcile":
             return cmd_local_reconcile(args)

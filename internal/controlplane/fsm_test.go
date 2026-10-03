@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/raft"
 )
@@ -20,6 +21,80 @@ func testFSM(t *testing.T) (*Store, *StateMachine, string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, NewStateMachine(store, root), root
+}
+
+func TestProjectionRetainsMatchingFilesAndRepairsDrift(t *testing.T) {
+	_, fsm, root := testFSM(t)
+	data := []byte(`{"id":"u1"}`)
+	result := applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: "projection-io", Kind: "CreateUser",
+		Operations: []Operation{{Op: "put", Path: "control/identity/users/u1.json", Data: data}}})
+	if !result.OK {
+		t.Fatal(result.Error)
+	}
+	path := filepath.Join(root, "control/identity/users/u1.json")
+	stamp := time.Unix(100, 0)
+	if err := os.Chtimes(path, stamp, stamp); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := fsm.ReconcileProjection(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(before, after) || !after.ModTime().Equal(stamp) {
+		t.Fatal("unchanged projection was rewritten")
+	}
+	for _, drift := range []string{"content", "missing", "permissions", "symlink"} {
+		t.Run(drift, func(t *testing.T) {
+			switch drift {
+			case "content":
+				if err := os.WriteFile(path, []byte(`{"id":"u2"}`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "missing":
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			case "permissions":
+				if err := os.Chmod(path, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				outside := filepath.Join(t.TempDir(), "outside")
+				if err := os.WriteFile(outside, data, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(outside, path); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := fsm.ReconcileProjection(); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Lstat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || !bytes.Equal(actual, data) {
+				t.Fatal("projection drift was not repaired")
+			}
+		})
+	}
 }
 
 func applyForTest(t *testing.T, fsm *StateMachine, command Mutation) MutationResult {
@@ -102,5 +177,138 @@ func TestSnapshotIsChecksummedAndRestoresProjection(t *testing.T) {
 	}
 	if string(raw) != `{"allow":["192.168.88.0/24"]}` {
 		t.Fatalf("unexpected restored data: %s", raw)
+	}
+}
+
+func siteRouterNode(id string) []byte {
+	raw, _ := json.Marshal(map[string]any{
+		"node_id":           id,
+		"roles":             map[string]bool{"site_router": true},
+		"authorized_routes": []string{"192.168.88.0/24"},
+	})
+	return raw
+}
+
+func routeOwnerRecord(owner, cidr string) []byte {
+	raw, _ := json.Marshal(map[string]any{
+		"version":       2,
+		"node_id":       owner,
+		"owner_node_id": owner,
+		"cidr":          cidr,
+	})
+	return raw
+}
+
+func TestStateMachineEnforcesRouteOwnershipAtomically(t *testing.T) {
+	_, fsm, _ := testFSM(t)
+	bootstrap := Mutation{
+		Version: CommandVersion,
+		ID:      "routes-bootstrap",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/nodes/home-01.json", Data: siteRouterNode("home-01")},
+			{Op: "put", Path: "control/nodes/home-02.json", Data: siteRouterNode("home-02")},
+			{Op: "put", Path: "control/routes/home-01-a.json", Data: routeOwnerRecord("home-01", "192.168.88.0/24")},
+		},
+	}
+	if result := applyForTest(t, fsm, bootstrap); !result.OK {
+		t.Fatalf("bootstrap route ownership failed: %+v", result)
+	}
+
+	// The same owner may advertise another, even overlapping, canonical prefix.
+	sameOwner := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "same-owner",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/routes/home-01-b.json", Data: routeOwnerRecord("home-01", "192.168.88.0/25")},
+		},
+	})
+	if !sameOwner.OK {
+		t.Fatalf("same-owner route was rejected: %+v", sameOwner)
+	}
+
+	conflict := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "cross-owner",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/routes/home-02-a.json", Data: routeOwnerRecord("home-02", "192.168.88.128/25")},
+		},
+	})
+	if !conflict.Conflict {
+		t.Fatalf("overlapping different-owner route was accepted: %+v", conflict)
+	}
+
+	defaultRoute := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "default-route",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/routes/default.json", Data: routeOwnerRecord("home-01", "0.0.0.0/0")},
+		},
+	})
+	if !defaultRoute.Conflict {
+		t.Fatalf("site-router default route was accepted: %+v", defaultRoute)
+	}
+}
+
+func TestStateMachineRejectsRouteOwnerWithoutSiteRouterCapability(t *testing.T) {
+	_, fsm, _ := testFSM(t)
+	nodeRaw, _ := json.Marshal(map[string]any{
+		"node_id": "ru-01",
+		"roles":   map[string]bool{"gateway": true, "relay": true},
+	})
+	result := applyForTest(t, fsm, Mutation{
+		Version: CommandVersion,
+		ID:      "bad-owner",
+		Kind:    "TestRoutes",
+		Operations: []Operation{
+			{Op: "put", Path: "control/nodes/ru-01.json", Data: nodeRaw},
+			{Op: "put", Path: "control/routes/ru-01.json", Data: routeOwnerRecord("ru-01", "192.168.88.0/24")},
+		},
+	})
+	if !result.Conflict {
+		t.Fatalf("non-site-router route owner was accepted: %+v", result)
+	}
+}
+
+func TestStateMachineRejectsUnapprovedSiteRoute(t *testing.T) {
+	_, fsm, _ := testFSM(t)
+	result := applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: "unapproved", Kind: "TestRoutes", Operations: []Operation{
+		{Op: "put", Path: "control/nodes/home-01.json", Data: siteRouterNode("home-01")},
+		{Op: "put", Path: "control/routes/rogue.json", Data: routeOwnerRecord("home-01", "10.0.0.0/8")},
+	}})
+	if !result.Conflict {
+		t.Fatalf("unapproved CIDR committed: %+v", result)
+	}
+}
+
+func TestStaleHeartbeatCannotOverwriteControllerRouteGrant(t *testing.T) {
+	_, fsm, root := testFSM(t)
+	path := "control/nodes/home-01.json"
+	old := siteRouterNode("home-01")
+	put := func(id string, data []byte, digest string) MutationResult {
+		return applyForTest(t, fsm, Mutation{Version: CommandVersion, ID: id, Kind: "RoutePolicy",
+			Operations: []Operation{{Op: "put", Path: path, Data: data, ExpectedSHA256: digest}}})
+	}
+	if result := put("initial", old, ""); !result.OK {
+		t.Fatal(result)
+	}
+	var node map[string]any
+	if err := json.Unmarshal(old, &node); err != nil {
+		t.Fatal(err)
+	}
+	node["authorized_routes"] = []string{"192.168.88.0/24", "10.10.0.0/16"}
+	updated, _ := json.Marshal(node)
+	if result := put("admin", updated, sha256Hex(old)); !result.OK {
+		t.Fatal(result)
+	}
+	if result := put("stale-heartbeat", old, sha256Hex(old)); !result.Conflict {
+		t.Fatal("stale heartbeat overwrote Controller grant")
+	}
+	stored, err := os.ReadFile(filepath.Join(root, path))
+	if err != nil || !bytes.Equal(stored, updated) {
+		t.Fatalf("grant changed: %s %v", stored, err)
 	}
 }
