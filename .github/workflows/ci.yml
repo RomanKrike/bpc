@@ -163,3 +163,25 @@ jobs:
         env:
           BPC_CONTROLD_BINARY: /tmp/bpc-controld
           BPC_LEGACY_CONTROLD_BINARY: /tmp/bpc-controld-legacy
+
+  windows-agent-version:
+    runs-on: windows-latest
+    needs: build
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: bpc-connect-dist
+          path: artifacts
+      - name: Verify the packaged Windows executable reports the bundle version
+        shell: pwsh
+        run: |
+          $bundle = "artifacts/release-dist/bpc-connect-deploy.tar.gz"
+          New-Item -ItemType Directory -Path unpacked | Out-Null
+          tar -xzf $bundle -C unpacked
+          if ($LASTEXITCODE -ne 0) { throw "Bundle extraction failed" }
+          $expected = (Get-Content unpacked/VERSION -Raw).Trim()
+          $actual = (& ./unpacked/bin/bpc-agent-windows-amd64.exe version | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or $actual -cne "bpc-agent $expected") {
+            throw "Windows Agent version mismatch: expected $expected, got $actual"
+          }
