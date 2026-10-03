@@ -1,0 +1,117 @@
+name: Publish verified mesh test
+
+on:
+  push:
+    branches: [release/mesh-test-20261003-4]
+    paths: [.github/workflows/publish-mesh-test.yml]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-mesh-test-20261003-4
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 69828447d74dd56156ed4d5abcf2b30b70f4713a
+
+      - name: Check original CI run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = (await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: 37111373764
+            })).data;
+            if (run.conclusion !== 'success' || run.head_sha !== '69828447d74dd56156ed4d5abcf2b30b70f4713a') {
+              throw new Error('Original CI run does not match the reviewed successful build');
+            }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bpc-connect-dist
+          run-id: 37111373764
+          github-token: ${{ github.token }}
+          path: candidate-artifact
+
+      - name: Verify unchanged candidate and prepare assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir publish-assets
+          bundle=candidate-artifact/release-dist/bpc-connect-deploy.tar.gz
+          expected=db92035afae4b91f4640a2a0b513b9bb783be1a9223ddac9eb0d56f682071ce2
+          python3 scripts/verify-mesh-candidate.py "$bundle" "$expected" > provenance.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(Path('provenance.json').read_text())
+          assert metadata['source_sha'] == '67dda82933bcca1c8991ffd553dfb42a6f3e45dc'
+          assert metadata['live_acceptance'] == 'pending'
+          PY
+          cp "$bundle" publish-assets/bpc-connect-deploy.tar.gz
+          cp scripts/verify-mesh-candidate.py publish-assets/verify-mesh-candidate.py
+          tar -xOf "$bundle" ./bin/bpc-agent-windows-amd64.exe > publish-assets/bpc-agent-windows-amd64.exe
+          printf '%s  %s\n' 4928917d91f10855b0b6ff535f0808070b1d64a69c523e38590315d63f876d24 publish-assets/bpc-agent-windows-amd64.exe | sha256sum --check
+          (cd publish-assets && sha256sum bpc-connect-deploy.tar.gz verify-mesh-candidate.py bpc-agent-windows-amd64.exe > SHA256SUMS)
+          cat provenance.json
+          cat publish-assets/SHA256SUMS
+
+      - name: Publish complete prerelease without replacing latest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = 'mesh-test-20261003-4';
+            const latestBefore = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            try {
+              await github.rest.repos.getReleaseByTag({...context.repo, tag});
+              throw new Error('Prerelease tag already exists; refusing to replace assets');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const release = (await github.rest.repos.createRelease({
+              ...context.repo,
+              tag_name: tag,
+              target_commitish: '67dda82933bcca1c8991ffd553dfb42a6f3e45dc',
+              name: 'BPC mesh test 2026-10-03 — candidate 8',
+              draft: true,
+              prerelease: true,
+              make_latest: 'false',
+              body: [
+                'Тестовая сборка для ручной проверки на двух VPS, домашнем Site Router и Windows.',
+                'Исправляет версию Windows Agent: значение внедряется сборщиком, вместо константы 0.16.2. Перед заменой подписанного обновления проверяется версия EXE; несовпадение отклоняется без остановки туннеля. CI запускает именно упакованный EXE на Windows и сверяет его с VERSION. Автоматический Windows update channel не публикуется; используйте ручную установку с сохранением state.json.',
+                'Процедура: docs/mesh-existing-vps.md в feature/site-router-mesh. Полный второй путь и A–H ещё требуют live настройки.',
+                '',
+                'Это неизменённый deployment archive из успешного CI run 37111373764 (PR #83).',
+                'Source: `67dda82933bcca1c8991ffd553dfb42a6f3e45dc`.',
+                'Version: `0.20.2-mesh.67dda82933bcca1c8991ffd553dfb42a6f3e45dc`.',
+                'Go: 1.23.12. Live acceptance A–H: **pending**.',
+                '',
+                'Сначала проверьте SHA256 и manifest через приложенный verifier. Для Linux используйте explicit local bundle updater из проверенного архива и сделайте `bpc cluster backup` перед обновлением.',
+                'Не используйте старый updater без `--bundle`: он скачивает стабильный latest.',
+                'Не восстанавливайте устаревшее состояние Raft/Gateway при откате кода.',
+                '',
+                'Bundle SHA256: `db92035afae4b91f4640a2a0b513b9bb783be1a9223ddac9eb0d56f682071ce2`.',
+                'Stable main/latest не изменены. Проверки реального переключения путей ещё не пройдены.'
+              ].join('\n')
+            })).data;
+            for (const name of ['bpc-connect-deploy.tar.gz', 'verify-mesh-candidate.py', 'bpc-agent-windows-amd64.exe', 'SHA256SUMS']) {
+              const data = fs.readFileSync(`publish-assets/${name}`);
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: release.id, name, data,
+                headers: {'content-type': 'application/octet-stream', 'content-length': data.length}
+              });
+            }
+            const published = (await github.rest.repos.updateRelease({
+              ...context.repo, release_id: release.id, draft: false,
+              prerelease: true, make_latest: 'false'
+            })).data;
+            const latestAfter = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            if (latestAfter !== latestBefore) throw new Error('Stable latest changed unexpectedly');
+            core.info(`Published ${published.html_url}; stable latest remains ${latestAfter}`);
