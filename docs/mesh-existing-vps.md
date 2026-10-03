@@ -93,10 +93,10 @@ The default remains `compat` for existing workflows.
 Promotion prepares a mesh Node; it does not establish two client ingress paths.
 The bootstrap Controller must also have a canonical public Node record/runtime,
 and the private site router needs reviewed route ownership/Access. Do not
-advertise the home LAN until existing kernel routes have been inspected: the
-routed runtime adds routes exclusively and will refuse a conflicting unmanaged
-route rather than replace it. A route conflict needs a reviewed coexistence or
-migration plan, not removal of the working legacy WireGuard link.
+advertise the home LAN until existing kernel routes have been inspected and both
+Public Nodes run the isolated routing candidate described below. The private
+Site Router still installs its BPC overlay return route exclusively in the main
+table and refuses a conflicting route. Preserve the working legacy WireGuard link.
 
 The Windows Device must receive the tested candidate and valid transport paths.
 Its old 0.16.2 client and a successful legacy ping do not prove Public Node
@@ -139,3 +139,28 @@ loss_percent/endpoint fields. Home should then have two public peers, while each
 public node also has its inter-public link. Recheck Windows pings to 10.253.0.1 and
 192.168.88.180. Healthy probe links do not establish LAN traffic authorization or
 Device ingress failover: those remain separate live acceptance steps.
+
+## Isolated Public Node LAN routing
+
+Public Nodes install owned mesh LAN routes in table **12530**, protocol 99.
+Only packets explicitly carrying mark **0x425043** use this table, through rule
+priority **120**. Ordinary traffic keeps the main table, including existing
+`wg0`, `bpgw0` and `bpcag0` routes. The mesh NAT exception additionally requires
+output interface `bpcrt0`, so it does not bypass legacy Agent masquerading.
+
+An unreachable default in table 12530 prevents marked packets from falling
+through to a legacy route after a mesh LAN route is withdrawn. An occupied
+table, reserved rule priority, or overlapping existing mark rule causes startup
+to refuse adoption. After an unclean shutdown, retained policy objects require
+inspection; the runtime does not delete unknown objects to recover automatically.
+Reserve the packet mark exclusively for BPC; do not assign it in other firewall
+rules. A clean shutdown removes only the policy objects created by this process.
+
+This stage does not mark Device traffic or grant Device Access. Table 12530
+being present and mesh probes being healthy therefore do not demonstrate LAN
+access through mesh. Route ownership, Access and an explicit Device ingress
+bridge must be configured and tested separately. The Site Router's existing
+BPC-owned overlay return route stays in the main table; public LAN isolation
+alone does not change it. The privileged CI test verifies marked/unmarked route
+selection, withdrawal blocking and preservation of legacy routes/rules in a
+network namespace. Live forwarding and failover remain acceptance work.
