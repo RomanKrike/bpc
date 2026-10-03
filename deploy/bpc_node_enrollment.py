@@ -1685,7 +1685,8 @@ def reconcile_startup_gateway_state(
     """
     if not bool(roles.get("gateway")):
         return False
-    if enrollment_uses_routed_dataplane(enrolled_state(state_dir) or {}):
+    if (enrollment_uses_routed_dataplane(enrolled_state(state_dir) or {})
+            and not primary_compat_runtime(state_dir)):
         return False
     if not (state_dir / "control" / "config.json").is_file():
         return False
@@ -1856,6 +1857,150 @@ def public_node_endpoints(hosts: list[str]) -> list[dict[str, Any]]:
                 continue
         raise EnrollmentError("public-node requires a public DNS hostname")
     return endpoints
+
+
+def primary_compat_runtime(state_dir: Path) -> bool:
+    """The bootstrap API owns the existing Agent transport independently of mesh."""
+    if read_env_value(state_dir / "control" / "runtime.env", "CONTROL_MODE") != "primary":
+        return False
+    node = load_node_config(state_dir / "node.yaml")
+    cluster = read_json(state_dir / "cluster" / "cluster.json")
+    marker = read_json(state_dir / "cluster" / "controller.json")
+    return (cluster.get("controller_node_id") == node.node.id
+            and marker.get("node_id") == node.node.id)
+
+
+def durable_local_json(path: Path, value: dict[str, Any]) -> None:
+    """Persist a registration credential before committing its hash through Raft."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def cmd_mesh_enable(args: argparse.Namespace) -> int:
+    """Enroll the existing bootstrap identity; never bootstrap or replace transports."""
+    if os.geteuid() != 0:
+        raise EnrollmentError("run mesh-enable as root")
+    if args.control_dir.resolve() != (args.state_dir / "control").resolve():
+        raise EnrollmentError("mesh-enable requires the local canonical control directory")
+    endpoints = public_node_endpoints(args.host)
+    if not primary_compat_runtime(args.state_dir):
+        raise EnrollmentError("mesh-enable requires the existing bootstrap primary API")
+    node = load_node_config(args.state_dir / "node.yaml").node
+    if not all(node.roles.has(role) for role in ("controller", "gateway", "relay")):
+        raise EnrollmentError("bootstrap Node must already have controller,gateway,relay roles")
+    if load_node_config(args.state_dir / "node.yaml").advertised_routes:
+        raise EnrollmentError("bootstrap mesh enrollment does not authorize site routes")
+    # Derive, but never regenerate or rewrite, the existing identity.
+    derived = subprocess.run([
+        "openssl", "pkey", "-in", str(args.state_dir / "identity" / "node.key"),
+        "-pubout", "-outform", "DER",
+    ], check=True, capture_output=True)
+    public_key = base64.b64encode(derived.stdout).decode("ascii")
+    if public_key != node.public_key or public_key != (
+        args.state_dir / "identity" / "node.pub"
+    ).read_text().strip():
+        raise EnrollmentError("existing Node identity does not match its private key")
+    strong_read(args.control_dir)
+    member = read_json(args.state_dir / "cluster" / "controllers" / f"{node.id}.json")
+    marker = read_json(args.state_dir / "cluster" / "controller.json")
+    if (member.get("node_id") != node.id or member.get("state") != "voter"
+            or member.get("raft_address") != marker.get("raft_address")):
+        raise EnrollmentError("bootstrap Controller membership does not match local runtime")
+    public_url = normalize_controller_url(str(member.get("public_url", "")))
+    if urllib.parse.urlparse(public_url).hostname not in [item["host"] for item in endpoints]:
+        raise EnrollmentError("mesh host must include the existing public API hostname")
+    role_map = dict(node.roles.values)
+    role_config = default_role_config(args.state_dir, [r for r, on in role_map.items() if on],
+                                      dataplane="routed")
+    journal_path = args.state_dir / "runtime" / "bootstrap-mesh-registration.json"
+    lock_path = args.state_dir / ".bootstrap-mesh-registration.lock"
+    with lock_path.open("a") as lock:
+        os.chmod(lock_path, 0o600)
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        current = enrolled_state(args.state_dir)
+        journal = read_json(journal_path) if journal_path.is_file() else current
+        if journal is not None:
+            if (journal.get("node_id") != node.id or journal.get("runtime_mode") != "primary"
+                    or journal.get("config", {}).get("endpoints") != endpoints
+                    or journal.get("roles") != role_map):
+                raise EnrollmentError("existing enrollment/registration conflicts with mesh-enable")
+        else:
+            journal = {
+                "version": 1, "runtime_mode": "primary", "node_id": node.id,
+                "name": node.name, "created_at": node.created_at,
+                "joined_at": int(time.time()), "last_heartbeat": 0,
+                "controller_url": public_url, "controllers": controller_public_urls(args.state_dir),
+                "credential": secrets.token_hex(32), "roles": role_map,
+                "config": {"version": 1, "heartbeat_interval": HEARTBEAT_INTERVAL,
+                           "role_config": role_config, "endpoints": endpoints,
+                           "advertised_routes": []},
+            }
+            # Before Raft: a lost response or interrupted local write can reuse this credential.
+            durable_local_json(journal_path, journal)
+        credential = str(journal.get("credential", ""))
+        if not re.fullmatch(r"[0-9a-f]{64}", credential):
+            raise EnrollmentError("invalid saved bootstrap mesh credential")
+        if current is not None and (current.get("credential") != credential
+                                    or current.get("node_id") != node.id):
+            raise EnrollmentError("local enrollment conflicts with saved registration")
+        strong_read(args.control_dir)
+        node_path = args.control_dir / "nodes" / f"{node.id}.json"
+        fingerprint = public_key_fingerprint(public_key)
+        indexes = [
+            args.control_dir / "node-public-keys" / f"{fingerprint}.json",
+            args.control_dir / "node-credentials" / f"{token_index(credential)}.json",
+        ]
+        if node_path.is_file():
+            record = read_json(node_path)
+            if (record.get("revoked") or record.get("public_key") != public_key
+                    or record.get("roles") != role_map or record.get("endpoints") != endpoints
+                    or record.get("role_config") != role_config
+                    or any(not p.is_file() or read_json(p).get("node_id") != node.id
+                           for p in indexes)):
+                raise EnrollmentError("canonical bootstrap registration conflicts or is revoked")
+        else:
+            if current is not None or any(p.exists() for p in indexes):
+                raise EnrollmentError("partial/conflicting canonical bootstrap registration")
+            record = {
+                "version": 1, "node_id": node.id, "name": node.name, "public_key": public_key,
+                "public_key_fingerprint": fingerprint, "roles": role_map,
+                "role_config": role_config, "endpoints": endpoints,
+                "advertised_routes": [], "authorized_routes": [],
+                "created_at": node.created_at, "last_seen": 0, "revoked": False,
+                "last_status": "registered", "last_version": "", "services": {},
+            }
+            operations = [{"op": "put", "path": node_path, "if_absent": True,
+                           "data": json.dumps(record, sort_keys=True,
+                                              separators=(",", ":")).encode()}]
+            operations.extend({"op": "put", "path": p, "if_absent": True,
+                               "data": json.dumps({"node_id": node.id}).encode()} for p in indexes)
+            try:
+                bpc_control_state.mutation(
+                    args.control_dir, "RegisterBootstrapMeshNode", operations,
+                )
+            except bpc_control_state.ControlStateError as exc:
+                _raise_control_state(exc)
+        if current is None:
+            durable_local_json(args.state_dir / "enrollment.json", journal)
+        # No Controller provisioning, transport reconciliation, or API restart here.
+        install_runtime_service(args.state_dir)
+        send_heartbeat(args.state_dir, enrolled_state(args.state_dir) or journal)
+    print(f"Bootstrap mesh enabled: {node.name} ({node.id}); primary API/compatibility preserved")
+    return 0
 
 
 def cmd_node_configure(args: argparse.Namespace) -> int:
@@ -2051,6 +2196,9 @@ def reconcile_controller_runtime(state_dir: Path) -> None:
     if marker.get("node_id") != node.node.id or not node.node.roles.has("controller"):
         raise EnrollmentError("Controller marker does not match local Node identity")
     enrollment = enrolled_state(state_dir)
+    if (enrollment is not None and enrollment.get("runtime_mode") == "primary"
+            and not primary_compat_runtime(state_dir)):
+        raise EnrollmentError("bootstrap primary API mode/identity is inconsistent")
     if enrollment is not None:
         progress = enrollment.get("controller_provision", {})
         if isinstance(progress, dict) and progress and not progress.get("complete"):
@@ -2099,7 +2247,8 @@ def reconcile_controller_runtime(state_dir: Path) -> None:
     if any(hashlib.sha256(path.read_bytes()).digest() != digest
            for path, digest in fingerprints.items()):
         raise EnrollmentError("Controller runtime changed protected identity or PKI files")
-    if enrollment is not None and enrollment.get("roles", {}).get("controller"):
+    if (enrollment is not None and enrollment.get("roles", {}).get("controller")
+            and not primary_compat_runtime(state_dir)):
         completed = subprocess.run([
             str(ROOT / "deploy" / "bpc-enable-control-replica.sh"), "--hostname", host,
             "--port", public_port or "8444",
@@ -2248,7 +2397,7 @@ def cmd_local_reconcile(args: argparse.Namespace) -> int:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict) or not bool(roles.get("gateway")):
         return 0
-    if enrollment_uses_routed_dataplane(enrollment):
+    if enrollment_uses_routed_dataplane(enrollment) and not primary_compat_runtime(args.state_dir):
         return 0
     control_config = args.state_dir / "control" / "config.json"
     if not control_config.is_file():
@@ -2527,6 +2676,10 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--controller-url")
     create.add_argument("--dataplane", choices=("compat", "routed"), default="compat")
 
+    mesh = sub.add_parser("mesh-enable")
+    mesh.add_argument("--host", action="append", required=True)
+    mesh.add_argument("--preserve-compat", action="store_true", required=True)
+
     configure = sub.add_parser("node-configure")
     configure.add_argument("node_id")
     configure.add_argument("--preset", choices=("public-node",), required=True)
@@ -2573,6 +2726,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "node-create":
             return cmd_node_create(args)
+        if args.command == "mesh-enable":
+            return cmd_mesh_enable(args)
         if args.command == "node-configure":
             return cmd_node_configure(args)
         if args.command == "token-create":
