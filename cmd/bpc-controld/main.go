@@ -818,9 +818,11 @@ func (s *server) probeController(record controllerRecord) (map[string]any, error
 	if err != nil {
 		return nil, err
 	}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Timeout:   1500 * time.Millisecond,
-		Transport: &http.Transport{TLSClientConfig: tlsConfig},
+		Transport: transport,
 	}
 	response, err := client.Get("https://" + record.APIAddress + "/v1/health")
 	if err != nil {
@@ -880,7 +882,9 @@ func (s *server) forwardBytes(method, path string, body []byte) ([]byte, int, er
 	if err != nil {
 		return nil, 0, err
 	}
-	client := &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{TLSClientConfig: tlsConfig}}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: 15 * time.Second, Transport: transport}
 	request, err := http.NewRequest(method, "https://"+address+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
