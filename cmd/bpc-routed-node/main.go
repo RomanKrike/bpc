@@ -49,6 +49,9 @@ type kernelState struct {
 	interfaceID   string
 	overlaySubnet string
 	routes        map[string]struct{}
+	routeTables   map[string]string
+	policyDefault bool
+	policyRule    bool
 	natNoSNAT     map[string]struct{}
 	siteNAT       map[string]struct{}
 	forward       map[string]struct{}
@@ -75,39 +78,61 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 	if previousOverlay == "" {
 		previousOverlay = config.OverlaySubnet
 	}
-	desiredRoutes := make(map[string]struct{})
+	desiredRoutes := make(map[string]string)
 	if config.LocalPublic {
 		for _, route := range config.Routes {
-			desiredRoutes[route.CIDR] = struct{}{}
+			desiredRoutes[route.CIDR] = meshRouteTable
 		}
 	}
 	if config.LocalSiteRouter && config.OverlaySubnet != "" {
-		desiredRoutes[config.OverlaySubnet] = struct{}{}
+		desiredRoutes[config.OverlaySubnet] = ""
 	}
 
 	command := k.command
 	if command == nil {
 		command = runCommand
 	}
-	for cidr := range desiredRoutes {
+	if k.routeTables == nil {
+		k.routeTables = make(map[string]string)
+	}
+	if config.LocalPublic {
+		// A running private Node can also be promoted by a policy refresh.
+		if !k.policyDefault && k.command == nil {
+			if err := requireFreshPublicPolicy(); err != nil {
+				return err
+			}
+		}
+		if err := k.enablePublicPolicy(command); err != nil {
+			return err
+		}
+	}
+	for cidr, table := range desiredRoutes {
 		if _, ok := k.routes[cidr]; ok {
 			continue
 		}
 		// Add exclusively: replacing an existing route can steal an unmanaged
 		// route even when our newly created interface is BPC-owned.
-		if err := command("ip", "route", "add", cidr, "dev", k.interfaceID, "proto", "99"); err != nil {
+		if err := command(kernelRouteArgs("add", cidr, k.interfaceID, table)...); err != nil {
 			return err
 		}
 		k.routes[cidr] = struct{}{}
+		k.routeTables[cidr] = table
 	}
 	for cidr := range k.routes {
 		if _, ok := desiredRoutes[cidr]; ok {
 			continue
 		}
-		if err := command("ip", "route", "del", cidr, "dev", k.interfaceID, "proto", "99"); err != nil {
+		if err := command(kernelRouteArgs("del", cidr, k.interfaceID, k.routeTables[cidr])...); err != nil {
 			return err
 		}
 		delete(k.routes, cidr)
+		delete(k.routeTables, cidr)
+	}
+
+	if !config.LocalPublic {
+		if err := k.disablePublicPolicy(command); err != nil {
+			return err
+		}
 	}
 
 	desiredNoSNAT := make(map[string]struct{})
@@ -125,14 +150,15 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 			"iptables", "-t", "nat", "-C", "POSTROUTING",
 			"-s", config.OverlaySubnet,
 			"-d", cidr,
+			"-o", k.interfaceID,
 			"-m", "comment", "--comment", comment,
 			"-j", "ACCEPT",
 		}
-		if runCommand(check...) != nil {
+		if command(check...) != nil {
 			insert := append([]string{}, check...)
 			insert[3] = "-I"
 			insert = append(insert[:5], append([]string{"1"}, insert[5:]...)...)
-			if err := runCommand(insert...); err != nil {
+			if err := command(insert...); err != nil {
 				return err
 			}
 		}
@@ -142,10 +168,11 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 			continue
 		}
 		comment := "bpc-routed-nonat:" + k.interfaceID + ":" + cidr
-		bestEffort(
+		_ = command(
 			"iptables", "-t", "nat", "-D", "POSTROUTING",
 			"-s", previousOverlay,
 			"-d", cidr,
+			"-o", k.interfaceID,
 			"-m", "comment", "--comment", comment,
 			"-j", "ACCEPT",
 		)
@@ -174,24 +201,24 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 				"-m", "comment", "--comment", comment,
 				"-j", "MASQUERADE",
 			}
-			if runCommand(check...) != nil {
+			if command(check...) != nil {
 				add := append([]string{}, check...)
 				add[3] = "-A"
-				if err := runCommand(add...); err != nil {
+				if err := command(add...); err != nil {
 					return err
 				}
 			}
 		}
 		if _, ok := k.forward[cidr]; !ok {
 			inComment := "bpc-routed-forward-in:" + k.interfaceID + ":" + cidr
-			if runCommand(
+			if command(
 				"iptables", "-C", "FORWARD",
 				"-i", k.interfaceID,
 				"-d", cidr,
 				"-m", "comment", "--comment", inComment,
 				"-j", "ACCEPT",
 			) != nil {
-				if err := runCommand(
+				if err := command(
 					"iptables", "-I", "FORWARD", "1",
 					"-i", k.interfaceID,
 					"-d", cidr,
@@ -202,7 +229,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 				}
 			}
 			outComment := "bpc-routed-forward-out:" + k.interfaceID + ":" + cidr
-			if runCommand(
+			if command(
 				"iptables", "-C", "FORWARD",
 				"-o", k.interfaceID,
 				"-s", cidr,
@@ -211,7 +238,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 				"-m", "comment", "--comment", outComment,
 				"-j", "ACCEPT",
 			) != nil {
-				if err := runCommand(
+				if err := command(
 					"iptables", "-I", "FORWARD", "1",
 					"-o", k.interfaceID,
 					"-s", cidr,
@@ -231,7 +258,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 			continue
 		}
 		comment := "bpc-routed-site-nat:" + k.interfaceID + ":" + cidr
-		bestEffort(
+		_ = command(
 			"iptables", "-t", "nat", "-D", "POSTROUTING",
 			"-s", previousOverlay,
 			"-d", cidr,
@@ -244,7 +271,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 			continue
 		}
 		inComment := "bpc-routed-forward-in:" + k.interfaceID + ":" + cidr
-		bestEffort(
+		_ = command(
 			"iptables", "-D", "FORWARD",
 			"-i", k.interfaceID,
 			"-d", cidr,
@@ -252,7 +279,7 @@ func (k *kernelState) reconcile(config routed.RoutingConfig) error {
 			"-j", "ACCEPT",
 		)
 		outComment := "bpc-routed-forward-out:" + k.interfaceID + ":" + cidr
-		bestEffort(
+		_ = command(
 			"iptables", "-D", "FORWARD",
 			"-o", k.interfaceID,
 			"-s", cidr,
@@ -360,6 +387,12 @@ func main() {
 		logger.Fatal("routed Controller policy expired; refresh Node heartbeat before starting")
 	}
 
+	if config.LocalPublic {
+		if err := requireFreshPublicPolicy(); err != nil {
+			logger.Fatal(err)
+		}
+	}
+
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		logger.Fatalf("inspect interfaces before TUN creation: %v", err)
@@ -409,6 +442,7 @@ func main() {
 		forward:     make(map[string]struct{}),
 	}
 	if err := kernel.reconcile(config); err != nil {
+		kernel.cleanup()
 		logger.Fatal(err)
 	}
 	defer kernel.cleanup()

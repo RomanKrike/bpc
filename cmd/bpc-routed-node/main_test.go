@@ -35,7 +35,7 @@ func TestRoutedRoutesNeverReplaceUnmanagedRoutes(t *testing.T) {
 	if len(k.routes) != 0 {
 		t.Fatal("failed add acquired route ownership")
 	}
-	if len(calls) != 1 || calls[0] != "ip route add 192.168.88.0/24 dev bpcrt0 proto 99" {
+	if len(calls) != 1 || calls[0] != "ip route add unreachable default table 12530 proto 99" {
 		t.Fatalf("unsafe route mutation: %v", calls)
 	}
 	conflict = false
@@ -45,7 +45,7 @@ func TestRoutedRoutesNeverReplaceUnmanagedRoutes(t *testing.T) {
 	if err := k.reconcile(cfg); err != nil {
 		t.Fatal(err)
 	}
-	if len(calls) != 2 {
+	if len(calls) != 4 {
 		t.Fatalf("unchanged owned route was recreated: %v", calls)
 	}
 	conflict = true

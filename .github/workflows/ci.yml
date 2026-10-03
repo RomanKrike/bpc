@@ -92,7 +92,7 @@ jobs:
 
   build:
     runs-on: ubuntu-latest
-    needs: [python, go, shellcheck, control-runtime]
+    needs: [python, go, shellcheck, control-runtime, mesh-kernel-policy]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -185,3 +185,17 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $actual -cne "bpc-agent $expected") {
             throw "Windows Agent version mismatch: expected $expected, got $actual"
           }
+
+  mesh-kernel-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
+      - name: Build isolated kernel routing test
+        run: go test -c -o /tmp/bpc-routed-kernel-tests ./cmd/bpc-routed-node
+      - name: Verify marked mesh routing and legacy coexistence in a real namespace
+        run: sudo env BPC_TEST_NETNS=1 /tmp/bpc-routed-kernel-tests -test.run '^TestPublicPolicyRealNamespace$' -test.v
