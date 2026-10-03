@@ -25,6 +25,7 @@ Usage:
   bpc node route-authorize NODE_ID --route CIDR [--route CIDR ...]
   bpc node list
   bpc node create --name NAME --preset public-node --host HOST
+  bpc node mesh-enable --host HOST --preserve-compat
   bpc node configure NODE_ID --preset public-node --host HOST --dataplane routed
   bpc node create --name NAME --preset site-router --route CIDR
   bpc cluster status
@@ -95,6 +96,11 @@ case "${scope}" in
   node)
     shift
     case "${1:-}" in
+      mesh-enable)
+        require_file "${ENROLL}" "BPC Node enrollment helper"
+        shift
+        exec python3 "${ENROLL}" --state-dir "${BPC_STATE_DIR}" --control-dir "${CONTROL_DIR}" mesh-enable "$@"
+        ;;
       configure)
         require_file "${ENROLL}" "BPC Node enrollment helper"
         shift
