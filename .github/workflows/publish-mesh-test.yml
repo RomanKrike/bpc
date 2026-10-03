@@ -1,0 +1,116 @@
+name: Publish verified mesh test
+
+on:
+  push:
+    branches: [release/mesh-test-20261003-2]
+    paths: [.github/workflows/publish-mesh-test.yml]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-mesh-test-20261003-2
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 0c4487b1b93e8bb746f38b3f77497d0bc76c2dca
+
+      - name: Check original CI run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = (await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: 37104249043
+            })).data;
+            if (run.conclusion !== 'success' || run.head_sha !== '0c4487b1b93e8bb746f38b3f77497d0bc76c2dca') {
+              throw new Error('Original CI run does not match the reviewed successful build');
+            }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bpc-connect-dist
+          run-id: 37104249043
+          github-token: ${{ github.token }}
+          path: candidate-artifact
+
+      - name: Verify unchanged candidate and prepare assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir publish-assets
+          bundle=candidate-artifact/release-dist/bpc-connect-deploy.tar.gz
+          expected=fa90ef63463f8598bb27372e506d805fc95cf60c370f112e434ae88c84a8afc5
+          python3 scripts/verify-mesh-candidate.py "$bundle" "$expected" > provenance.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(Path('provenance.json').read_text())
+          assert metadata['source_sha'] == 'fbce0003d02dbe13347d8f906a02ebe9cef308e0'
+          assert metadata['live_acceptance'] == 'pending'
+          PY
+          cp "$bundle" publish-assets/bpc-connect-deploy.tar.gz
+          cp scripts/verify-mesh-candidate.py publish-assets/verify-mesh-candidate.py
+          (cd publish-assets && sha256sum bpc-connect-deploy.tar.gz verify-mesh-candidate.py > SHA256SUMS)
+          cat provenance.json
+          cat publish-assets/SHA256SUMS
+
+      - name: Publish complete prerelease without replacing latest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = 'mesh-test-20261003-2';
+            const latestBefore = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            try {
+              await github.rest.repos.getReleaseByTag({...context.repo, tag});
+              throw new Error('Prerelease tag already exists; refusing to replace assets');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const release = (await github.rest.repos.createRelease({
+              ...context.repo,
+              tag_name: tag,
+              target_commitish: 'fbce0003d02dbe13347d8f906a02ebe9cef308e0',
+              name: 'BPC mesh test 2026-10-03 — candidate 6',
+              draft: true,
+              prerelease: true,
+              make_latest: 'false',
+              body: [
+                'Тестовая сборка для ручной проверки на двух VPS, домашнем Site Router и Windows.',
+                'Добавляет настраиваемый профиль времени Raft для публичных VPS: heartbeat 3s, election 3s, leader lease 2s. Тест с задержкой RPC 650ms подтверждает записи без перевыборов; тест обрыва связи подтверждает потерю роли лидера и отказ в записях без кворума. Обнаружение настоящего отказа занимает несколько секунд. Live стабильность ещё проверяется; исправления fsync и утечки HTTP соединений сохранены.',
+                'Процедура: docs/mesh-existing-vps.md в feature/site-router-mesh. Полный второй путь и A–H ещё требуют live настройки.',
+                '',
+                'Это неизменённый deployment archive из успешного CI run 37104249043 (PR #81).',
+                'Source: `fbce0003d02dbe13347d8f906a02ebe9cef308e0`.',
+                'Version: `0.20.2-mesh.fbce0003d02dbe13347d8f906a02ebe9cef308e0`.',
+                'Go: 1.23.12. Live acceptance A–H: **pending**.',
+                '',
+                'Сначала проверьте SHA256 и manifest через приложенный verifier. Для Linux используйте explicit local bundle updater из проверенного архива и сделайте `bpc cluster backup` перед обновлением.',
+                'Не используйте старый updater без `--bundle`: он скачивает стабильный latest.',
+                'Не восстанавливайте устаревшее состояние Raft/Gateway при откате кода.',
+                '',
+                'Bundle SHA256: `fa90ef63463f8598bb27372e506d805fc95cf60c370f112e434ae88c84a8afc5`.',
+                'Stable main/latest не изменены. Проверки реального переключения путей ещё не пройдены.'
+              ].join('\n')
+            })).data;
+            for (const name of ['bpc-connect-deploy.tar.gz', 'verify-mesh-candidate.py', 'SHA256SUMS']) {
+              const data = fs.readFileSync(`publish-assets/${name}`);
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: release.id, name, data,
+                headers: {'content-type': 'application/octet-stream', 'content-length': data.length}
+              });
+            }
+            const published = (await github.rest.repos.updateRelease({
+              ...context.repo, release_id: release.id, draft: false,
+              prerelease: true, make_latest: 'false'
+            })).data;
+            const latestAfter = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            if (latestAfter !== latestBefore) throw new Error('Stable latest changed unexpectedly');
+            core.info(`Published ${published.html_url}; stable latest remains ${latestAfter}`);
+
