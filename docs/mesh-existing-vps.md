@@ -102,3 +102,40 @@ The Windows Device must receive the tested candidate and valid transport paths.
 Its old 0.16.2 client and a successful legacy ping do not prove Public Node
 failover. Complete the combined [A–H procedure](live-mesh-acceptance.md) before
 merging the mesh feature into `main` or publishing a stable release.
+
+### Add the existing bootstrap Controller to mesh alongside Agent
+
+The original Controller created by `bpc init` has a local identity and Raft membership,
+but older releases did not create an enrolled Node record for it. Do not run `join`
+or `init` again, and do not promote it with `node configure`.
+
+After installing a pinned candidate containing this command, on the bootstrap VPS:
+
+```bash
+bpc cluster backup
+bpc node mesh-enable --host sub.blinpi.ru --preserve-compat
+```
+
+The command requires root, the local canonical state directory, the existing
+bootstrap Controller identity and voter record, all three existing public roles,
+and `CONTROL_MODE=primary`. The host must include the existing API hostname.
+It derives the public key from the existing private key without rewriting either.
+It adds the Node and hashed credential/key indexes in one guarded Raft mutation.
+It neither adds a voter nor provisions certificates, restarts the API, replaces
+Agent interfaces, or authorizes LAN routes. The existing Node name is retained.
+
+A private, fsync-backed registration journal is persisted **before** the Raft
+mutation. If a response or local enrollment write is interrupted, rerun the same
+command. It reuses the credential and checks the canonical records; revoked or
+conflicting registrations are refused. Never paste this journal or enrollment.json:
+they contain a credential. The API stays primary on subsequent updates, and its
+compatibility Gateway reconciliation remains active alongside routed mesh.
+If the primary mode/identity is inconsistent, the update refuses API conversion.
+
+Permit mesh UDP/24446 at the host/provider firewall as needed. Home connections
+remain outbound. Confirm fresh, healthy links in `/run/bpc-connect/routed-status.json`
+using only node_id, interface, updated_at and the link peer_name/health/rtt_ms/
+loss_percent/endpoint fields. Home should then have two public peers, while each
+public node also has its inter-public link. Recheck Windows pings to 10.253.0.1 and
+192.168.88.180. Healthy probe links do not establish LAN traffic authorization or
+Device ingress failover: those remain separate live acceptance steps.
