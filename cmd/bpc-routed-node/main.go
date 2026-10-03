@@ -29,7 +29,12 @@ type tunWriter struct {
 }
 
 func (w *tunWriter) WritePacket(packet []byte) error {
-	_, err := w.device.Write([][]byte{packet}, 0)
+	// Linux offload-enabled TUN needs room before the IP packet for its
+	// virtio-net header. Keep the caller's packet untouched by the driver.
+	const headroom = 16
+	buf := make([]byte, headroom+len(packet))
+	copy(buf[headroom:], packet)
+	_, err := w.device.Write([][]byte{buf}, headroom)
 	return err
 }
 
