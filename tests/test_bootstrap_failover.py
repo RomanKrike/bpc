@@ -64,7 +64,7 @@ def test_heartbeat_retains_bootstrap_pool_if_response_has_no_alternatives(tmp_pa
     (tmp_path / "identity" / "node.pub").write_text("key")
     record = {"node_id": "a" * 32, "name": "home-01", "credential": "secret",
               "roles": {"site_router": True}, "controller_url": A, "controllers": [A, B]}
-    monkeypatch.setattr(enrollment, "local_services", lambda _: {})
+    monkeypatch.setattr(enrollment, "local_services", lambda _, role_config=None: {})
     monkeypatch.setattr(enrollment, "request_json", lambda *a, **k: {
         "_controller_url": B, "roles": {"site_router": True}, "config": {"controllers": []},
     })

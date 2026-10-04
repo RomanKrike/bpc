@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import io
 import json
 import os
+import platform
+import subprocess
 import tarfile
 import time
 import urllib.error
@@ -125,6 +128,9 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"Commit index: {status.get('commit_index', 0)}")
     print(f"Last applied: {status.get('last_applied', 0)}")
     print(f"Revision: {status.get('revision', 0)}")
+    print(f"Revision floor: {status.get('revision_floor', 0)}")
+    if int(status.get("revision", 0)) < int(status.get("revision_floor", 0)):
+        print("Local recovery: blocked by revision floor")
     print(f"State schema: {status.get('state_schema_version', 0)}")
     print(f"Protocol: {status.get('protocol_version', 0)}")
     print(f"Snapshot index: {status.get('snapshot_index', 0)}")
@@ -326,6 +332,69 @@ def cmd_restore(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_replay_checkpoint(args: argparse.Namespace) -> int:
+    if os.geteuid() != 0:
+        raise ClusterOpsError("run checkpoint import as root")
+    marker = json.loads((args.state_dir / "cluster" / "controller.json").read_text())
+    arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(platform.machine())
+    if arch is None:
+        raise ClusterOpsError("unsupported Controller architecture")
+    binary = (
+        Path(os.environ.get("BPC_ROOT", "/opt/bpc-connect"))
+        / "current" / "bin" / f"bpc-controld-linux-{arch}"
+    )
+    if not binary.is_file():
+        raise ClusterOpsError("upgraded bpc-controld binary is unavailable")
+    # The binary takes the DB lock itself. Do not stop/restart services here:
+    # operators must preserve quorum while migrating one recipient at a time.
+    command = [str(binary), "--state-root", str(args.state_dir),
+               "--data-dir", str(args.state_dir / "cluster" / "raft")]
+    for flag, field in (
+        ("node-id", "node_id"), ("raft-address", "raft_address"),
+        ("cluster-api-address", "cluster_api_address"),
+        ("local-api-address", "local_api_address"),
+        ("cert-file", "certificate_file"), ("key-file", "key_file"),
+        ("ca-file", "ca_file"), ("local-api-token-file", "local_api_token_file"),
+    ):
+        value = str(marker.get(field, "")).strip()
+        if not value:
+            raise ClusterOpsError(f"Controller marker is missing {field}")
+        command.extend(["--" + flag, value])
+    command.extend(["--replay-checkpoint-source", args.source])
+    result = subprocess.run(command, check=False)
+    if result.returncode:
+        raise ClusterOpsError(
+            "checkpoint import failed; preserve the DB and inspect the reported reason"
+        )
+    print("Checkpoint installed; start Controller and verify quorum catch-up and revision_floor.")
+    return 0
+
+
+def cmd_reconcile_revision(args: argparse.Namespace) -> int:
+    if os.geteuid() != 0:
+        raise ClusterOpsError("run revision reconciliation as root on the Leader")
+    # Read the actual accepted snapshots copied from each active Gateway.
+    # Preserve the exact Python signing serialization; Go verifies against CA.
+    from bpc_gateway_snapshot import _signing_bytes
+
+    receipts = {}
+    for item in args.gateway_receipt:
+        node_id, separator, filename = item.partition("=")
+        if not separator or not node_id or node_id in receipts:
+            raise ClusterOpsError("use unique --gateway-receipt NODE_ID=SNAPSHOT_FILE")
+        snapshot = json.loads(Path(filename).read_text(encoding="utf-8"))
+        receipts[node_id] = {
+            "signed": base64.b64encode(_signing_bytes(snapshot)).decode("ascii"),
+            "signature": snapshot["signature"],
+        }
+    result = _request_json(
+        args.state_dir, "POST", "/v1/reconcile-revision", {"gateway_receipts": receipts},
+    )
+    print(f"Revision reconciled: {result['revision']}; commit {result['commit_index']}")
+    print("Every configured Controller confirmed the committed revision and canonical policy.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="BPC distributed cluster operations")
     parser.add_argument("--state-dir", type=Path, default=Path("/etc/bpc-connect"))
@@ -345,6 +414,16 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("backup", type=Path)
     restore.add_argument("--confirm", required=True)
     restore.add_argument("--force", action="store_true")
+
+    checkpoint = sub.add_parser("replay-checkpoint")
+    checkpoint.add_argument(
+        "--source", required=True, help="HTTPS cluster API origin of an upgraded ready Leader"
+    )
+    reconcile = sub.add_parser("reconcile-revision")
+    reconcile.add_argument(
+        "--gateway-receipt", action="append", default=[], metavar="NODE_ID=SNAPSHOT_FILE",
+        help="latest accepted runtime/security-snapshot.json from each active Gateway",
+    )
     return parser
 
 
@@ -361,6 +440,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_backup(args)
         if args.command == "restore":
             return cmd_restore(args)
+        if args.command == "replay-checkpoint":
+            return cmd_replay_checkpoint(args)
+        if args.command == "reconcile-revision":
+            return cmd_reconcile_revision(args)
     except (ClusterOpsError, OSError, ValueError, KeyError) as exc:
         print(f"ERROR: {exc}", file=os.sys.stderr)
         return 2

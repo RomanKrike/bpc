@@ -64,7 +64,9 @@ from bpc_node_enrollment import (
     join_token_metadata,
     leave_node,
     node_heartbeat,
+    node_telemetry,
 )
+from bpc_topology import merge_node_telemetry  # noqa: E402
 
 from bpc_connect.compat.device import (
     LegacyDeviceAuthError,
@@ -386,6 +388,9 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/nodes/heartbeat":
             self._node_heartbeat()
             return
+        if self.path == "/v1/nodes/telemetry":
+            self._node_telemetry()
+            return
         if self.path == "/v1/nodes/controller-ready":
             self._node_controller_ready()
             return
@@ -569,6 +574,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 node = read_json(path)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
+            node = merge_node_telemetry(self._root(), node, now=now)
             roles = node.get("roles", {})
             services = node.get("services", {})
             transport = node.get("transport", {})
@@ -1310,6 +1316,28 @@ class ControlHandler(BaseHTTPRequestHandler):
                 if controller_payload is not None:
                     response["controller"] = controller_payload
         except (EnrollmentError, ControllerEnrollmentError) as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(HTTPStatus.OK, response)
+
+    def _node_telemetry(self) -> None:
+        credential = self._bearer()
+        if credential is None:
+            self.send_error(HTTPStatus.UNAUTHORIZED)
+            return
+        body = self._read_body_json()
+        if body is None:
+            return
+        try:
+            response = node_telemetry(
+                self._root(),
+                credential=credential,
+                payload=body,
+            )
+        except EnrollmentError as exc:
             self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
             return
         except (OSError, ValueError, json.JSONDecodeError):

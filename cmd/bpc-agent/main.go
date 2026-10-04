@@ -20,8 +20,10 @@ import (
 	"github.com/RomanKrike/bpc/internal/wgshim"
 )
 
+// Release builds inject this value with -X main.version.
+var version = "dev"
+
 const (
-	version              = "0.16.2"
 	legacyTaskName       = "BPC Agent"
 	bootstrapStart       = "\nBPC_AGENT_BOOTSTRAP_V3\n"
 	legacyBootstrapStart = "\nBPC_AGENT_BOOTSTRAP_V2\n"
@@ -139,7 +141,7 @@ func installAgent() error {
 	if err != nil {
 		return fmt.Errorf("device enrollment: %w", err)
 	}
-	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
+	if err := state.ValidateRuntimeConfig(); err != nil {
 		return fmt.Errorf("runtime config: %w", err)
 	}
 
@@ -359,7 +361,7 @@ func runAgentContext(parent context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load agent state: %w", err)
 	}
-	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
+	if err := state.ValidateRuntimeConfig(); err != nil {
 		return err
 	}
 	_ = writeUIStatus(state)
@@ -759,11 +761,34 @@ func checkAndStageUpdate(
 		return false, err
 	}
 	lockDownPath(nextPath)
+	if err := verifyUpdateVersion(ctx, nextPath, manifest.Version); err != nil {
+		_ = os.Remove(nextPath)
+		return false, err
+	}
 	logger.Printf("verified BPC Agent update %s; scheduling replacement", manifest.Version)
 	if err := scheduleReplacement(exePath, nextPath, installUI); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// Probe only after signature and file hash verification. The version command
+// returns before installation, state loading, or service changes.
+func verifyUpdateVersion(ctx context.Context, path, expected string) error {
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(probeCtx, path, "version").Output()
+	if err != nil {
+		return fmt.Errorf("probe verified update version: %w", err)
+	}
+	return validateUpdateVersionOutput(string(output), expected)
+}
+
+func validateUpdateVersionOutput(output, expected string) error {
+	if strings.TrimSpace(output) != "bpc-agent "+expected {
+		return fmt.Errorf("update binary version does not match signed manifest %s", expected)
+	}
+	return nil
 }
 
 func scheduleReplacement(exePath, nextPath string, installUI bool) error {

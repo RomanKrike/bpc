@@ -390,20 +390,88 @@ check_joined_node() {
   fi
 }
 
+check_routed_mesh() {
+  local enrollment="${BPC_STATE_DIR}/enrollment.json"
+  local status="/run/bpc-connect/routed-status.json"
+
+  [[ -s "${enrollment}" ]] || return 0
+  if ! python3 - "${enrollment}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+roles = value.get("roles", {})
+routing = value.get("config", {}).get("routing", {})
+required = (
+    isinstance(roles, dict)
+    and (bool(roles.get("gateway")) or bool(roles.get("site_router")))
+    and isinstance(routing, dict)
+    and int(routing.get("version", 0) or 0) > 0
+    and bool(routing.get("links"))
+)
+raise SystemExit(0 if required else 1)
+PY
+  then
+    return 0
+  fi
+
+  if ! systemctl --quiet is-active bpc-routed-node.service; then
+    fail_health "bpc-routed-node.service is not active"
+    return 1
+  fi
+  if [[ ! -d /sys/class/net/bpcrt0 ]]; then
+    fail_health "BPC routed mesh interface bpcrt0 is missing"
+    return 1
+  fi
+  if [[ ! -s "${status}" ]]; then
+    fail_health "BPC routed mesh status is missing"
+    return 1
+  fi
+  if ! python3 - "${status}" "${enrollment}" <<'PY'
+import json
+import sys
+import time
+from pathlib import Path
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+    updated = int(value.get("updated_at", 0))
+    enrolled = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+    expires = int(enrolled.get("config", {}).get("routing", {}).get("policy_expires_at", 0))
+except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(1)
+now = time.time()
+raise SystemExit(0 if updated > 0 and 0 <= now - updated <= 15 and expires > now else 1)
+PY
+  then
+    fail_health "BPC routed mesh status is stale or routing policy has expired"
+    return 1
+  fi
+}
+
+
 check_control() {
   local control_dir="${BPC_STATE_DIR}/control"
   local runtime_env="${control_dir}/runtime.env"
 
   [[ -f "${control_dir}/enabled" ]] || return 0
-  if [[ ! -s "${runtime_env}" || ! -s "${control_dir}/config.json" || \
-    ! -s "${control_dir}/update-signing-key.pem" || \
-    ! -s "${control_dir}/update-signing-public.pem" ]]; then
+  if [[ ! -s "${runtime_env}" || ! -s "${control_dir}/config.json" ]]; then
     fail_health "BPC control-plane state is incomplete"
     return 1
   fi
 
   # shellcheck disable=SC1090,SC1091
   source "${runtime_env}"
+  if [[ "${CONTROL_MODE:-primary}" != "replica" ]] && \
+    [[ ! -s "${control_dir}/update-signing-key.pem" || \
+       ! -s "${control_dir}/update-signing-public.pem" ]]; then
+    fail_health "BPC primary control-plane update signing keys are missing"
+    return 1
+  fi
   if [[ ! -s "${CONTROL_CERT:-}" || ! -s "${CONTROL_KEY:-}" ]]; then
     fail_health "BPC control-plane TLS certificate or private key is missing"
     return 1
@@ -423,7 +491,20 @@ check_control() {
 }
 
 gateway_config="${BPC_STATE_DIR}/ru-node/config.json"
-if node_has_capability gateway || [[ -s "${gateway_config}" ]]; then
+mesh_only="false"
+if [[ -s "${BPC_STATE_DIR}/enrollment.json" ]] && python3 - "${BPC_STATE_DIR}/enrollment.json" <<'PY_MODE'
+import json
+import sys
+from pathlib import Path
+
+value = json.loads(Path(sys.argv[1]).read_text())
+gateway = value.get("config", {}).get("role_config", {}).get("gateway", {})
+raise SystemExit(0 if gateway.get("mode") == "routed" else 1)
+PY_MODE
+then
+  mesh_only="true"
+fi
+if [[ -s "${gateway_config}" ]] || { node_has_capability gateway && [[ "${mesh_only}" != "true" ]]; }; then
   if [[ ! -x /usr/local/bin/xray ]]; then
     fail_health "xray binary is missing"
     exit 1
@@ -460,6 +541,7 @@ fi
 
 if [[ -s "${BPC_STATE_DIR}/enrollment.json" ]]; then
   check_joined_node
+  check_routed_mesh
 elif [[ ! -s "${BPC_STATE_DIR}/node.yaml" && ! -s "${gateway_config}" ]]; then
   fail_health "canonical Node state is missing"
   exit 1

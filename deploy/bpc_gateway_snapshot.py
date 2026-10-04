@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import json
 import os
 import secrets
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +43,20 @@ _SENSITIVE_KEYS = {
 
 class GatewaySnapshotError(RuntimeError):
     pass
+
+
+@contextmanager
+def security_runtime_lock(state_dir: Path):
+    """Serialize snapshot refresh, reads and replacement of staged runtime."""
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = state_dir / "security-runtime.lock"
+    with path.open("a+", encoding="ascii") as handle:
+        os.chmod(path, 0o600)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -294,6 +310,17 @@ def install_security_snapshot(
     *,
     now: int | None = None,
 ) -> dict[str, Any]:
+    with security_runtime_lock(state_dir):
+        return _install_security_snapshot(state_dir, snapshot, verification_key, now=now)
+
+
+def _install_security_snapshot(
+    state_dir: Path,
+    snapshot: dict[str, Any],
+    verification_key: str,
+    *,
+    now: int | None = None,
+) -> dict[str, Any]:
     runtime = state_dir / "runtime"
     current_path = runtime / "security-snapshot.json"
     current_revision = 0
@@ -324,6 +351,15 @@ def install_security_snapshot(
 
 
 def load_valid_security_snapshot(
+    state_dir: Path,
+    *,
+    now: int | None = None,
+) -> dict[str, Any]:
+    with security_runtime_lock(state_dir):
+        return _load_valid_security_snapshot(state_dir, now=now)
+
+
+def _load_valid_security_snapshot(
     state_dir: Path,
     *,
     now: int | None = None,
