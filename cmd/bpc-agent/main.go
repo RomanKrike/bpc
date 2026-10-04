@@ -141,7 +141,7 @@ func installAgent() error {
 	if err != nil {
 		return fmt.Errorf("device enrollment: %w", err)
 	}
-	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
+	if err := state.ValidateRuntimeConfig(); err != nil {
 		return fmt.Errorf("runtime config: %w", err)
 	}
 
@@ -361,7 +361,7 @@ func runAgentContext(parent context.Context) error {
 	if err != nil {
 		return fmt.Errorf("load agent state: %w", err)
 	}
-	if err := agentctl.ValidateRuntimeConfig(state.Config); err != nil {
+	if err := state.ValidateRuntimeConfig(); err != nil {
 		return err
 	}
 	_ = writeUIStatus(state)
