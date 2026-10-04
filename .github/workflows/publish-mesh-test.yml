@@ -1,0 +1,118 @@
+name: Publish verified mesh test
+
+on:
+  push:
+    branches: [release/mesh-test-20261004-2]
+    paths: [.github/workflows/publish-mesh-test.yml]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-mesh-test-20261004-2
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c7b3fd287bbf7d8b99af484a0aead013798921cc
+
+      - name: Check original CI run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = (await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: 37212735755
+            })).data;
+            if (run.conclusion !== 'success' || run.head_sha !== 'c67c11d0c3732feacc9f175e968192088559bd8d') {
+              throw new Error('Original CI run does not match the reviewed successful build');
+            }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bpc-connect-dist
+          run-id: 37212735755
+          github-token: ${{ github.token }}
+          path: candidate-artifact
+
+      - name: Verify unchanged candidate and prepare assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^{tree})" = 7c2fa9667b4f4160729c1319859fdc7d6e3de2f5
+          printf '%s  %s\n' e8f955262ee539beb4e24483eabf1622095ffbbbaea017520f65f0328cb31439 scripts/verify-mesh-candidate.py | sha256sum --check
+          mkdir publish-assets
+          bundle=candidate-artifact/release-dist/bpc-connect-deploy.tar.gz
+          expected=4ed403684df66a26f49df47af7f26dd0b3965ad385827a82745a7dcb1e53bd9d
+          python3 scripts/verify-mesh-candidate.py "$bundle" "$expected" > provenance.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(Path('provenance.json').read_text())
+          assert metadata['source_sha'] == 'c7b3fd287bbf7d8b99af484a0aead013798921cc'
+          assert metadata['live_acceptance'] == 'pending'
+          PY
+          cp "$bundle" publish-assets/bpc-connect-deploy.tar.gz
+          cp scripts/verify-mesh-candidate.py publish-assets/verify-mesh-candidate.py
+          (cd publish-assets && sha256sum bpc-connect-deploy.tar.gz verify-mesh-candidate.py > SHA256SUMS)
+          cat provenance.json
+          cat publish-assets/SHA256SUMS
+
+      - name: Publish complete prerelease without replacing latest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = 'mesh-test-20261004-2';
+            const latestBefore = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            try {
+              await github.rest.repos.getReleaseByTag({...context.repo, tag});
+              throw new Error('Prerelease tag already exists; refusing to replace assets');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const release = (await github.rest.repos.createRelease({
+              ...context.repo,
+              tag_name: tag,
+              target_commitish: 'c7b3fd287bbf7d8b99af484a0aead013798921cc',
+              name: 'BPC mesh test 2026-10-04 — candidate 12',
+              draft: true,
+              prerelease: true,
+              make_latest: 'false',
+              body: [
+                "Тестовая сборка постоянного compatibility Device ingress в routed mesh (PR #87).",
+                "На Public Node с BPC-owned WireGuard автоматически маркирует Device traffic к авторизованным site CIDR. Сохраняет source IP, проверяет Access до conntrack и блокирует fallback в legacy при остановке mesh. Главная таблица и внешние WireGuard интерфейсы не меняются.",
+                "Сначала обновите r1259489 и проверьте новую Windows TCP/SSH-сессию по tcpdump: bpcag0 -> bpcrt0. Windows Agent candidate 11 менять не требуется. Второй Public Node использует routed-only runtime и не принимает legacy wg0/bpgw0 под управление.",
+                "В CI в реальных namespace проверены сохранение source, отзыв уже открытого TCP, идемпотентное согласование и блокировка legacy fallback. Живые SSH failover, ACL withdrawal и второй Windows ingress ещё требуют acceptance.",
+                "Описание: docs/testing/compat-mesh-ingress.md.",
+                "",
+                "Неизменённый deployment archive из успешного CI run 37212735755 (PR #87).",
+                "Source: `c7b3fd287bbf7d8b99af484a0aead013798921cc`.",
+                "Version: `0.20.2-mesh.c7b3fd287bbf7d8b99af484a0aead013798921cc`.",
+                "Go: 1.23.12. Live acceptance A–H: **pending**.",
+                "",
+                "Проверьте SHA256/verifier и сделайте bpc cluster backup. Используйте абсолютный /opt/bpc/current/deploy/bpc-update.sh с --bundle и --sha256. Старый updater без --bundle скачивает stable latest.",
+                "Не удаляйте mesh-ingress-firewall.json для отключения защиты и не восстанавливайте старое состояние Raft при откате кода.",
+                "",
+                "Bundle SHA256: `4ed403684df66a26f49df47af7f26dd0b3965ad385827a82745a7dcb1e53bd9d`.",
+                "Stable main/latest не изменены."
+              ].join('\n')
+            })).data;
+            for (const name of ['bpc-connect-deploy.tar.gz', 'verify-mesh-candidate.py', 'SHA256SUMS']) {
+              const data = fs.readFileSync(`publish-assets/${name}`);
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: release.id, name, data,
+                headers: {'content-type': 'application/octet-stream', 'content-length': data.length}
+              });
+            }
+            const published = (await github.rest.repos.updateRelease({
+              ...context.repo, release_id: release.id, draft: false,
+              prerelease: true, make_latest: 'false'
+            })).data;
+            const latestAfter = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            if (latestAfter !== latestBefore) throw new Error('Stable latest changed unexpectedly');
+            core.info(`Published ${published.html_url}; stable latest remains ${latestAfter}`);
