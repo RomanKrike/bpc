@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import ipaddress
 import json
 import os
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -277,7 +279,7 @@ def _run(command: list[str], *, check: bool = True) -> subprocess.CompletedProce
     return completed
 
 
-def _active_client_devices(root: Path) -> list[dict[str, Any]]:
+def _active_client_devices(root: Path, *, include_inactive: bool = False) -> list[dict[str, Any]]:
     devices: list[dict[str, Any]] = []
     for path in sorted((root / "devices").glob("*.json")):
         try:
@@ -286,9 +288,12 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
             continue
         if is_compat_site_router(device):
             continue
-        if not bool(device.get("enabled", True)):
+        if not include_inactive and not bool(device.get("enabled", True)):
             continue
-        if bool(device.get("revoked", False)) or device.get("revoked_at") not in (None, "", 0):
+        if not include_inactive and (
+            bool(device.get("revoked", False))
+            or device.get("revoked_at") not in (None, "", 0)
+        ):
             continue
         raw_address = str(device.get("wireguard_address", "")).strip()
         if not raw_address:
@@ -303,6 +308,101 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
         device["_access_source"] = f"{interface.ip}/32"
         devices.append(device)
     return devices
+
+
+def _replace_firewall_chain(table: str, chain: str, rules: list[list[str]]) -> None:
+    """Replace only an owned chain in one kernel transaction, without a flush gap."""
+    lines = [f"*{table}", f"-F {chain}"]
+    lines.extend(" ".join(["-A", chain, *rule]) for rule in rules)
+    lines.append("COMMIT")
+    completed = subprocess.run(
+        ["iptables-restore", "--wait", "5", "--noflush"],
+        input="\n".join(lines) + "\n", capture_output=True, text=True, check=False,
+    )
+    if completed.returncode:
+        raise AccessError(completed.stderr.strip() or "firewall chain replacement failed")
+
+
+def sync_mesh_ingress(root: Path, interface: str) -> bool:
+    """Bridge the owned compatibility ingress to routed mesh, preserving source IP.
+
+    The forwarding guard survives missing/expired enrollment and stopped mesh.
+    Thus a marked packet cannot fall through to a legacy LAN route when the
+    routed daemon removes its policy rule/table. Access remains a separate gate.
+    """
+    marker = root / "mesh-ingress-firewall.json"
+    previous = read_json(marker) if marker.is_file() else {}
+    enrollment_path = root.parent / "enrollment.json"
+    enrollment = read_json(enrollment_path) if enrollment_path.is_file() else {}
+    routing = enrollment.get("config", {}).get("routing", {})
+    if not isinstance(routing, dict):
+        raise AccessError("invalid local mesh enrollment")
+    enabled = bool(routing.get("local_public")) and routing.get("version") == 1
+    if not enabled and not previous:
+        return False
+    if previous and previous.get("interface") != interface:
+        raise AccessError("mesh ingress interface changed; refusing adoption")
+
+    # Retain previously managed CIDRs/sources after withdrawal or revocation.
+    # They must be denied rather than silently routed through compatibility WG.
+    routes = set(previous.get("routes", []))
+    sources = set(previous.get("sources", []))
+    if enabled:
+        for route in routing.get("routes", []):
+            routes.add(canonical_cidr(str(route["cidr"])))
+    for item in _active_client_devices(root, include_inactive=True):
+        sources.add(item["_access_source"])
+    routes = sorted(canonical_cidr(str(value)) for value in routes)
+    sources = sorted(str(ipaddress.IPv4Interface(value).ip) + "/32" for value in sources)
+    if not routes or not sources:
+        return False
+
+    chains = [("filter", "BPC-MESH-GUARD"), ("mangle", "BPC-MESH-IN")]
+    exists = {}
+    for table, chain in chains:
+        exists[chain] = _run(["iptables", "-t", table, "-nL", chain], check=False).returncode == 0
+        if exists[chain] and previous.get("chains") != [name for _, name in chains]:
+            raise AccessError(f"ownership is not proven for chain {chain}")
+    # Persist ownership before creating chains, so interrupted setup is retryable.
+    atomic_json(marker, {"version": 1, "interface": interface,
+                         "chains": [name for _, name in chains],
+                         "routes": routes, "sources": sources})
+    for table, chain in chains:
+        if not exists[chain]:
+            _run(["iptables", "-t", table, "-N", chain])
+
+    guard, marks = [], []
+    for source in sources:
+        for route in routes:
+            match = ["-s", source, "-d", route]
+            guard.append([*match, "!", "-o", "bpcrt0", "-j", "DROP"])
+            marks.append([*match, "-j", "MARK", "--set-xmark", "0x425043/0xffffffff"])
+    # Install the guard before the mark. With a missing mesh route/rule the
+    # legacy output interface is blocked; unrelated sources/routes are untouched.
+    _replace_firewall_chain("filter", "BPC-MESH-GUARD", guard)
+    _replace_firewall_chain("mangle", "BPC-MESH-IN", marks)
+    return True
+
+
+def _prepend_access_jump(interface: str) -> None:
+    # Distinct owned comments let us remove the old jump by its exact spec
+    # after inserting the new one. Never delete a mutable numeric rule index.
+    bare = ["-i", interface, "-j", CHAIN_NAME]
+    variants = [
+        ["-i", interface, "-m", "comment", "--comment", label, "-j", CHAIN_NAME]
+        for label in ("bpc-access-a", "bpc-access-b")
+    ]
+    snapshot = _run(["iptables", "-S", "FORWARD"]).stdout
+    entries = [shlex.split(line)[2:] for line in snapshot.splitlines()
+               if line.startswith("-A FORWARD ")]
+    if entries and entries[0] in variants:
+        return
+    new = variants[1] if variants[0] in entries else variants[0]
+    _run(["iptables", "-I", "FORWARD", "1", *new])
+    for old in [bare, *[item for item in variants if item != new]]:
+        while _run(["iptables", "-C", "FORWARD", *old], check=False).returncode == 0:
+            _run(["iptables", "-D", "FORWARD", *old])
+
 
 
 def _require_owned_wireguard_interface(root: Path, config: dict[str, Any]) -> str:
@@ -329,6 +429,14 @@ def _require_owned_wireguard_interface(root: Path, config: dict[str, Any]) -> st
 
 
 def sync_access_firewall(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (root / "access-firewall.lock").open("a+") as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _sync_access_firewall_locked(root)
+
+
+def _sync_access_firewall_locked(root: Path) -> None:
     try:
         config = read_json(root / "config.json")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -354,32 +462,25 @@ def sync_access_firewall(root: Path) -> None:
                 f"refusing firewall mutation: ownership is not proven for chain {CHAIN_NAME}"
             )
     else:
+        atomic_json(state_path, {"version": 1, "interface": interface, "chain": CHAIN_NAME})
         _run(["iptables", "-N", CHAIN_NAME])
-    _run(["iptables", "-F", CHAIN_NAME])
-
-    # Replies for a connection that was permitted by the initiating Device must
-    # remain valid even if the return packet originates from another BPC peer.
-    _run(
-        [
-            "iptables",
-            "-A",
-            CHAIN_NAME,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ]
-    )
-
-    for device in _active_client_devices(root):
+    mesh_enabled = sync_mesh_ingress(root, interface)
+    rules = [["-j", "BPC-MESH-GUARD"]] if mesh_enabled else []
+    # Check current authorization before conntrack, including revoked clients.
+    # A stale established flow must not bypass an Access withdrawal.
+    known_sources = set()
+    for device in _active_client_devices(root, include_inactive=True):
         source = str(device["_access_source"])
+        known_sources.add(source)
         for route in effective_routes(root, device):
-            _run(["iptables", "-A", CHAIN_NAME, "-s", source, "-d", route, "-j", "ACCEPT"])
-        # Default deny is scoped per active client source. Gateway/static peer
-        # traffic is not caught by this rule.
-        _run(["iptables", "-A", CHAIN_NAME, "-s", source, "-j", "DROP"])
+            rules.append(["-s", source, "-d", route, "-j", "ACCEPT"])
+        rules.append(["-s", source, "-j", "DROP"])
+    if mesh_enabled:
+        for source in read_json(root / "mesh-ingress-firewall.json")["sources"]:
+            if source not in known_sources:
+                rules.append(["-s", source, "-j", "DROP"])
+    rules.append(["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
+    _replace_firewall_chain("filter", CHAIN_NAME, rules)
 
     previous_interface = str(previous.get("interface", "")).strip()
     if previous_interface and previous_interface != interface:
@@ -389,15 +490,11 @@ def sync_access_firewall(root: Path) -> None:
         ).returncode == 0:
             _run(["iptables", "-D", "FORWARD", "-i", previous_interface, "-j", CHAIN_NAME])
 
-    # Keep Access ahead of the broad Agent FORWARD accept rule. Dataplane
-    # reconciliation can reinsert its own rule at position 1, so remove every
-    # existing jump and reinsert exactly one jump at the top.
-    while _run(
-        ["iptables", "-C", "FORWARD", "-i", interface, "-j", CHAIN_NAME],
-        check=False,
-    ).returncode == 0:
-        _run(["iptables", "-D", "FORWARD", "-i", interface, "-j", CHAIN_NAME])
-    _run(["iptables", "-I", "FORWARD", "1", "-i", interface, "-j", CHAIN_NAME])
+    _prepend_access_jump(interface)
+    if mesh_enabled:
+        jump = ["-i", interface, "-j", "BPC-MESH-IN"]
+        if _run(["iptables", "-t", "mangle", "-C", "PREROUTING", *jump], check=False).returncode:
+            _run(["iptables", "-t", "mangle", "-I", "PREROUTING", "1", *jump])
 
     atomic_json(
         state_path,

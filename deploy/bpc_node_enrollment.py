@@ -1566,6 +1566,7 @@ Description=Watch replicated BPC Gateway state
 PathChanged={state_dir / "control" / "devices"}
 PathChanged={state_dir / "control" / "access"}
 PathChanged={state_dir / "control" / "config.json"}
+PathChanged={state_dir / "enrollment.json"}
 Unit=bpc-gateway-reconcile.service
 
 [Install]
