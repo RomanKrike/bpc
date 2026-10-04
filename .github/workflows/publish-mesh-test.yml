@@ -1,0 +1,117 @@
+name: Publish verified mesh test
+
+on:
+  push:
+    branches: [release/mesh-test-20261004-1]
+    paths: [.github/workflows/publish-mesh-test.yml]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: publish-mesh-test-20261004-1
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 8a55ad080828bd22e9f48e45bdf2e7e58460e3c2
+
+      - name: Check original CI run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const run = (await github.rest.actions.getWorkflowRun({
+              ...context.repo, run_id: 37185735990
+            })).data;
+            if (run.conclusion !== 'success' || run.head_sha !== '8a55ad080828bd22e9f48e45bdf2e7e58460e3c2') {
+              throw new Error('Original CI run does not match the reviewed successful build');
+            }
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bpc-connect-dist
+          run-id: 37185735990
+          github-token: ${{ github.token }}
+          path: candidate-artifact
+
+      - name: Verify unchanged candidate and prepare assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir publish-assets
+          bundle=candidate-artifact/release-dist/bpc-connect-deploy.tar.gz
+          expected=43110d9ee001a9be122da78bb34edfed3bc6962c0d782b3609ab282598443bff
+          python3 scripts/verify-mesh-candidate.py "$bundle" "$expected" > provenance.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          metadata = json.loads(Path('provenance.json').read_text())
+          assert metadata['source_sha'] == 'bd79d34fd3fc3f3eb3f482ac3a857b3f92a49058'
+          assert metadata['live_acceptance'] == 'pending'
+          PY
+          cp "$bundle" publish-assets/bpc-connect-deploy.tar.gz
+          cp candidate-artifact/release-dist/bpc-agent-windows-amd64.exe publish-assets/
+          printf '%s  %s\\n' 17099e19a8b19da780ff4b2e4d1d258486471498a177041ef48195e886883b2f publish-assets/bpc-agent-windows-amd64.exe | sha256sum --check
+          cp scripts/verify-mesh-candidate.py publish-assets/verify-mesh-candidate.py
+          (cd publish-assets && sha256sum bpc-connect-deploy.tar.gz verify-mesh-candidate.py bpc-agent-windows-amd64.exe > SHA256SUMS)
+          cat provenance.json
+          cat publish-assets/SHA256SUMS
+
+      - name: Publish complete prerelease without replacing latest
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = 'mesh-test-20261004-1';
+            const latestBefore = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            try {
+              await github.rest.repos.getReleaseByTag({...context.repo, tag});
+              throw new Error('Prerelease tag already exists; refusing to replace assets');
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            const release = (await github.rest.repos.createRelease({
+              ...context.repo,
+              tag_name: tag,
+              target_commitish: 'bd79d34fd3fc3f3eb3f482ac3a857b3f92a49058',
+              name: 'BPC mesh test 2026-10-04 — candidate 11',
+              draft: true,
+              prerelease: true,
+              make_latest: 'false',
+              body: [
+                'Тестовая сборка для ручной проверки на двух VPS, домашнем Site Router и Windows.',
+                'Исправляет повторный запуск Windows Agent после config sync с явными transport paths: проверяет их по отдельно сохранённому WireGuard peer. Ключи, формат state.json и проверка чужого peer сохраняются. Для этой ошибки достаточно заменить Windows EXE; Linux Nodes обновлять не требуется.',
+                'Процедура: docs/mesh-existing-vps.md в feature/site-router-mesh. Полный второй путь и A–H ещё требуют live настройки.',
+                '',
+                'Это неизменённый deployment archive из успешного CI run 37185735990 (PR #86).',
+                'Source: `bd79d34fd3fc3f3eb3f482ac3a857b3f92a49058`.',
+                'Version: `0.20.2-mesh.bd79d34fd3fc3f3eb3f482ac3a857b3f92a49058`.',
+                'Go: 1.23.12. Live acceptance A–H: **pending**.',
+                '',
+                'Сначала проверьте SHA256 и manifest через приложенный verifier. Для Linux используйте explicit local bundle updater из проверенного архива и сделайте `bpc cluster backup` перед обновлением.',
+                'Не используйте старый updater без `--bundle`: он скачивает стабильный latest.',
+                'Не восстанавливайте устаревшее состояние Raft/Gateway при откате кода.',
+                '',
+                'Bundle SHA256: `43110d9ee001a9be122da78bb34edfed3bc6962c0d782b3609ab282598443bff`.',
+                'Stable main/latest не изменены. Проверки реального переключения путей ещё не пройдены.'
+              ].join('\n')
+            })).data;
+            for (const name of ['bpc-connect-deploy.tar.gz', 'verify-mesh-candidate.py', 'bpc-agent-windows-amd64.exe', 'SHA256SUMS']) {
+              const data = fs.readFileSync(`publish-assets/${name}`);
+              await github.rest.repos.uploadReleaseAsset({
+                ...context.repo, release_id: release.id, name, data,
+                headers: {'content-type': 'application/octet-stream', 'content-length': data.length}
+              });
+            }
+            const published = (await github.rest.repos.updateRelease({
+              ...context.repo, release_id: release.id, draft: false,
+              prerelease: true, make_latest: 'false'
+            })).data;
+            const latestAfter = (await github.rest.repos.getLatestRelease(context.repo)).data.tag_name;
+            if (latestAfter !== latestBefore) throw new Error('Stable latest changed unexpectedly');
+            core.info(`Published ${published.html_url}; stable latest remains ${latestAfter}`);
