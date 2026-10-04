@@ -56,7 +56,7 @@ jobs:
           PY
           cp "$bundle" publish-assets/bpc-connect-deploy.tar.gz
           cp candidate-artifact/release-dist/bpc-agent-windows-amd64.exe publish-assets/
-          printf '%s  %s\\n' 17099e19a8b19da780ff4b2e4d1d258486471498a177041ef48195e886883b2f publish-assets/bpc-agent-windows-amd64.exe | sha256sum --check
+          printf '%s  %s\n' 17099e19a8b19da780ff4b2e4d1d258486471498a177041ef48195e886883b2f publish-assets/bpc-agent-windows-amd64.exe | sha256sum --check
           cp scripts/verify-mesh-candidate.py publish-assets/verify-mesh-candidate.py
           (cd publish-assets && sha256sum bpc-connect-deploy.tar.gz verify-mesh-candidate.py bpc-agent-windows-amd64.exe > SHA256SUMS)
           cat provenance.json
