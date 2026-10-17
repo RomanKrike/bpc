@@ -54,8 +54,12 @@ It does not add any Access ACCEPT or change INPUT, OUTPUT, routing or NAT.
 
 The helper creates a unique bpc-mesh-icmp-rollback-* or bpc-mark-rollback-* timer,
 verifies it is active BEFORE insertion, and serializes insertion and cleanup
-with flock. The watchdog removes the exact uniquely tagged rule independently
-of SSH and the test process. Normal completion, nonzero exit and timeout clean
+with flock. The watchdog removes the exact uniquely tagged rule at a fixed UTC
+OnCalendar deadline with Persistent=true. Relative OnActive timers must not be
+used: repeated manager reloads on the actual VPS postponed their expiry.
+The root integration test includes SIGKILL plus repeated daemon-reload to guard
+this production failure mode. The watchdog operates independently of SSH and the
+test process. Normal completion, nonzero exit and timeout clean
 up immediately. Cleanup errors leave the watchdog armed; service failures retry.
 SIGKILL cannot run finally, so the real systemd integration test explicitly
 checks that case. Keep the script and its Python executable available until
