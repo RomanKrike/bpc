@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: windows-client-preview-release
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   publish:
