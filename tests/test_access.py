@@ -122,6 +122,9 @@ def test_sync_access_firewall_enforces_routes_on_node(
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(access, "_run", fake_run)
+    monkeypatch.setattr(access, "_replace_firewall_chain",
+                        lambda table, chain, rules: commands.extend(
+                            [["iptables", "-A", chain, *rule] for rule in rules]))
     access.sync_access_firewall(tmp_path)
 
     assert ["iptables", "-N", access.CHAIN_NAME] in commands
@@ -152,6 +155,7 @@ def test_sync_access_firewall_enforces_routes_on_node(
         "1",
         "-i",
         "bpcag0",
+        "-m", "comment", "--comment", "bpc-access-a",
         "-j",
         access.CHAIN_NAME,
     ] in commands
@@ -209,3 +213,64 @@ def test_grant_replaces_exact_deny_without_removing_broader_deny(tmp_path: Path)
     access.set_access(tmp_path, "user", "u1", "deny", ["192.168.0.0/16"], now=102)
     value = device()
     assert not access.destination_allowed(tmp_path, value, "192.168.88.1")
+
+
+def ingress_fixture(tmp_path: Path, monkeypatch):
+    root = tmp_path / "control"
+    key_dir = tmp_path / "agent" / "wgshim-keys"
+    access.atomic_json(root / "config.json", {
+        "wireguard_interface": "bpcag0", "wgshim_key_dir": str(key_dir),
+    })
+    access.atomic_json(key_dir.parent / "ownership.json", {
+        "owner": "bpc", "kind": "wireguard-interface", "name": "bpcag0",
+    })
+    access.atomic_json(root / "devices" / "d1.json", device())
+    access.set_access(root, "device", "d1", "allow", ["192.168.88.0/24"])
+    access.atomic_json(tmp_path / "enrollment.json", {"config": {"routing": {
+        "version": 1, "local_public": True,
+        "routes": [{"cidr": "192.168.88.0/24", "owner_node_id": "home"}],
+    }}})
+    commands, replacements = [], []
+    chains = set()
+
+    def run(command, *, check=True):
+        commands.append(command)
+        if "-nL" in command:
+            found = command[-1] in chains
+            return SimpleNamespace(returncode=0 if found else 1, stdout="", stderr="")
+        if "-N" in command:
+            chains.add(command[-1])
+        if "-C" in command:
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(access, "_run", run)
+    monkeypatch.setattr(access, "_replace_firewall_chain",
+                        lambda table, chain, rules: replacements.append((table, chain, rules)))
+    return root, commands, replacements, chains
+
+
+@pytest.mark.parametrize("change", ["deny", "revoke", "delete", "renumber"])
+def test_compat_revoke_and_retired_addresses_block_both_directions(tmp_path, monkeypatch, change):
+    root, commands, replacements, _ = ingress_fixture(tmp_path, monkeypatch)
+    (tmp_path / "enrollment.json").unlink()  # Pure compatibility gateway.
+    access.sync_access_firewall(root)
+    if change == "deny":
+        access.set_access(root, "device", "d1", "deny", ["192.168.88.0/24"])
+    elif change == "revoke":
+        access.atomic_json(root / "devices" / "d1.json", device(revoked=True))
+    elif change == "delete":
+        (root / "devices" / "d1.json").unlink()
+    else:
+        access.atomic_json(root / "devices" / "d1.json",
+                           {**device(), "wireguard_address": "10.253.0.3/32"})
+    replacements.clear()
+    access.sync_access_firewall(root)
+    rules = next(rules for _, chain, rules in replacements if chain == access.CHAIN_NAME)
+    for match in ("-s", "-d"):
+        assert [match, "10.253.0.2/32", "-j", "DROP"] in rules
+    assert not any("10.253.0.2/32" in rule and "ACCEPT" in rule for rule in rules)
+    assert rules[-1][-1] == "ACCEPT" and "ESTABLISHED,RELATED" in rules[-1]
+    assert any(command[:6] == ["iptables", "-I", "FORWARD", "1", "-o", "bpcag0"]
+               for command in commands)
+    assert access.read_json(root / "access-firewall.json")["sources"][0] == "10.253.0.2/32"
