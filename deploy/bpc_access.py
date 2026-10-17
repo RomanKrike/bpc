@@ -384,12 +384,12 @@ def sync_mesh_ingress(root: Path, interface: str) -> bool:
     return True
 
 
-def _prepend_access_jump(interface: str) -> None:
+def _prepend_access_jump(interface: str, direction: str = "-i") -> None:
     # Distinct owned comments let us remove the old jump by its exact spec
     # after inserting the new one. Never delete a mutable numeric rule index.
-    bare = ["-i", interface, "-j", CHAIN_NAME]
+    bare = [direction, interface, "-j", CHAIN_NAME]
     variants = [
-        ["-i", interface, "-m", "comment", "--comment", label, "-j", CHAIN_NAME]
+        [direction, interface, "-m", "comment", "--comment", label, "-j", CHAIN_NAME]
         for label in ("bpc-access-a", "bpc-access-b")
     ]
     snapshot = _run(["iptables", "-S", "FORWARD"]).stdout
@@ -466,19 +466,53 @@ def _sync_access_firewall_locked(root: Path) -> None:
         _run(["iptables", "-N", CHAIN_NAME])
     mesh_enabled = sync_mesh_ingress(root, interface)
     rules = [["-j", "BPC-MESH-GUARD"]] if mesh_enabled else []
-    # Check current authorization before conntrack, including revoked clients.
+    # Check current authorization before broad established allowances.
     # A stale established flow must not bypass an Access withdrawal.
-    known_sources = set()
-    for device in _active_client_devices(root, include_inactive=True):
-        source = str(device["_access_source"])
-        known_sources.add(source)
-        for route in effective_routes(root, device):
-            rules.append(["-s", source, "-d", route, "-j", "ACCEPT"])
-        rules.append(["-s", source, "-j", "DROP"])
+    known_sources = set(previous.get("sources", []))
+    devices = _active_client_devices(root, include_inactive=True)
+    known_sources.update(str(device["_access_source"]) for device in devices)
+    # Retain retired addresses even without mesh. Otherwise a deleted Device
+    # falls through to conntrack or the broad compatibility forwarding accept.
+    known_sources = {str(ipaddress.IPv4Interface(value).ip) + "/32"
+                     for value in known_sources}
+    atomic_json(state_path, {**previous, "version": 1, "interface": interface,
+                             "chain": CHAIN_NAME, "sources": sorted(known_sources)})
+    # Authorize the original flow, not the current packet's source. A reply
+    # from another registered Device must use the initiator's grant; checking
+    # the responder's initiation policy here would break permitted peer flows.
+    authorized = [(str(device["_access_source"]), effective_routes(root, device))
+                  for device in devices]
     if mesh_enabled:
-        for source in read_json(root / "mesh-ingress-firewall.json")["sources"]:
-            if source not in known_sources:
-                rules.append(["-s", source, "-j", "DROP"])
+        known_sources.update(read_json(root / "mesh-ingress-firewall.json")["sources"])
+    active_sources = {str(device["_access_source"]) for device in devices
+                      if bool(device.get("enabled", True))
+                      and not bool(device.get("revoked", False))
+                      and device.get("revoked_at") in (None, "", 0)}
+    # Revoked, deleted or retired identities cannot participate even as a
+    # responder to another Device's otherwise-authorized connection.
+    for source in sorted(known_sources - active_sources):
+        rules.append(["-s", source, "-j", "DROP"])
+        rules.append(["-d", source, "-j", "DROP"])
+    for source, routes in authorized:
+        for route in routes:
+            rules.append(["-m", "conntrack", "--ctorigsrc", source,
+                          "--ctorigdst", route, "-j", "ACCEPT"])
+        rules.append(["-m", "conntrack", "--ctorigsrc", source, "-j", "DROP"])
+    current_sources = {source for source, _ in authorized}
+    for source in sorted(known_sources - current_sources):
+        rules.append(["-m", "conntrack", "--ctorigsrc", source, "-j", "DROP"])
+    # Also gate server-initiated flows towards a client. Original tuple matches
+    # apply to both directions, so established responses cannot bypass revoke.
+    for source, routes in authorized:
+        for route in routes:
+            rules.append(["-m", "conntrack", "--ctorigdst", source,
+                          "--ctorigsrc", route, "-j", "ACCEPT"])
+    for source in sorted(known_sources):
+        rules.append(["-m", "conntrack", "--ctorigdst", source, "-j", "DROP"])
+    # Fail closed for untracked packets too; they have no original tuple.
+    for source in sorted(known_sources):
+        rules.append(["-s", source, "-j", "DROP"])
+        rules.append(["-d", source, "-j", "DROP"])
     rules.append(["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
     _replace_firewall_chain("filter", CHAIN_NAME, rules)
 
@@ -490,6 +524,7 @@ def _sync_access_firewall_locked(root: Path) -> None:
         ).returncode == 0:
             _run(["iptables", "-D", "FORWARD", "-i", previous_interface, "-j", CHAIN_NAME])
 
+    _prepend_access_jump(interface, "-o")
     _prepend_access_jump(interface)
     if mesh_enabled:
         jump = ["-i", interface, "-j", "BPC-MESH-IN"]
@@ -502,6 +537,7 @@ def _sync_access_firewall_locked(root: Path) -> None:
             "version": 1,
             "interface": interface,
             "chain": CHAIN_NAME,
+            "sources": sorted(known_sources),
             "updated_at": int(time.time()),
         },
     )

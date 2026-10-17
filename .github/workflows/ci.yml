@@ -205,3 +205,5 @@ jobs:
       - run: pip install -e '.[dev]'
       - name: Verify compatibility ingress, established Access revocation, and fail-closed routing
         run: sudo env BPC_TEST_NETNS=1 "$(which python)" -m pytest tests/test_mesh_ingress_kernel.py -q -s
+      - name: Verify independent rollback after test failure and SIGKILL
+        run: sudo env BPC_TEST_SYSTEMD=1 "$(which python)" -m pytest tests/test_firewall_probe_systemd.py -q -s
