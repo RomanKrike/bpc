@@ -86,6 +86,8 @@ def exercise_kernel(tmp_path):
     assert "legacy0" in run("ip", "route", "get", "192.168.88.12").stdout
     assert run("ping", "-n", "-c", "1", "-W", "1", "192.168.88.12", ns=client).returncode == 0
 
+    check_device_reply_compatibility(root, run, client, site)
+
     # A real established TCP session: revoke Access between two exchanges.
     server_code = '''import socket
 s=socket.socket(); s.bind(("192.168.88.12", 2222)); s.listen()
@@ -155,3 +157,26 @@ except TimeoutError: print("blocked",flush=True)
     assert int(line.split()[0]) == 0, counter
     print(json.dumps({"tcp_source": "10.253.0.2", "revocation": "blocked established TCP",
                       "mesh_shutdown": "blocked legacy fallback"}))
+
+
+def check_device_reply_compatibility(root, run, client, site):
+    # Represent another registered Device on the far-side veth. Only d1 is
+    # granted initiation; d2 must still be allowed to return conntrack replies.
+    run("ip", "addr", "add", "10.253.0.3/32", "dev", "site0", ns=site)
+    run("ip", "route", "add", "10.253.0.3/32", "dev", "bpcrt0")
+    run("ip", "route", "add", "10.253.0.3/32", "via", "10.253.0.1", ns=client)
+    access.atomic_json(root / "devices" / "d2.json", {
+        "id": "d2", "wireguard_address": "10.253.0.3/32", "enabled": True,
+    })
+    access.set_access(root, "device", "d1", "allow", ["10.253.0.3/32"])
+    access.sync_access_firewall(root)
+    assert run("ping", "-n", "-c", "1", "-W", "1", "10.253.0.3",
+               ns=client, check=False).returncode == 0, "authorized peer replies were blocked"
+    assert run("ping", "-n", "-c", "1", "-W", "1", "-I", "10.253.0.3", "10.253.0.2",
+               ns=site, check=False).returncode != 0, "ungranted peer initiation was allowed"
+    access.atomic_json(root / "devices" / "d2.json", {
+        "id": "d2", "wireguard_address": "10.253.0.3/32", "enabled": False, "revoked": True,
+    })
+    access.sync_access_firewall(root)
+    assert run("ping", "-n", "-c", "1", "-W", "1", "10.253.0.3",
+               ns=client, check=False).returncode != 0, "revoked responder remained reachable"

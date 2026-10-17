@@ -84,3 +84,15 @@ network namespaces are required). No live VPS, Termius session, provider-console
 fallback or installed transient rollback unit has been verified in this task.
 CI and live acceptance results must be recorded separately; test code and
 previous CI results are not evidence that the new revision passed.
+
+## Peer reply compatibility
+
+Authorization is tied to the original conntrack flow, in both directions.
+An active responder Device need not have an initiation grant to send replies
+for an initiating Device's permitted connection. Its own new connections still
+require its own grants. Revoked/deleted/retired identities are denied before
+flow allowances, including when they are the responder. Untracked packets from
+or towards known Devices remain denied. The privileged namespace regression
+covers peer replies, ungranted peer initiation, revoked responders and the
+existing bidirectional TCP revoke/fallback checks. It reproduces a reply-drop
+regression in the prior current-packet-source implementation.
