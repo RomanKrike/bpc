@@ -189,6 +189,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $actual -cne "bpc-agent $expected") {
             throw "Windows Agent version mismatch: expected $expected, got $actual"
           }
+          ./scripts/test-windows-branding.ps1 -Executable ./unpacked/bin/bpc-agent-windows-amd64.exe
 
   mesh-kernel-policy:
     runs-on: ubuntu-latest

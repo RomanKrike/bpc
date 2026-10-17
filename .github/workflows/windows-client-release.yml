@@ -1,0 +1,71 @@
+name: Windows Client Preview Release
+
+on:
+  push:
+    branches: [feature/windows-connect-mvp]
+    paths:
+      - '.github/workflows/windows-client-release.yml'
+      - 'scripts/windows-client-release-version.txt'
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: windows-client-preview-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Wait for successful full CI on this exact commit
+        shell: pwsh
+        run: |
+          $endpoint = 'repos/{0}/actions/runs?head_sha={1}&event=pull_request&per_page=20' -f $env:GH_REPO, $env:GITHUB_SHA
+          for ($attempt = 0; $attempt -lt 60; $attempt++) {
+            $result = gh api $endpoint | ConvertFrom-Json
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot read CI status' }
+            $run = $result.workflow_runs | Where-Object name -eq 'CI' | Select-Object -First 1
+            if ($run -and $run.status -eq 'completed') {
+              if ($run.conclusion -ne 'success') { throw 'Full CI did not succeed' }
+              "CLIENT_CI_RUN=$($run.id)" >> $env:GITHUB_ENV
+              break
+            }
+            Start-Sleep -Seconds 20
+          }
+          if (-not $run -or $run.conclusion -ne 'success') { throw 'Timed out waiting for CI' }
+      - name: Package the verified Windows executable
+        shell: pwsh
+        run: |
+          gh run download $env:CLIENT_CI_RUN --name bpc-connect-dist --dir verified-ci
+          if ($LASTEXITCODE -ne 0) { throw 'CI artifact download failed' }
+          New-Item -ItemType Directory release | Out-Null
+          Copy-Item verified-ci/release-dist/bpc-agent-windows-amd64.exe release/BPC-Connect.exe
+          ./scripts/test-windows-branding.ps1 -Executable release/BPC-Connect.exe
+          if ($LASTEXITCODE -ne 0) { throw 'Branding verification failed' }
+          Copy-Item scripts/windows-update-existing.ps1 release/Update-Existing.ps1
+          Copy-Item docs/windows-client-release.txt release/README.txt
+          $version = (Get-Content scripts/windows-client-release-version.txt -Raw).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+-rc\.\d+$') { throw 'Invalid preview version' }
+          "CLIENT_TAG=windows-connect-v$version" >> $env:GITHUB_ENV
+          "CLIENT_VERSION=$version" >> $env:GITHUB_ENV
+          $lines = Get-ChildItem release -File | Sort-Object Name | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          }
+          $lines | Set-Content release/SHA256SUMS -Encoding ascii
+          Compress-Archive release/* "BPC-Connect-Windows-x64-$version.zip"
+      - name: Publish a separate client prerelease without changing latest
+        shell: pwsh
+        run: |
+          gh release view $env:CLIENT_TAG *> $null
+          if ($LASTEXITCODE -eq 0) { throw 'Release already exists; bump the preview version instead of overwriting it' }
+          gh release create $env:CLIENT_TAG "BPC-Connect-Windows-x64-$env:CLIENT_VERSION.zip" release/BPC-Connect.exe release/SHA256SUMS `
+            --target $env:GITHUB_SHA --prerelease --latest=false `
+            --title "BPC Connect Windows $env:CLIENT_VERSION" --notes-file docs/windows-client-release.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Client release publication failed' }

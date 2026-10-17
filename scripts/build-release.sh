@@ -17,6 +17,7 @@ trap 'rm -rf "${staging}"' EXIT
 for path in config deploy docs scripts src pyproject.toml README.md LICENSE install.sh go.mod go.sum cmd internal; do
   cp -a "${ROOT_DIR}/${path}" "${staging}/"
 done
+rm -f "${staging}/cmd/bpc-agent/rsrc_windows_"*.syso
 find "${staging}" -type d -name __pycache__ -prune -exec rm -rf {} +
 printf '%s\n' "${VERSION}" > "${staging}/VERSION"
 
@@ -75,9 +76,12 @@ rm -f "${WINTUN_ZIP}"
     -o "${staging}/bin/bpc-routed-node-linux-arm64" ./cmd/bpc-routed-node
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags="-s -w" \
     -o "${staging}/bin/bpc-wgshim-windows-amd64.exe" ./cmd/bpc-wgshim
+  GOBIN="${staging}/resource-tools" go install github.com/tc-hib/go-winres@v0.3.3
+  python3 scripts/build-windows-resources.py --tool "${staging}/resource-tools/go-winres"
   CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -buildvcs=false -trimpath \
-    -ldflags="-s -w -X main.version=${VERSION}" -o "${staging}/bin/bpc-agent-windows-amd64.exe" ./cmd/bpc-agent
+    -ldflags="-s -w -H=windowsgui -X main.version=${VERSION}" -o "${staging}/bin/bpc-agent-windows-amd64.exe" ./cmd/bpc-agent
 )
+rm -rf "${staging}/resource-tools"
 chmod 0755 "${staging}/bin/bpc-wgshim-linux-amd64" "${staging}/bin/bpc-wgshim-linux-arm64" \
   "${staging}/bin/bpc-agent-relay-linux-amd64" "${staging}/bin/bpc-agent-relay-linux-arm64" \
   "${staging}/bin/bpc-controld-linux-amd64" "${staging}/bin/bpc-controld-linux-arm64" \

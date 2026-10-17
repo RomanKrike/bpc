@@ -8,3 +8,4 @@ build/
 dist/
 .go-mod-cache/
 .go-build-cache/
+cmd/bpc-agent/rsrc_windows_*.syso

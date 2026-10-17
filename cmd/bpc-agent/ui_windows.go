@@ -21,6 +21,17 @@ const bpcConnectLogoPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAA
 const windowsUIScript = `Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Give the WinForms host its own taskbar identity instead of PowerShell's.
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class BpcApplicationIdentity {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    public static extern int SetCurrentProcessExplicitAppUserModelID(string appId);
+}
+'@
+$identityResult = [BpcApplicationIdentity]::SetCurrentProcessExplicitAppUserModelID('BPC.Connect')
+if ($identityResult -ne 0) { throw 'Cannot set BPC application identity' }
+
 __BPC_STATUS_FUNCTIONS__
 
 $uiVersion = '__BPC_UI_VERSION__'
@@ -688,6 +699,15 @@ func installWindowsUI(exePath, dir string) error {
 	if err != nil {
 		return fmt.Errorf("register UI logon launcher: %w: %s", err, out)
 	}
+	shortcut := fmt.Sprintf(
+		"$ErrorActionPreference='Stop'; $shell=New-Object -ComObject WScript.Shell; "+
+			"$programs=[Environment]::GetFolderPath('Programs'); "+
+			"$link=$shell.CreateShortcut((Join-Path $programs 'BPC Connect.lnk')); "+
+			"$link.TargetPath='%s'; $link.Arguments='ui'; $link.IconLocation='%s,0'; "+
+			"$link.Description='BPC Connect'; $link.Save()", psQuote(exePath), psQuote(exePath))
+	if out, err := runCommand("powershell.exe", "-NoProfile", "-NonInteractive", "-Command", shortcut); err != nil {
+		return fmt.Errorf("create BPC Start menu shortcut: %w: %s", err, out)
+	}
 	return nil
 }
 
@@ -696,6 +716,9 @@ func startWindowsUI() error {
 }
 
 func removeWindowsUI() error {
+	if appData, err := os.UserConfigDir(); err == nil {
+		_ = os.Remove(filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "BPC Connect.lnk"))
+	}
 	_, _ = runCommand("schtasks.exe", "/End", "/TN", uiTaskName)
 	_, _ = runCommand("schtasks.exe", "/Delete", "/TN", uiTaskName, "/F")
 	_, _ = runCommand(
