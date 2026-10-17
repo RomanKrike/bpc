@@ -6,6 +6,7 @@ on:
     paths:
       - '.github/workflows/windows-client-release.yml'
       - 'scripts/windows-client-release-version.txt'
+      - 'scripts/windows-update-existing.ps1'
 
 permissions:
   contents: write
@@ -63,6 +64,8 @@ jobs:
       - name: Publish a separate client prerelease without changing latest
         shell: pwsh
         run: |
+          $branch = gh api "repos/$env:GH_REPO/git/ref/heads/feature/windows-connect-mvp" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $branch.object.sha -ne $env:GITHUB_SHA) { throw 'Superseded release commit' }
           gh release view $env:CLIENT_TAG *> $null
           if ($LASTEXITCODE -eq 0) { throw 'Release already exists; bump the preview version instead of overwriting it' }
           gh release create $env:CLIENT_TAG "BPC-Connect-Windows-x64-$env:CLIENT_VERSION.zip" release/BPC-Connect.exe release/SHA256SUMS `

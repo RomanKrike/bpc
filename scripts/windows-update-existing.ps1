@@ -35,7 +35,7 @@ try {
         Start-Service BPCAgent -ErrorAction Stop
         (Get-Service BPCAgent).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     }
-    & $target install-ui
+    & $target install-ui | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'BPC UI registration failed' }
 } catch {
     Stop-Service BPCAgent -ErrorAction SilentlyContinue
