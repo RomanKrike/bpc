@@ -42,12 +42,16 @@ def cleanup(spec):
         raise RuntimeError("cannot verify probe cleanup; retain rollback timer")
 
 
+def require_host_namespace():
+    if Path("/proc/self/ns/net").stat().st_ino != Path("/proc/1/ns/net").stat().st_ino:
+        raise RuntimeError("probe requires the host network namespace for systemd rollback")
+
+
 def probe(args):
     import fcntl
 
     spec = rule(args.interface, args.source, args.destination, args.token, args.icmp)
-    if Path("/proc/self/ns/net").stat().st_ino != Path("/proc/1/ns/net").stat().st_ino:
-        raise RuntimeError("probe requires the host network namespace for systemd rollback")
+    require_host_namespace()
     unit = ("bpc-mesh-icmp-rollback-" if args.icmp else "bpc-mark-rollback-") + args.token
     lock_path = Path("/run") / (unit + ".lock")
     with lock_path.open("a+") as lock:

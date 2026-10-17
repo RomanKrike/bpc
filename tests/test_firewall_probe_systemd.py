@@ -16,8 +16,6 @@ from test_firewall_probe import SCRIPT, probe
                     reason="requires privileged Linux systemd host")
 @pytest.mark.parametrize("failure", ["exit", "kill"])
 def test_real_rollback_after_failed_command_or_killed_caller(failure):
-    subprocess.run(["systemctl", "is-system-running", "--wait"],
-                   check=False, timeout=15)
     token = uuid.uuid4().hex
     unit = "bpc-mesh-icmp-rollback-" + token
     rule = probe.rule("bpcprobe0", "192.0.2.1", "192.0.2.2", token, True)

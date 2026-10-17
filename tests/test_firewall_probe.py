@@ -58,6 +58,7 @@ def test_cleanup_deletes_only_exact_owned_rule(monkeypatch, status):
 ])
 def test_watchdog_precedes_mutation_and_survives_errors(tmp_path, monkeypatch, failure):
     events = []
+    monkeypatch.setattr(probe, "require_host_namespace", lambda: None)
     original_open = Path.open
     monkeypatch.setattr(Path, "open", lambda path, *a, **kw:
                         original_open(tmp_path / path.name, *a, **kw))
