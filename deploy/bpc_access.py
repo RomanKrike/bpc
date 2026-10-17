@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import ipaddress
 import json
 import os
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -277,7 +279,7 @@ def _run(command: list[str], *, check: bool = True) -> subprocess.CompletedProce
     return completed
 
 
-def _active_client_devices(root: Path) -> list[dict[str, Any]]:
+def _active_client_devices(root: Path, *, include_inactive: bool = False) -> list[dict[str, Any]]:
     devices: list[dict[str, Any]] = []
     for path in sorted((root / "devices").glob("*.json")):
         try:
@@ -286,9 +288,12 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
             continue
         if is_compat_site_router(device):
             continue
-        if not bool(device.get("enabled", True)):
+        if not include_inactive and not bool(device.get("enabled", True)):
             continue
-        if bool(device.get("revoked", False)) or device.get("revoked_at") not in (None, "", 0):
+        if not include_inactive and (
+            bool(device.get("revoked", False))
+            or device.get("revoked_at") not in (None, "", 0)
+        ):
             continue
         raw_address = str(device.get("wireguard_address", "")).strip()
         if not raw_address:
@@ -303,6 +308,40 @@ def _active_client_devices(root: Path) -> list[dict[str, Any]]:
         device["_access_source"] = f"{interface.ip}/32"
         devices.append(device)
     return devices
+
+
+def _replace_firewall_chain(table: str, chain: str, rules: list[list[str]]) -> None:
+    """Replace only an owned chain in one kernel transaction, without a flush gap."""
+    lines = [f"*{table}", f"-F {chain}"]
+    lines.extend(" ".join(["-A", chain, *rule]) for rule in rules)
+    lines.append("COMMIT")
+    completed = subprocess.run(
+        ["iptables-restore", "--wait", "5", "--noflush"],
+        input="\n".join(lines) + "\n", capture_output=True, text=True, check=False,
+    )
+    if completed.returncode:
+        raise AccessError(completed.stderr.strip() or "firewall chain replacement failed")
+
+
+def _prepend_access_jump(interface: str, direction: str = "-i") -> None:
+    # Distinct owned comments let us remove the old jump by its exact spec
+    # after inserting the new one. Never delete a mutable numeric rule index.
+    bare = [direction, interface, "-j", CHAIN_NAME]
+    variants = [
+        [direction, interface, "-m", "comment", "--comment", label, "-j", CHAIN_NAME]
+        for label in ("bpc-access-a", "bpc-access-b")
+    ]
+    snapshot = _run(["iptables", "-S", "FORWARD"]).stdout
+    entries = [shlex.split(line)[2:] for line in snapshot.splitlines()
+               if line.startswith("-A FORWARD ")]
+    if entries and entries[0] in variants:
+        return
+    new = variants[1] if variants[0] in entries else variants[0]
+    _run(["iptables", "-I", "FORWARD", "1", *new])
+    for old in [bare, *[item for item in variants if item != new]]:
+        while _run(["iptables", "-C", "FORWARD", *old], check=False).returncode == 0:
+            _run(["iptables", "-D", "FORWARD", *old])
+
 
 
 def _require_owned_wireguard_interface(root: Path, config: dict[str, Any]) -> str:
@@ -329,6 +368,14 @@ def _require_owned_wireguard_interface(root: Path, config: dict[str, Any]) -> st
 
 
 def sync_access_firewall(root: Path) -> None:
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with (root / "access-firewall.lock").open("a+") as lock:
+        os.chmod(lock.name, 0o600)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        _sync_access_firewall_locked(root)
+
+
+def _sync_access_firewall_locked(root: Path) -> None:
     try:
         config = read_json(root / "config.json")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -354,32 +401,56 @@ def sync_access_firewall(root: Path) -> None:
                 f"refusing firewall mutation: ownership is not proven for chain {CHAIN_NAME}"
             )
     else:
+        atomic_json(state_path, {"version": 1, "interface": interface, "chain": CHAIN_NAME})
         _run(["iptables", "-N", CHAIN_NAME])
-    _run(["iptables", "-F", CHAIN_NAME])
-
-    # Replies for a connection that was permitted by the initiating Device must
-    # remain valid even if the return packet originates from another BPC peer.
-    _run(
-        [
-            "iptables",
-            "-A",
-            CHAIN_NAME,
-            "-m",
-            "conntrack",
-            "--ctstate",
-            "ESTABLISHED,RELATED",
-            "-j",
-            "ACCEPT",
-        ]
-    )
-
-    for device in _active_client_devices(root):
-        source = str(device["_access_source"])
-        for route in effective_routes(root, device):
-            _run(["iptables", "-A", CHAIN_NAME, "-s", source, "-d", route, "-j", "ACCEPT"])
-        # Default deny is scoped per active client source. Gateway/static peer
-        # traffic is not caught by this rule.
-        _run(["iptables", "-A", CHAIN_NAME, "-s", source, "-j", "DROP"])
+    rules = []
+    # Check current authorization before broad established allowances.
+    # A stale established flow must not bypass an Access withdrawal.
+    known_sources = set(previous.get("sources", []))
+    devices = _active_client_devices(root, include_inactive=True)
+    known_sources.update(str(device["_access_source"]) for device in devices)
+    # Retain retired addresses even without mesh. Otherwise a deleted Device
+    # falls through to conntrack or the broad compatibility forwarding accept.
+    known_sources = {str(ipaddress.IPv4Interface(value).ip) + "/32"
+                     for value in known_sources}
+    atomic_json(state_path, {**previous, "version": 1, "interface": interface,
+                             "chain": CHAIN_NAME, "sources": sorted(known_sources)})
+    # Authorize the original flow, not the current packet's source. A reply
+    # from another registered Device must use the initiator's grant; checking
+    # the responder's initiation policy here would break permitted peer flows.
+    authorized = [(str(device["_access_source"]), effective_routes(root, device))
+                  for device in devices]
+    active_sources = {str(device["_access_source"]) for device in devices
+                      if bool(device.get("enabled", True))
+                      and not bool(device.get("revoked", False))
+                      and device.get("revoked_at") in (None, "", 0)}
+    # Revoked, deleted or retired identities cannot participate even as a
+    # responder to another Device's otherwise-authorized connection.
+    for source in sorted(known_sources - active_sources):
+        rules.append(["-s", source, "-j", "DROP"])
+        rules.append(["-d", source, "-j", "DROP"])
+    for source, routes in authorized:
+        for route in routes:
+            rules.append(["-m", "conntrack", "--ctorigsrc", source,
+                          "--ctorigdst", route, "-j", "ACCEPT"])
+        rules.append(["-m", "conntrack", "--ctorigsrc", source, "-j", "DROP"])
+    current_sources = {source for source, _ in authorized}
+    for source in sorted(known_sources - current_sources):
+        rules.append(["-m", "conntrack", "--ctorigsrc", source, "-j", "DROP"])
+    # Also gate server-initiated flows towards a client. Original tuple matches
+    # apply to both directions, so established responses cannot bypass revoke.
+    for source, routes in authorized:
+        for route in routes:
+            rules.append(["-m", "conntrack", "--ctorigdst", source,
+                          "--ctorigsrc", route, "-j", "ACCEPT"])
+    for source in sorted(known_sources):
+        rules.append(["-m", "conntrack", "--ctorigdst", source, "-j", "DROP"])
+    # Fail closed for untracked packets too; they have no original tuple.
+    for source in sorted(known_sources):
+        rules.append(["-s", source, "-j", "DROP"])
+        rules.append(["-d", source, "-j", "DROP"])
+    rules.append(["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
+    _replace_firewall_chain("filter", CHAIN_NAME, rules)
 
     previous_interface = str(previous.get("interface", "")).strip()
     if previous_interface and previous_interface != interface:
@@ -389,15 +460,8 @@ def sync_access_firewall(root: Path) -> None:
         ).returncode == 0:
             _run(["iptables", "-D", "FORWARD", "-i", previous_interface, "-j", CHAIN_NAME])
 
-    # Keep Access ahead of the broad Agent FORWARD accept rule. Dataplane
-    # reconciliation can reinsert its own rule at position 1, so remove every
-    # existing jump and reinsert exactly one jump at the top.
-    while _run(
-        ["iptables", "-C", "FORWARD", "-i", interface, "-j", CHAIN_NAME],
-        check=False,
-    ).returncode == 0:
-        _run(["iptables", "-D", "FORWARD", "-i", interface, "-j", CHAIN_NAME])
-    _run(["iptables", "-I", "FORWARD", "1", "-i", interface, "-j", CHAIN_NAME])
+    _prepend_access_jump(interface, "-o")
+    _prepend_access_jump(interface)
 
     atomic_json(
         state_path,
@@ -405,6 +469,7 @@ def sync_access_firewall(root: Path) -> None:
             "version": 1,
             "interface": interface,
             "chain": CHAIN_NAME,
+            "sources": sorted(known_sources),
             "updated_at": int(time.time()),
         },
     )
