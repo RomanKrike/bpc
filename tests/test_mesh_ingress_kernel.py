@@ -82,15 +82,20 @@ def exercise_kernel(tmp_path):
     access.set_access(root, "device", "d1", "allow", ["192.168.88.0/24"])
     access.sync_access_firewall(root)
     access.sync_access_firewall(root)  # Restart/reconcile must not add duplicate jumps.
-    assert run("iptables", "-S", "FORWARD").stdout.count("-j BPC-ACCESS") == 1
+    assert run("iptables", "-S", "FORWARD").stdout.count("-j BPC-ACCESS") == 2
     assert "legacy0" in run("ip", "route", "get", "192.168.88.12").stdout
     assert run("ping", "-n", "-c", "1", "-W", "1", "192.168.88.12", ns=client).returncode == 0
+
+    check_device_reply_compatibility(root, run, client, site)
 
     # A real established TCP session: revoke Access between two exchanges.
     server_code = '''import socket
 s=socket.socket(); s.bind(("192.168.88.12", 2222)); s.listen()
 print("ready", flush=True)
 c,a=s.accept(); print(a[0], flush=True)
+d=c.recv(32); c.sendall(d)
+input()
+c.sendall(b"unsolicited-after-revoke")
 while True:
  d=c.recv(32)
  if not d: break
@@ -100,7 +105,12 @@ while True:
 s=socket.create_connection(("192.168.88.12",2222),3)
 s.sendall(b"before"); assert s.recv(32)==b"before"
 print("connected",flush=True); sys.stdin.readline()
-s.settimeout(2); s.sendall(b"after")
+s.settimeout(2)
+try:
+ d=s.recv(32)
+ print("leaked" if d else "blocked",flush=True)
+except TimeoutError: print("blocked",flush=True)
+s.sendall(b"after")
 try:
  d=s.recv(32)
  print("leaked" if d else "blocked",flush=True)
@@ -108,7 +118,7 @@ except TimeoutError: print("blocked",flush=True)
 '''
     server = subprocess.Popen(
         ["ip", "netns", "exec", site, sys.executable, "-u", "-c", server_code],
-                              stdout=subprocess.PIPE, text=True)
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     connection = None
     try:
         assert server.stdout.readline().strip() == "ready"
@@ -119,8 +129,11 @@ except TimeoutError: print("blocked",flush=True)
         assert server.stdout.readline().strip() == "10.253.0.2"  # No source NAT.
         access.set_access(root, "device", "d1", "deny", ["192.168.88.0/24"])
         access.sync_access_firewall(root)
+        server.stdin.write("go\n")
+        server.stdin.flush()
         connection.stdin.write("go\n")
         connection.stdin.flush()
+        assert connection.stdout.readline().strip() == "blocked"
         assert connection.stdout.readline().strip() == "blocked"
         assert connection.wait(timeout=5) == 0
     finally:
@@ -144,3 +157,26 @@ except TimeoutError: print("blocked",flush=True)
     assert int(line.split()[0]) == 0, counter
     print(json.dumps({"tcp_source": "10.253.0.2", "revocation": "blocked established TCP",
                       "mesh_shutdown": "blocked legacy fallback"}))
+
+
+def check_device_reply_compatibility(root, run, client, site):
+    # Represent another registered Device on the far-side veth. Only d1 is
+    # granted initiation; d2 must still be allowed to return conntrack replies.
+    run("ip", "addr", "add", "10.253.0.3/32", "dev", "site0", ns=site)
+    run("ip", "route", "add", "10.253.0.3/32", "dev", "bpcrt0")
+    run("ip", "route", "add", "10.253.0.3/32", "via", "10.253.0.1", ns=client)
+    access.atomic_json(root / "devices" / "d2.json", {
+        "id": "d2", "wireguard_address": "10.253.0.3/32", "enabled": True,
+    })
+    access.set_access(root, "device", "d1", "allow", ["10.253.0.3/32"])
+    access.sync_access_firewall(root)
+    assert run("ping", "-n", "-c", "1", "-W", "1", "10.253.0.3",
+               ns=client, check=False).returncode == 0, "authorized peer replies were blocked"
+    assert run("ping", "-n", "-c", "1", "-W", "1", "-I", "10.253.0.3", "10.253.0.2",
+               ns=site, check=False).returncode != 0, "ungranted peer initiation was allowed"
+    access.atomic_json(root / "devices" / "d2.json", {
+        "id": "d2", "wireguard_address": "10.253.0.3/32", "enabled": False, "revoked": True,
+    })
+    access.sync_access_firewall(root)
+    assert run("ping", "-n", "-c", "1", "-W", "1", "10.253.0.3",
+               ns=client, check=False).returncode != 0, "revoked responder remained reachable"
