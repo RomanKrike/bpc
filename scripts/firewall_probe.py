@@ -6,6 +6,7 @@ Never accepts arbitrary firewall commands or changes INPUT/OUTPUT/policy.
 from __future__ import annotations
 
 import argparse
+import datetime
 import ipaddress
 import re
 import subprocess
@@ -66,8 +67,11 @@ def probe(args):
             cleanup_argv.append("--icmp")
         # Persistent timer is armed AND checked before the first mutation.
         # Retry cleanup errors independently of the calling SSH session.
-        run(["systemd-run", "--unit", unit, "--on-active", str(args.seconds) + "s",
-             "--timer-property=AccuracySec=1s", "--property=Restart=on-failure",
+        deadline = (datetime.datetime.now(datetime.UTC)
+                    + datetime.timedelta(seconds=args.seconds)).strftime("%Y-%m-%d %H:%M:%S UTC")
+        run(["systemd-run", "--unit", unit, "--on-calendar", deadline,
+             "--timer-property=AccuracySec=1s", "--timer-property=Persistent=true",
+             "--property=Restart=on-failure",
              "--property=RestartSec=5s", *cleanup_argv])
         run(["systemctl", "is-active", "--quiet", unit + ".timer"])
         try:

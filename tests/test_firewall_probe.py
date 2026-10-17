@@ -68,6 +68,9 @@ def test_watchdog_precedes_mutation_and_survives_errors(tmp_path, monkeypatch, f
                  "active" if "is-active" in argv else
                  "insert" if argv[0] == "iptables" else "stop")
         events.append(event)
+        if event == "arm":
+            assert "--on-calendar" in argv and "--on-active" not in argv
+            assert "--timer-property=Persistent=true" in argv
         if event == failure:
             raise RuntimeError(event)
         return SimpleNamespace(returncode=0)
