@@ -384,12 +384,12 @@ def sync_mesh_ingress(root: Path, interface: str) -> bool:
     return True
 
 
-def _prepend_access_jump(interface: str) -> None:
+def _prepend_access_jump(interface: str, direction: str = "-i") -> None:
     # Distinct owned comments let us remove the old jump by its exact spec
     # after inserting the new one. Never delete a mutable numeric rule index.
-    bare = ["-i", interface, "-j", CHAIN_NAME]
+    bare = [direction, interface, "-j", CHAIN_NAME]
     variants = [
-        ["-i", interface, "-m", "comment", "--comment", label, "-j", CHAIN_NAME]
+        [direction, interface, "-m", "comment", "--comment", label, "-j", CHAIN_NAME]
         for label in ("bpc-access-a", "bpc-access-b")
     ]
     snapshot = _run(["iptables", "-S", "FORWARD"]).stdout
@@ -468,17 +468,36 @@ def _sync_access_firewall_locked(root: Path) -> None:
     rules = [["-j", "BPC-MESH-GUARD"]] if mesh_enabled else []
     # Check current authorization before conntrack, including revoked clients.
     # A stale established flow must not bypass an Access withdrawal.
-    known_sources = set()
-    for device in _active_client_devices(root, include_inactive=True):
+    known_sources = set(previous.get("sources", []))
+    devices = _active_client_devices(root, include_inactive=True)
+    known_sources.update(str(device["_access_source"]) for device in devices)
+    # Retain retired addresses even without mesh. Otherwise a deleted Device
+    # falls through to conntrack or the broad compatibility forwarding accept.
+    known_sources = {str(ipaddress.IPv4Interface(value).ip) + "/32"
+                     for value in known_sources}
+    atomic_json(state_path, {**previous, "version": 1, "interface": interface,
+                             "chain": CHAIN_NAME, "sources": sorted(known_sources)})
+    current_sources = set()
+    for device in devices:
         source = str(device["_access_source"])
-        known_sources.add(source)
+        current_sources.add(source)
         for route in effective_routes(root, device):
             rules.append(["-s", source, "-d", route, "-j", "ACCEPT"])
+        rules.append(["-s", source, "-j", "DROP"])
+    for source in sorted(known_sources - current_sources):
         rules.append(["-s", source, "-j", "DROP"])
     if mesh_enabled:
         for source in read_json(root / "mesh-ingress-firewall.json")["sources"]:
             if source not in known_sources:
                 rules.append(["-s", source, "-j", "DROP"])
+                known_sources.add(source)
+    # Revoke server-to-client data too, before broad established return rules.
+    for device in devices:
+        source = str(device["_access_source"])
+        for route in effective_routes(root, device):
+            rules.append(["-d", source, "-s", route, "-j", "ACCEPT"])
+    for source in sorted(known_sources):
+        rules.append(["-d", source, "-j", "DROP"])
     rules.append(["-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"])
     _replace_firewall_chain("filter", CHAIN_NAME, rules)
 
@@ -490,6 +509,7 @@ def _sync_access_firewall_locked(root: Path) -> None:
         ).returncode == 0:
             _run(["iptables", "-D", "FORWARD", "-i", previous_interface, "-j", CHAIN_NAME])
 
+    _prepend_access_jump(interface, "-o")
     _prepend_access_jump(interface)
     if mesh_enabled:
         jump = ["-i", interface, "-j", "BPC-MESH-IN"]
@@ -502,6 +522,7 @@ def _sync_access_firewall_locked(root: Path) -> None:
             "version": 1,
             "interface": interface,
             "chain": CHAIN_NAME,
+            "sources": sorted(known_sources),
             "updated_at": int(time.time()),
         },
     )

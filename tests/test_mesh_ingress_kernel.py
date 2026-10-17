@@ -82,7 +82,7 @@ def exercise_kernel(tmp_path):
     access.set_access(root, "device", "d1", "allow", ["192.168.88.0/24"])
     access.sync_access_firewall(root)
     access.sync_access_firewall(root)  # Restart/reconcile must not add duplicate jumps.
-    assert run("iptables", "-S", "FORWARD").stdout.count("-j BPC-ACCESS") == 1
+    assert run("iptables", "-S", "FORWARD").stdout.count("-j BPC-ACCESS") == 2
     assert "legacy0" in run("ip", "route", "get", "192.168.88.12").stdout
     assert run("ping", "-n", "-c", "1", "-W", "1", "192.168.88.12", ns=client).returncode == 0
 
@@ -91,6 +91,9 @@ def exercise_kernel(tmp_path):
 s=socket.socket(); s.bind(("192.168.88.12", 2222)); s.listen()
 print("ready", flush=True)
 c,a=s.accept(); print(a[0], flush=True)
+d=c.recv(32); c.sendall(d)
+input()
+c.sendall(b"unsolicited-after-revoke")
 while True:
  d=c.recv(32)
  if not d: break
@@ -100,7 +103,12 @@ while True:
 s=socket.create_connection(("192.168.88.12",2222),3)
 s.sendall(b"before"); assert s.recv(32)==b"before"
 print("connected",flush=True); sys.stdin.readline()
-s.settimeout(2); s.sendall(b"after")
+s.settimeout(2)
+try:
+ d=s.recv(32)
+ print("leaked" if d else "blocked",flush=True)
+except TimeoutError: print("blocked",flush=True)
+s.sendall(b"after")
 try:
  d=s.recv(32)
  print("leaked" if d else "blocked",flush=True)
@@ -108,7 +116,7 @@ except TimeoutError: print("blocked",flush=True)
 '''
     server = subprocess.Popen(
         ["ip", "netns", "exec", site, sys.executable, "-u", "-c", server_code],
-                              stdout=subprocess.PIPE, text=True)
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     connection = None
     try:
         assert server.stdout.readline().strip() == "ready"
@@ -119,8 +127,11 @@ except TimeoutError: print("blocked",flush=True)
         assert server.stdout.readline().strip() == "10.253.0.2"  # No source NAT.
         access.set_access(root, "device", "d1", "deny", ["192.168.88.0/24"])
         access.sync_access_firewall(root)
+        server.stdin.write("go\n")
+        server.stdin.flush()
         connection.stdin.write("go\n")
         connection.stdin.flush()
+        assert connection.stdout.readline().strip() == "blocked"
         assert connection.stdout.readline().strip() == "blocked"
         assert connection.wait(timeout=5) == 0
     finally:

@@ -286,3 +286,29 @@ def test_mesh_ingress_refuses_foreign_chain(tmp_path, monkeypatch):
         access.sync_access_firewall(root)
     assert not any("-F" in command for command in commands)
     assert not (root / "mesh-ingress-firewall.json").exists()
+
+
+@pytest.mark.parametrize("change", ["deny", "revoke", "delete", "renumber"])
+def test_compat_revoke_and_retired_addresses_block_both_directions(tmp_path, monkeypatch, change):
+    root, commands, replacements, _ = ingress_fixture(tmp_path, monkeypatch)
+    (tmp_path / "enrollment.json").unlink()  # Pure compatibility gateway.
+    access.sync_access_firewall(root)
+    if change == "deny":
+        access.set_access(root, "device", "d1", "deny", ["192.168.88.0/24"])
+    elif change == "revoke":
+        access.atomic_json(root / "devices" / "d1.json", device(revoked=True))
+    elif change == "delete":
+        (root / "devices" / "d1.json").unlink()
+    else:
+        access.atomic_json(root / "devices" / "d1.json",
+                           {**device(), "wireguard_address": "10.253.0.3/32"})
+    replacements.clear()
+    access.sync_access_firewall(root)
+    rules = next(rules for _, chain, rules in replacements if chain == access.CHAIN_NAME)
+    for match in ("-s", "-d"):
+        assert [match, "10.253.0.2/32", "-j", "DROP"] in rules
+    assert not any("10.253.0.2/32" in rule and "ACCEPT" in rule for rule in rules)
+    assert rules[-1][-1] == "ACCEPT" and "ESTABLISHED,RELATED" in rules[-1]
+    assert any(command[:6] == ["iptables", "-I", "FORWARD", "1", "-o", "bpcag0"]
+               for command in commands)
+    assert access.read_json(root / "access-firewall.json")["sources"][0] == "10.253.0.2/32"
