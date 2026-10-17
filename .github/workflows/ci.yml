@@ -169,6 +169,10 @@ jobs:
     needs: build
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+      - name: Verify Windows connection and automatic gateway status
+        shell: powershell
+        run: ./scripts/test-windows-ui.ps1
       - uses: actions/download-artifact@v4
         with:
           name: bpc-connect-dist

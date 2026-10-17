@@ -3,6 +3,7 @@
 package main
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,10 +13,15 @@ import (
 
 const uiTaskName = "BPC Agent UI"
 
+//go:embed ui_status.ps1
+var windowsUIStatusFunctions string
+
 const bpcConnectLogoPNGBase64 = "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"
 
 const windowsUIScript = `Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+__BPC_STATUS_FUNCTIONS__
 
 $uiVersion = '__BPC_UI_VERSION__'
 $created = $false
@@ -212,6 +218,8 @@ $deviceCard.Controls.Add($ipValue)
 
 $connect = New-Object System.Windows.Forms.Button
 $connect.Text = 'Connect'
+$connect.Name = 'ConnectButton'
+$connect.AccessibleName = 'Connect to BPC'
 $connect.Location = New-Object System.Drawing.Point(24, 582)
 $connect.Size = New-Object System.Drawing.Size(472, 50)
 $connect.FlatStyle = 'Flat'
@@ -225,6 +233,8 @@ $form.Controls.Add($connect)
 
 $disconnect = New-Object System.Windows.Forms.Button
 $disconnect.Text = 'Disconnect'
+$disconnect.Name = 'DisconnectButton'
+$disconnect.AccessibleName = 'Disconnect from BPC'
 $disconnect.Location = New-Object System.Drawing.Point(24, 582)
 $disconnect.Size = New-Object System.Drawing.Size(472, 50)
 $disconnect.FlatStyle = 'Flat'
@@ -351,7 +361,7 @@ function Get-BpcStatus {
         $now = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         if ($null -ne $transport) {
             $transportAge = $now - [Int64]$transport.updated_at
-            if ($transportAge -lt -5 -or $transportAge -gt 90) {
+            if ($transportAge -lt -5 -or $transportAge -gt 10) {
                 $transport = $null
             }
         }
@@ -362,19 +372,10 @@ function Get-BpcStatus {
             if ($svc.Status -eq 'Running') { $service = 'running' } else { $service = 'stopped' }
         }
 
-        $connection = 'Disconnected'
+        $connection = Get-BpcConnectionState $service $runtime $transport $now
         $handshakeAge = -1
-        if ($service -eq 'running') {
-            $connection = 'Connecting'
-            if ($null -ne $runtime) {
-                $runtimeAge = $now - [Int64]$runtime.updated_at
-                if ($runtimeAge -ge -5 -and $runtimeAge -le 10 -and [Int64]$runtime.handshake_at -gt 0) {
-                    $handshakeAge = $now - [Int64]$runtime.handshake_at
-                    if ($handshakeAge -ge -5 -and $handshakeAge -le 180) {
-                        $connection = 'Connected'
-                    }
-                }
-            }
+        if ($null -ne $runtime -and [Int64]$runtime.handshake_at -gt 0) {
+            $handshakeAge = $now - [Int64]$runtime.handshake_at
         }
 
         $s | Add-Member -NotePropertyName service -NotePropertyValue $service -Force
@@ -412,10 +413,17 @@ function Set-ConnectionVisuals([string]$state) {
         }
         'Connecting' {
             $statusValue.Text = 'Connecting...'
-            $statusSubtitle.Text = 'Establishing secure connection'
+            $statusSubtitle.Text = 'Selecting an available gateway automatically'
             $script:ringColor = $orange
             $relayDot.ForeColor = $orange
             $tray.Text = 'BP Connect - Connecting'
+        }
+        'Reconnecting' {
+            $statusValue.Text = 'Reconnecting...'
+            $statusSubtitle.Text = 'Checking gateways and restoring your connection'
+            $script:ringColor = $orange
+            $relayDot.ForeColor = $orange
+            $tray.Text = 'BP Connect - Reconnecting'
         }
         'Unavailable' {
             $statusValue.Text = 'Unavailable'
@@ -441,7 +449,7 @@ function Refresh-Bpc {
         Set-ConnectionVisuals 'Unavailable'
         $deviceValue.Text = '-'
         $ipValue.Text = '-'
-        $relayCaption.Text = 'Relay'
+        $relayCaption.Text = 'Automatic gateway selection'
         $relayValue.Text = '-'
         $handshakeValue.Text = '-'
         $trafficValue.Text = 'RX 0 B   TX 0 B'
@@ -469,14 +477,14 @@ function Refresh-Bpc {
 
     if ($null -ne $s.transport) {
         $relayValue.Text = $s.transport.endpoint
-        $relayCaption.Text = "Relay   $($s.transport.reachable)/$($s.transport.total) ports"
+        $relayCaption.Text = Get-BpcGatewaySummary $s.transport
         if ([Int64]$s.transport.rtt_ms -gt 0) {
             $latencyValue.Text = "$($s.transport.rtt_ms) ms"
         } else {
             $latencyValue.Text = [string][char]0x2014
         }
     } else {
-        $relayCaption.Text = 'Relay'
+        $relayCaption.Text = 'Automatic gateway selection'
         $relayValue.Text = $s.relay
     }
 
@@ -488,7 +496,7 @@ function Refresh-Bpc {
         }
         $trafficValue.Text = "RX $(Format-Bytes ([UInt64]$s.runtime.rx_bytes))   TX $(Format-Bytes ([UInt64]$s.runtime.tx_bytes))"
     } else {
-        $handshakeValue.Text = 'No telemetry'
+        $handshakeValue.Text = 'Waiting for tunnel'
         $trafficValue.Text = 'RX 0 B   TX 0 B'
     }
 
@@ -724,6 +732,7 @@ func launchWindowsUI() error {
 	script := filepath.Join(uiDir, "bpc-ui.ps1")
 	body := strings.ReplaceAll(windowsUIScript, "__BPC_UI_VERSION__", version)
 	body = strings.ReplaceAll(body, "__BPC_LOGO_PNG__", bpcConnectLogoPNGBase64)
+	body = strings.ReplaceAll(body, "__BPC_STATUS_FUNCTIONS__", windowsUIStatusFunctions)
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write current BP Connect UI: %w", err)
 	}

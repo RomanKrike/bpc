@@ -361,7 +361,8 @@ def test_agent_ui_uses_real_wireguard_handshake_and_transfer_telemetry() -> None
     assert "Last handshake" in UI
     assert "Traffic" in UI
     assert "RX $(Format-Bytes" in UI
-    assert "handshakeAge -le 180" in UI
+    status_logic = pathlib.Path("cmd/bpc-agent/ui_status.ps1").read_text(encoding="utf-8")
+    assert "handshakeAge -gt 180" in status_logic
 
 
 def test_agent_ui_is_rendered_from_current_exe_and_self_refreshes() -> None:
@@ -447,7 +448,7 @@ def test_agent_ui_shows_selected_udp_endpoint_and_port_rtt() -> None:
     assert "OnEndpointReport" in AGENT
     assert "UDP endpoint" in UI
     assert "LATENCY" in UI
-    assert "ports" in UI
+    assert "Get-BpcGatewaySummary $s.transport" in UI
     assert "reachable" in UI
     assert "rtt_ms" in AGENT
 

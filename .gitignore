@@ -6,3 +6,5 @@ __pycache__/
 .coverage
 build/
 dist/
+.go-mod-cache/
+.go-build-cache/

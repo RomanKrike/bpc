@@ -39,12 +39,13 @@ type tunnelTelemetry struct {
 }
 
 type transportTelemetry struct {
-	Paths     []wgshim.PathHealth `json:"paths,omitempty"`
-	UpdatedAt int64               `json:"updated_at"`
-	Endpoint  string              `json:"endpoint"`
-	RTTMS     int64               `json:"rtt_ms"`
-	Reachable int                 `json:"reachable"`
-	Total     int                 `json:"total"`
+	NodeChangedAt int64               `json:"node_changed_at,omitempty"`
+	Paths         []wgshim.PathHealth `json:"paths,omitempty"`
+	UpdatedAt     int64               `json:"updated_at"`
+	Endpoint      string              `json:"endpoint"`
+	RTTMS         int64               `json:"rtt_ms"`
+	Reachable     int                 `json:"reachable"`
+	Total         int                 `json:"total"`
 }
 
 func main() {
@@ -612,6 +613,7 @@ func runWGShimLoopWithSwitch(
 			nodeByEndpoint[path.Endpoint] = path.Node
 		}
 		tracker := &transportNodeTracker{}
+		var nodeChangedAt int64
 		err = wgshim.RunAdaptiveClient(ctx, wgshim.AdaptiveClientConfig{
 			WireGuardHandoff: true,
 			LocalListen:      cfg.WGShimListen,
@@ -627,6 +629,7 @@ func runWGShimLoopWithSwitch(
 					report.Paths[i].Node = nodeByEndpoint[report.Paths[i].Endpoint]
 				}
 				if event, changedNode := tracker.observe(report, nodeByEndpoint); changedNode {
+					nodeChangedAt = time.Now().Unix()
 					logger.Printf(
 						"transport Public Node switched from=%s to=%s endpoint=%s",
 						event.FromNode,
@@ -649,12 +652,13 @@ func runWGShimLoopWithSwitch(
 					}
 				}
 				if writeErr := writeUITransportStatus(transportTelemetry{
-					UpdatedAt: time.Now().Unix(),
-					Endpoint:  report.Selected,
-					RTTMS:     rttMS,
-					Reachable: report.Reachable,
-					Total:     report.Total,
-					Paths:     report.Paths,
+					NodeChangedAt: nodeChangedAt,
+					UpdatedAt:     time.Now().Unix(),
+					Endpoint:      report.Selected,
+					RTTMS:         rttMS,
+					Reachable:     report.Reachable,
+					Total:         report.Total,
+					Paths:         report.Paths,
 				}); writeErr != nil && ctx.Err() == nil {
 					logger.Printf("write UI transport telemetry: %v", writeErr)
 				}
