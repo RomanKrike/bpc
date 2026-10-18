@@ -65,7 +65,11 @@ sudo bpc node info
 
 Stage 4.5 also adds backup-first canonical migration and explicit network
 ownership. Unknown or external WireGuard interfaces, routes and firewall state
-are not migration targets. See [docs/architecture.md](docs/architecture.md).
+are not migration targets. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Development: [agent instructions](AGENTS.md), [workflow and quality gates](docs/DEVELOPMENT.md),
+[roadmap](docs/ROADMAP.md), [status](docs/STATUS.md), and
+[safety/routing invariants](docs/specs/INVARIANTS.md).
 
 ## One-command Node Join
 

@@ -1,5 +1,12 @@
 # BPC Connect architecture
 
+Development entry points: [workflow and gates](DEVELOPMENT.md),
+[safety/routing contracts](specs/INVARIANTS.md), [status](STATUS.md),
+and [workflow ADR](adr/0001-codex-ecc-development-workflow.md).
+This document preserves the existing canonical model. Main includes Node route
+metadata and transport-path failover; a new site-router mesh dataplane is separate
+candidate work, not a feature introduced by these process documents.
+
 ## Canonical server model
 
 BPC server infrastructure is one **Node**. Controller, gateway, relay and
