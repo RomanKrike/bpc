@@ -164,11 +164,8 @@ func (m *PathManager) Select(now time.Time) (int, bool) {
 		return m.active, true
 	}
 	best := -1
-	// Reachable is intentionally debounced for telemetry, but an active path that
-	// just lost an entire authenticated probe round should not hold traffic when
-	// an already-warm standby is healthy.
-	// Reachability is debounced by FailureThreshold. Do not bypass that
-	// threshold for selection: a single missed round must not force failover.
+	// Honor FailureThreshold in both telemetry and path selection. One
+	// unsuccessful probe round must not cause an unnecessary emergency handoff.
 	currentUsable := m.paths[m.active].Reachable
 	for i, p := range m.paths {
 		if !p.Reachable || p.ConsecutiveFailures > 0 {
