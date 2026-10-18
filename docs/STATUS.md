@@ -52,3 +52,33 @@ Site-router mesh implementation is separate from main; no merge or deployment
 is included. Loopback acceptance is not production-network evidence. Namespace,
 systemd and real Windows/Wintun/VPS acceptance need their supported environments.
 See [roadmap](ROADMAP.md) and [quality gates](DEVELOPMENT.md).
+
+## Follow-up: Windows Connect transient Wi-Fi jitter (2026-10-18)
+
+Source baseline: main `745ffb357c594a65de9f48b7796a2bcb8e8091b4`.
+Reported Windows reproduction: typing `\\` in Explorer raised router RTT from
+approximately 3 ms to 343 ms **with both BPC and an unrelated WireGuard tunnel
+disconnected**. The underlying Wi-Fi latency spike is independent of an active
+BPC tunnel; no BPC service logs from the reproduction are available.
+
+Code inspection found two application-level contributors:
+
+- `internal/wgshim/path.go` previously bypassed its consecutive-failure
+  threshold when selecting a warm standby; one fully missed 400 ms probe
+  round could force a cross-node handoff. The fix applies the same threshold
+  to reachability, selection and migration fallback.
+- `cmd/bpc-agent/ui_windows.go` previously changed `Connected` to
+  `Connecting` solely when the last WireGuard handshake aged past 180 s,
+  even with a live local adapter. The fix treats a prior handshake plus
+  current adapter telemetry as established, then reports `Degraded` after
+  15 s of missing authenticated relay reachability.
+
+Regression coverage: `internal/wgshim/path_test.go` tests isolated probe
+loss, sustained failure and recovery without path flapping. The existing
+userspace failover and make-before-break acceptance tests remain required.
+
+**Verification status:** CI and Go tests on this branch have not yet been
+observed; Windows UI behavior, real packet continuity and Wi-Fi-triggered
+reproduction remain unverified. No production deployment, release or main
+merge has been performed. Human reviewer should check new status semantics
+and the path convergence/latency tradeoff (MESH-01/MESH-02).
