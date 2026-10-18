@@ -1,4 +1,4 @@
-BPC Connect for Windows x64 - 0.1.0 RC1
+BPC Connect for Windows x64 - 0.1.0 RC2
 
 This is a preview update for an already enrolled BPC Device.
 The application is BPC-Connect.exe with the BP logo. The UI and tray also use

@@ -46,16 +46,28 @@ jobs:
         run: |
           gh run download $env:CLIENT_CI_RUN --name bpc-connect-dist --dir verified-ci
           if ($LASTEXITCODE -ne 0) { throw 'CI artifact download failed' }
+          $checksum = @(Get-Content verified-ci/release-dist/SHA256SUMS | Where-Object { $_ -match '  bpc-connect-deploy\.tar\.gz$' })
+          if ($checksum.Count -ne 1) { throw 'Missing bundle checksum' }
+          python scripts/verify-mesh-candidate.py verified-ci/release-dist/bpc-connect-deploy.tar.gz (($checksum[0] -split '\s+')[0]) --extract verified-ci/bundle
+          if ($LASTEXITCODE -ne 0) { throw 'Bundle manifest validation failed' }
+          $manifest = Get-Content verified-ci/bundle/CANDIDATE.json -Raw | ConvertFrom-Json
+          $sourceCommit = gh api "repos/$env:GH_REPO/git/commits/$($manifest.source_sha)" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot verify CI source commit' }
+          $headCommit = gh api "repos/$env:GH_REPO/git/commits/$env:GITHUB_SHA" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $sourceCommit.tree.sha -ne $headCommit.tree.sha) { throw 'CI tree differs from release tree' }
           New-Item -ItemType Directory release | Out-Null
-          Copy-Item verified-ci/release-dist/bpc-agent-windows-amd64.exe release/BPC-Connect.exe
+          Copy-Item verified-ci/bundle/bin/bpc-agent-windows-amd64.exe release/BPC-Connect.exe
           ./scripts/test-windows-branding.ps1 -Executable release/BPC-Connect.exe
           if ($LASTEXITCODE -ne 0) { throw 'Branding verification failed' }
           Copy-Item scripts/windows-update-existing.ps1 release/Update-Existing.ps1
           Copy-Item docs/windows-client-release.txt release/README.txt
+          Copy-Item LICENSE release/LICENSE.txt
           $version = (Get-Content scripts/windows-client-release-version.txt -Raw).Trim()
           if ($version -notmatch '^\d+\.\d+\.\d+-rc\.\d+$') { throw 'Invalid preview version' }
           "CLIENT_TAG=windows-connect-v$version" >> $env:GITHUB_ENV
           "CLIENT_VERSION=$version" >> $env:GITHUB_ENV
+          @{ release_commit = $env:GITHUB_SHA; ci_source_commit = $manifest.source_sha; tree = $headCommit.tree.sha; ci_run = $env:CLIENT_CI_RUN; client_version = $version } |
+            ConvertTo-Json | Set-Content release/BUILD.json -Encoding utf8
           $lines = Get-ChildItem release -File | Sort-Object Name | ForEach-Object {
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
           }
@@ -72,3 +84,8 @@ jobs:
             --target $env:GITHUB_SHA --prerelease --latest=false `
             --title "BPC Connect Windows $env:CLIENT_VERSION" --notes-file docs/windows-client-release.txt
           if ($LASTEXITCODE -ne 0) { throw 'Client release publication failed' }
+          if ($env:CLIENT_VERSION -eq '0.1.0-rc.2') {
+            gh release edit windows-connect-v0.1.0-rc.1 --title 'Superseded: BPC Connect Windows RC1 - use RC2' `
+              --notes 'Superseded by windows-connect-v0.1.0-rc.2. RC2 waits for GUI registration to finish and checks its exit code during update. Use RC2 for installation.'
+            if ($LASTEXITCODE -ne 0) { throw 'Could not mark the older preview superseded' }
+          }
