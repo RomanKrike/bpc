@@ -361,7 +361,13 @@ def test_agent_ui_uses_real_wireguard_handshake_and_transfer_telemetry() -> None
     assert "Last handshake" in UI
     assert "Traffic" in UI
     assert "RX $(Format-Bytes" in UI
-    assert "handshakeAge -le 180" in UI
+    # Idle WireGuard sessions may have old handshakes without losing their tunnel.
+    assert "handshakeAge -le 180" not in UI
+    assert "handshakeAge -ge -5" in UI
+    assert "$runtimeAge -le 10" in UI
+    assert "$transport.reachable -lt 1" in UI
+    assert "$now - $script:unreachableSince -ge 15" in UI
+    assert "Connection degraded" in UI
 
 
 def test_agent_ui_is_rendered_from_current_exe_and_self_refreshes() -> None:
