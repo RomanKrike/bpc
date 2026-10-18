@@ -585,6 +585,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 or not bool(roles.get("relay"))
                 or not isinstance(services, dict)
                 or services.get("relay") != "active"
+                or services.get("device-ingress", "active") != "active"
                 or int(node.get("last_seen", 0) or 0) <= now - HEARTBEAT_INTERVAL * 3
                 or not isinstance(transport, dict)
                 or str(transport.get("overlay_public_key", "")).strip() != overlay_key
@@ -608,6 +609,9 @@ class ControlHandler(BaseHTTPRequestHandler):
                 ):
                     host = str(endpoint.get("host", "")).strip().lower()
                     if host:
+                        # The authenticated runtime host also labels IP-based
+                        # compatibility endpoints belonging to this same Node.
+                        host = str(transport.get("public_host", host))
                         candidates.append(
                             (str(node.get("name", node.get("node_id", ""))), host, ports)
                         )

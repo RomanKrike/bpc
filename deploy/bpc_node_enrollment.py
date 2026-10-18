@@ -65,6 +65,7 @@ from bpc_topology import (  # noqa: E402
 
 from bpc_connect.compat.runtime import (  # noqa: E402
     RuntimeCompatibilityError,
+    device_ingress_enabled,
     reconcile_transport_roles,
     routed_dataplane,
 )
@@ -347,6 +348,9 @@ def normalize_transport_runtime(raw: Any) -> dict[str, Any]:
         result["tcp_port"] = tcp_port
     if overlay_public_key:
         result["overlay_public_key"] = overlay_public_key
+    host = str(raw.get("public_host", "")).strip().lower()
+    if host and len(host) <= 253 and re.fullmatch(r"[a-z0-9][a-z0-9.-]*", host):
+        result["public_host"] = host
     return result
 
 
@@ -1319,6 +1323,7 @@ def local_transport_runtime(
             "overlay_public_key": read_env_value(
                 runtime, "AGENT_WG_SERVER_PUBLIC_KEY"
             ),
+            "public_host": read_env_value(runtime, "AGENT_PUBLIC_HOST"),
         }
     )
 
@@ -1687,7 +1692,7 @@ def reconcile_startup_gateway_state(
     if not bool(roles.get("gateway")):
         return False
     if (enrollment_uses_routed_dataplane(enrolled_state(state_dir) or {})
-            and not primary_compat_runtime(state_dir)):
+            and not gateway_has_device_ingress(state_dir)):
         return False
     if not (state_dir / "control" / "config.json").is_file():
         return False
@@ -1725,12 +1730,15 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         "state_schema_version": STATE_SCHEMA_VERSION,
         "advertised_routes": _local_advertised_routes(state_dir),
         "services": local_services(roles, enrollment.get("config", {}).get("role_config", {})),
-        "transport": (
-            {} if enrollment_uses_routed_dataplane(enrollment)
-            else local_transport_runtime(state_dir, roles)
-        ),
+        "transport": (local_transport_runtime(state_dir, roles)
+                      if not enrollment_uses_routed_dataplane(enrollment)
+                      or gateway_has_device_ingress(state_dir) else {}),
         "links": local_routed_links(),
     }
+    if payload["transport"]:
+        payload["services"]["device-ingress"] = service_state("bpc-agent-relay.service")
+        if service_state("wg-quick@bpcag0.service") != "active":
+            payload["services"]["device-ingress"] = "inactive"
     credential = str(enrollment["credential"])
     fanout_node_telemetry(
         str(enrollment["controller_url"]),
@@ -1782,7 +1790,8 @@ def send_heartbeat(state_dir: Path, enrollment: dict[str, Any]) -> dict[str, Any
         enrollment["security_revision"] = int(installed.get("revision", 0))
         enrollment["security_expires_at"] = int(installed.get("expires_at", 0))
         control_config = state_dir / "control" / "config.json"
-        if control_config.is_file() and not enrollment_uses_routed_dataplane(enrollment):
+        if control_config.is_file() and (not enrollment_uses_routed_dataplane(enrollment)
+                                        or gateway_has_device_ingress(state_dir)):
             try:
                 reconcile_local_gateway_state(state_dir)
             except (
@@ -1869,6 +1878,10 @@ def primary_compat_runtime(state_dir: Path) -> bool:
     marker = read_json(state_dir / "cluster" / "controller.json")
     return (cluster.get("controller_node_id") == node.node.id
             and marker.get("node_id") == node.node.id)
+
+
+def gateway_has_device_ingress(state_dir: Path) -> bool:
+    return device_ingress_enabled(state_dir) or primary_compat_runtime(state_dir)
 
 
 def durable_local_json(path: Path, value: dict[str, Any]) -> None:
@@ -2398,7 +2411,8 @@ def cmd_local_reconcile(args: argparse.Namespace) -> int:
     roles = enrollment.get("roles", {})
     if not isinstance(roles, dict) or not bool(roles.get("gateway")):
         return 0
-    if enrollment_uses_routed_dataplane(enrollment) and not primary_compat_runtime(args.state_dir):
+    if (enrollment_uses_routed_dataplane(enrollment)
+            and not gateway_has_device_ingress(args.state_dir)):
         return 0
     control_config = args.state_dir / "control" / "config.json"
     if not control_config.is_file():
@@ -2539,6 +2553,9 @@ def cmd_leave(args: argparse.Namespace) -> int:
     if enrollment is None:
         print("Node is not joined.")
         return 0
+    if device_ingress_enabled(args.state_dir):
+        subprocess.run(["systemctl", "disable", "--now", "bpc-agent-relay.service"],
+                       check=True, capture_output=True)
     try:
         request_json(
             str(enrollment["controller_url"]),
@@ -2644,6 +2661,9 @@ def cmd_daemon(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                 except (GatewaySnapshotError, OSError, ValueError, json.JSONDecodeError):
+                    if gateway_has_device_ingress(args.state_dir):
+                        subprocess.run(["systemctl", "stop", "bpc-agent-relay.service"],
+                                       check=False, capture_output=True)
                     subprocess.run(
                         ["systemctl", "stop", (
                             "bpc-routed-node.service"

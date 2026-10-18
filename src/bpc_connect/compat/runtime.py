@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -29,6 +30,19 @@ def _read_env_value(path: Path, name: str) -> str:
 def agent_runtime_env(state_dir: Path) -> Path:
     """Return the historical Agent runtime env behind the compatibility boundary."""
     return legacy_node_dir(state_dir) / "agent" / "runtime.env"
+
+
+def device_ingress_enabled(state_dir: Path) -> bool:
+    """Explicit local opt-in; a routed role alone never creates Agent ingress."""
+    path = state_dir / "device-ingress.json"
+    if not path.is_file():
+        return False
+    marker = json.loads(path.read_text(encoding="utf-8"))
+    enrolled = json.loads((state_dir / "enrollment.json").read_text(encoding="utf-8"))
+    if (marker.get("version") != 1 or marker.get("node_id") != enrolled.get("node_id")
+            or not marker.get("node_id")):
+        raise RuntimeCompatibilityError("Device ingress marker does not match local Node")
+    return True
 
 
 def service_state(name: str) -> str:
@@ -92,6 +106,10 @@ def reconcile_transport_roles(
 
     results: dict[str, str] = {}
     legacy = legacy_node_dir(state_dir)
+    ingress = device_ingress_enabled(state_dir)
+    if ingress and not (bool(roles.get("gateway")) and bool(roles.get("relay"))):
+        _run_checked(["systemctl", "stop", "bpc-agent-relay.service"])
+        raise RuntimeCompatibilityError("Device ingress requires gateway and relay roles")
 
     mesh_only = routed_dataplane(role_config)
     gateway = role_config.get("gateway", {})
@@ -109,6 +127,12 @@ def reconcile_transport_roles(
         results["gateway"] = "configured"
     if relay_mode == "routed" and bool(roles.get("relay")):
         results["relay"] = "configured"
+
+    if mesh_only and ingress:
+        # Provisioning is explicit. Routine joins/heartbeats never run an installer.
+        for unit in ("wg-quick@bpcag0.service", "bpc-agent-dataplane-firewall.service",
+                     "bpc-agent-relay.service"):
+            _run_checked(["systemctl", "start", unit])
 
     if bool(roles.get("gateway")) and not mesh_only:
         gateway = role_config.get("gateway", {})
