@@ -68,8 +68,15 @@ func TestPathFailureUsesWarmStandbyAndRecoveryCooldown(t *testing.T) {
 	if !m.Snapshot()[0].Reachable {
 		t.Fatal("one failed round should not flap reachability telemetry")
 	}
-	if active, changed := m.Select(now); !changed || active != 1 {
-		t.Fatal("warm standby not selected after complete active probe failure")
+	if active, changed := m.Select(now); changed || active != 0 {
+		t.Fatal("one failed probe round must not switch away from active path")
+	}
+	m.Observe(0, 1, nil, now.Add(250*time.Millisecond))
+	if m.Snapshot()[0].Reachable {
+		t.Fatal("sustained probe loss did not cross failure threshold")
+	}
+	if active, changed := m.Select(now.Add(250 * time.Millisecond)); !changed || active != 1 {
+		t.Fatal("warm standby not selected after sustained active probe failures")
 	}
 	if m.MigrationFallback() != -1 {
 		t.Fatal("failed old path incorrectly requested session preservation")
@@ -114,5 +121,38 @@ func TestOnlyWireGuardDataConfirmsMigration(t *testing.T) {
 	}
 	if isWireGuardTransportData([]byte{4, 0, 0, 0}) {
 		t.Fatal("truncated data confirmed migration")
+	}
+}
+
+func TestPathIgnoresTransientCommonUnderlayProbeLoss(t *testing.T) {
+	m := NewPathManager([]string{"ru-01", "ru-02"}, PathPolicy{})
+	now := time.Unix(100, 0)
+	primaryRTT := []time.Duration{80 * time.Millisecond, 80 * time.Millisecond, 80 * time.Millisecond}
+	standbyRTT := []time.Duration{100 * time.Millisecond, 100 * time.Millisecond, 100 * time.Millisecond}
+	m.Observe(0, 3, primaryRTT, now)
+	m.Observe(1, 3, standbyRTT, now)
+	if active, changed := m.Select(now); changed || active != 0 {
+		t.Fatal("initial selection unexpectedly switched")
+	}
+
+	// A Windows Wi-Fi hiccup can exceed the probe timeout once while the
+	// physical link and the selected relay remain usable.
+	m.Observe(0, 3, nil, now.Add(250*time.Millisecond))
+	if active, changed := m.Select(now.Add(250 * time.Millisecond)); changed || active != 0 {
+		t.Fatal("single missed probe round caused emergency failover")
+	}
+	if !m.Snapshot()[0].Reachable || m.MigrationFallback() != -1 {
+		t.Fatal("transient loss should retain active path without migration")
+	}
+
+	// Both paths continue responding. Rolling loss must converge without a
+	// delayed unnecessary migration to the higher-latency standby.
+	for i := 1; i <= 32; i++ {
+		at := now.Add(time.Duration(i+1) * 250 * time.Millisecond)
+		m.Observe(0, 3, primaryRTT, at)
+		m.Observe(1, 3, standbyRTT, at)
+		if active, changed := m.Select(at); changed || active != 0 {
+			t.Fatalf("healthy primary flapped after recovery on probe round %d", i)
+		}
 	}
 }

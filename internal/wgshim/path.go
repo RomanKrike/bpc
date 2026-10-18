@@ -106,8 +106,10 @@ func (m *PathManager) Observe(index int, sent int, replies []time.Duration, now 
 	p.FailureCount += uint64(sent - len(replies))
 	if len(replies) == 0 {
 		p.ConsecutiveFailures++
-		p.failedAt = now
+		// A single missed probe round can occur during short underlay jitter.
+		// Penalize a path only after the configured consecutive-failure threshold.
 		if p.ConsecutiveFailures >= m.policy.FailureThreshold {
+			p.failedAt = now
 			p.Reachable = false
 		}
 		return
@@ -162,10 +164,9 @@ func (m *PathManager) Select(now time.Time) (int, bool) {
 		return m.active, true
 	}
 	best := -1
-	// Reachable is intentionally debounced for telemetry, but an active path that
-	// just lost an entire authenticated probe round should not hold traffic when
-	// an already-warm standby is healthy.
-	currentUsable := m.paths[m.active].Reachable && m.paths[m.active].ConsecutiveFailures == 0
+	// Honor FailureThreshold in both telemetry and path selection. One
+	// unsuccessful probe round must not cause an unnecessary emergency handoff.
+	currentUsable := m.paths[m.active].Reachable
 	for i, p := range m.paths {
 		if !p.Reachable || p.ConsecutiveFailures > 0 {
 			continue
@@ -263,7 +264,7 @@ func (m *PathManager) MigrationFallback() int {
 		return -1
 	}
 	p := m.paths[m.migratingFrom]
-	if !p.Reachable || p.ConsecutiveFailures > 0 {
+	if !p.Reachable {
 		return -1
 	}
 	return m.migratingFrom
