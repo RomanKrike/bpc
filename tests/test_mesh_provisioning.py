@@ -226,11 +226,13 @@ def test_heartbeat_promotion_installs_security_without_touching_wireguard(tmp_pa
     assert enrollment.load_node_config(tmp_path / "node.yaml").node.roles.has("gateway")
 
 
-def test_expired_mesh_snapshot_stops_only_mesh_service(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ingress", [False, True])
+def test_expired_mesh_snapshot_stops_only_owned_transports(tmp_path, monkeypatch, ingress):
     record = {"roles": {"gateway": True, "relay": True},
               "config": {"role_config": {"gateway": {"mode": "routed"}}}}
     enrollment.write_local_enrollment(tmp_path, record)
     calls = []
+    monkeypatch.setattr(enrollment, "gateway_has_device_ingress", lambda _: ingress)
     monkeypatch.setattr(enrollment, "reconcile_roles", lambda *a: None)
 
     def offline(*args, **kwargs):
@@ -252,7 +254,8 @@ def test_expired_mesh_snapshot_stops_only_mesh_service(tmp_path, monkeypatch):
                         calls.append(command) or SimpleNamespace(returncode=0))
     with pytest.raises(EndIteration):
         enrollment.cmd_daemon(SimpleNamespace(state_dir=tmp_path))
-    assert calls == [["systemctl", "stop", "bpc-routed-node.service"]]
+    expected = [["systemctl", "stop", "bpc-agent-relay.service"]] if ingress else []
+    assert calls == [*expected, ["systemctl", "stop", "bpc-routed-node.service"]]
 
 
 def test_mesh_status_does_not_claim_connected_without_links(tmp_path, monkeypatch, capsys):

@@ -1,0 +1,36 @@
+BPC Connect for Windows x64 - 0.1.0 RC2
+
+This is a preview update for an already enrolled BPC Device.
+The application is BPC-Connect.exe with the BP logo. The UI and tray also use
+the BP logo and the BPC.Connect taskbar identity. The current GUI is WinForms
+hosted internally by hidden PowerShell; it is not a replacement GUI engine.
+
+UPDATE AN EXISTING DEVICE
+1. Save your work and unpack the ZIP into a local directory.
+2. Open PowerShell as Administrator in that directory.
+3. Run: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Update-Existing.ps1
+4. Open BPC Connect from the Start menu. Connect resumes automatic gateway choice.
+
+The update keeps Device identity, enrollment, state.json, Wintun and the service
+startup setting. It replaces the Agent executable, retains the previous EXE
+under ProgramData\BPC\previous-*, and attempts immediate rollback if installation
+raises an error. The script is one-time setup; use the BPC shortcut afterwards.
+It is not a timed connectivity rollback and the update has not been accepted
+on the user's live laptop yet. Keep local console access during the update.
+
+If an old PowerShell shortcut is pinned, unpin it and pin BPC Connect from Start.
+Explorer may cache an old icon until the shortcut is recreated or the shell refreshes.
+The EXE is not Authenticode-signed; Windows may display a security prompt.
+
+NEW DEVICE
+An enrollment installer from your BPC administrator is still required. This
+public release contains no enrollment token and cannot grant network access.
+
+ROLL BACK MANUALLY (Administrator PowerShell)
+Stop-Service BPCAgent
+Copy-Item 'C:\ProgramData\BPC\previous-TIMESTAMP\bpc-agent.exe' 'C:\ProgramData\BPC\bpc-agent.exe' -Force
+Start-Service BPCAgent
+Replace TIMESTAMP with the actual retained backup. Do not delete state.json.
+
+Automatic gateway failover may cause existing TCP/RDP sessions to reconnect.
+The server fleet and server stable/latest release are unchanged by this release.

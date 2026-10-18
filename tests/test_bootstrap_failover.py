@@ -65,6 +65,8 @@ def test_heartbeat_retains_bootstrap_pool_if_response_has_no_alternatives(tmp_pa
     record = {"node_id": "a" * 32, "name": "home-01", "credential": "secret",
               "roles": {"site_router": True}, "controller_url": A, "controllers": [A, B]}
     monkeypatch.setattr(enrollment, "local_services", lambda _, role_config=None: {})
+    monkeypatch.setattr(enrollment, "reconcile_routed_runtime", lambda *a: None)
+    monkeypatch.setattr(enrollment, "fanout_node_telemetry", lambda *a, **k: None)
     monkeypatch.setattr(enrollment, "request_json", lambda *a, **k: {
         "_controller_url": B, "roles": {"site_router": True}, "config": {"controllers": []},
     })

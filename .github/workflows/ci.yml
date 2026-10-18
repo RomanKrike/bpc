@@ -169,6 +169,10 @@ jobs:
     needs: build
     timeout-minutes: 10
     steps:
+      - uses: actions/checkout@v4
+      - name: Verify Windows connection and automatic gateway status
+        shell: powershell
+        run: ./scripts/test-windows-ui.ps1
       - uses: actions/download-artifact@v4
         with:
           name: bpc-connect-dist
@@ -185,6 +189,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or $actual -cne "bpc-agent $expected") {
             throw "Windows Agent version mismatch: expected $expected, got $actual"
           }
+          ./scripts/test-windows-branding.ps1 -Executable ./unpacked/bin/bpc-agent-windows-amd64.exe
 
   mesh-kernel-policy:
     runs-on: ubuntu-latest
