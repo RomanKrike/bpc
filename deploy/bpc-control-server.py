@@ -340,6 +340,9 @@ class ControlHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path.split("?", 1)[0] in ("/bpc", "/bpc/") or self.path.startswith("/bpc/"):
+            self._serve_client_download()
+            return
         if self.path == "/v1/health":
             self._health()
             return
@@ -359,6 +362,38 @@ class ControlHandler(BaseHTTPRequestHandler):
             self._serve_devices()
             return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _serve_client_download(self) -> None:
+        clean = self.path.split("?", 1)[0]
+        name = "index.html" if clean in ("/bpc", "/bpc/") else clean.removeprefix("/bpc/")
+        types = {"index.html": "text/html; charset=utf-8", "style.css": "text/css; charset=utf-8",
+                 "SHA256SUMS": "text/plain; charset=utf-8"}
+        if name not in {*types, "BPC-Connect-Setup.exe"}:
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        directory = self._root() / "client-download"
+        path = directory / name
+        if not path.is_file() or path.is_symlink():
+            self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        if name.endswith(".exe"):
+            self._send_binary(path, name)
+            return
+        if path.stat().st_size > 128 * 1024:
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        body = path.read_bytes()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", types[name])
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Security-Policy",
+                         "default-src 'none'; style-src 'self'; "
+                         "base-uri 'none'; frame-ancestors 'none'")
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
         if self.path == "/v1/auth/login":
