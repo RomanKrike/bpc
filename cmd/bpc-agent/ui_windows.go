@@ -28,6 +28,7 @@ $exe = Join-Path $env:ProgramData 'BPC\bpc-agent.exe'
 $statusPath = Join-Path $env:ProgramData 'BPC\ui-status.json'
 $runtimePath = Join-Path $env:ProgramData 'BPC\ui-runtime.json'
 $transportPath = Join-Path $env:ProgramData 'BPC\ui-transport.json'
+$script:unreachableSince = 0
 
 $logoBytes = [Convert]::FromBase64String('__BPC_LOGO_PNG__')
 $logoStream = New-Object System.IO.MemoryStream(,$logoBytes)
@@ -370,11 +371,24 @@ function Get-BpcStatus {
                 $runtimeAge = $now - [Int64]$runtime.updated_at
                 if ($runtimeAge -ge -5 -and $runtimeAge -le 10 -and [Int64]$runtime.handshake_at -gt 0) {
                     $handshakeAge = $now - [Int64]$runtime.handshake_at
-                    if ($handshakeAge -ge -5 -and $handshakeAge -le 180) {
+                    if ($handshakeAge -ge -5) {
+                        # An idle WireGuard peer need not re-handshake every 180s.
+                        # Runtime telemetry proves the adapter is still running;
+                        # authenticated relay probes are a separate health signal.
                         $connection = 'Connected'
+                        if ($null -eq $transport -or [Int64]$transport.reachable -lt 1) {
+                            if ($script:unreachableSince -eq 0) { $script:unreachableSince = $now }
+                            if ($now - $script:unreachableSince -ge 15) {
+                                $connection = 'Degraded'
+                            }
+                        } else {
+                            $script:unreachableSince = 0
+                        }
                     }
                 }
             }
+        } else {
+            $script:unreachableSince = 0
         }
 
         $s | Add-Member -NotePropertyName service -NotePropertyValue $service -Force
@@ -416,6 +430,13 @@ function Set-ConnectionVisuals([string]$state) {
             $script:ringColor = $orange
             $relayDot.ForeColor = $orange
             $tray.Text = 'BP Connect - Connecting'
+        }
+        'Degraded' {
+            $statusValue.Text = 'Connection degraded'
+            $statusSubtitle.Text = 'Waiting for a reachable relay'
+            $script:ringColor = $orange
+            $relayDot.ForeColor = $orange
+            $tray.Text = 'BP Connect - Degraded'
         }
         'Unavailable' {
             $statusValue.Text = 'Unavailable'
