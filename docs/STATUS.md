@@ -35,6 +35,13 @@ The first relay framing test exposed a test-only telemetry timing assumption:
 the receiver can finish reading before the relay increments its byte counter.
 The test now waits for that asynchronous counter, without changing forwarding.
 
+Follow-up review requires canonical Base64 encodings for identity and WireGuard
+keys. This prevents alternate whitespace/newline spellings of the same key from
+bypassing the distinct-participant key comparison. Added regression cases and
+re-ran P2P tests plus `go vet ./internal/p2p`: passed. The full-suite/fuzz and
+cross-build observations above describe the initial foundation; final Linux CI
+must also cover this validation-only follow-up on the PR head.
+
 Full Linux Python/Go/race, process, privileged Access/systemd and cross-build jobs
 remain required on the PR head. CI evidence is recorded separately after it is
 observed. This localhost acceptance does not establish real Sunshine streaming,

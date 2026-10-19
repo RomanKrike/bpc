@@ -91,10 +91,11 @@ func (g Grant) validate(now time.Time) error {
 			return errors.New("invalid P2P participant")
 		}
 		key, err := base64.StdEncoding.DecodeString(p.IdentityKey)
-		if err != nil || len(key) != ed25519.PublicKeySize || bytes.Equal(key, make([]byte, ed25519.PublicKeySize)) {
+		if err != nil || len(key) != ed25519.PublicKeySize || base64.StdEncoding.EncodeToString(key) != p.IdentityKey || bytes.Equal(key, make([]byte, ed25519.PublicKeySize)) {
 			return errors.New("invalid Device identity key")
 		}
-		if _, err := agentctl.ParseWGKey(p.WireGuardKey, false); err != nil {
+		wgKey, err := agentctl.ParseWGKey(p.WireGuardKey, false)
+		if err != nil || base64.StdEncoding.EncodeToString(wgKey[:]) != p.WireGuardKey {
 			return errors.New("invalid Device WireGuard key")
 		}
 	}

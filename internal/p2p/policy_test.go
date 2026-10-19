@@ -98,6 +98,8 @@ func TestGrantTrustBoundaries(t *testing.T) {
 		func(g *Grant) { g.Version = 2 },
 		func(g *Grant) { g.Participants[1].Address = netip.MustParseAddr("127.0.0.1") },
 		func(g *Grant) { g.Participants[1].WireGuardKey = "invalid" },
+		func(g *Grant) { g.Participants[1].IdentityKey = g.Participants[0].IdentityKey + "\n" },
+		func(g *Grant) { g.Participants[1].WireGuardKey = " " + g.Participants[0].WireGuardKey },
 	} {
 		g := f.grant
 		change(&g)
