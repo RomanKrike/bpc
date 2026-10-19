@@ -21,9 +21,11 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
+from p2p_support import seed_p2p
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "deploy"))
 import bpc_node_enrollment as enrollment  # noqa: E402
+import bpc_p2p as p2p  # noqa: E402
 
 BINARY = os.environ.get("BPC_CONTROLD_BINARY")
 pytestmark = pytest.mark.skipif(not BINARY, reason="set BPC_CONTROLD_BINARY for process acceptance")
@@ -213,6 +215,80 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         expected = (nodes[0]["root"] / relative).read_bytes()
         for node in nodes:
             until(lambda node=node: (node["root"] / relative).read_bytes() == expected)
+        # P2P authorization uses the same real Raft/mTLS cluster. Seed only
+        # synthetic canonical records; never bypass consensus for auth state.
+        p2p_state = seed_p2p(
+            tmp_path / "p2p-seed", ca_key=ca_key, ca_cert=ca, cluster_id="process-test"
+        )
+        operations = []
+        for path in sorted(p2p_state["control"].rglob("*.json")):
+            relative_path = "control/" + path.relative_to(p2p_state["control"]).as_posix()
+            operations.append(
+                {
+                    "op": "put",
+                    "path": relative_path,
+                    "data": base64.b64encode(path.read_bytes()).decode(),
+                }
+            )
+        assert api(
+            nodes[0],
+            "/v1/mutate",
+            {
+                "version": 1,
+                "id": secrets.token_hex(16),
+                "kind": "SeedP2PAcceptance",
+                "issued_at": int(time.time()),
+                "operations": operations,
+            },
+        )["ok"]
+        for node in nodes:
+            pki = node["root"] / "cluster" / "pki"
+            pki.mkdir()
+            for name in ("cluster-ca.key", "cluster-ca.crt"):
+                (pki / name).write_bytes(
+                    (tmp_path / "p2p-seed" / "cluster" / "pki" / name).read_bytes()
+                )
+        issued = p2p.issue(
+            nodes[0]["root"] / "control",
+            p2p_state["tokens"][0],
+            {
+                "capabilities": [p2p.CAPABILITY],
+                "host_device_id": p2p_state["devices"][1]["id"],
+            },
+        )["ticket"]
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[1]["local"]
+        )
+        host_info = p2p.info(nodes[1]["root"] / "control", p2p_state["tokens"][1])
+        message = p2p.consent_message(
+            p2p_state["tokens"][1], host_info["device_id"], False, host_info["access_sha256"]
+        )
+        assert p2p.consent(
+            nodes[1]["root"] / "control",
+            p2p_state["tokens"][1],
+            {
+                "capabilities": [p2p.CAPABILITY],
+                "enabled": False,
+                "expected_sha256": host_info["access_sha256"],
+                "signature": base64.b64encode(p2p_state["keys"][1].sign(message)).decode(),
+            },
+        )["ok"]
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[2]["local"]
+        )
+        policy = p2p.sync(
+            nodes[2]["root"] / "control",
+            p2p_state["tokens"][0],
+            {
+                "capabilities": [p2p.CAPABILITY],
+                "tickets": [issued],
+            },
+        )["checkpoint"]
+        document = json.loads(base64.b64decode(policy))
+        assert json.loads(base64.b64decode(document["payload"]))["allowed"] == []
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[0]["local"]
+        )
         # Persistence: restart the second actual process with the same Raft DB.
         nodes[1]["process"].terminate()
         nodes[1]["process"].wait(timeout=10)
@@ -239,6 +315,16 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         print(
             "3 processes: mTLS, nonvoter/voter, endpoint replication, restart, leader failover PASS"
         )
+        # No quorum must prevent signing, including after successful earlier
+        # issuance. Only isolated child processes are stopped here.
+        for node in nodes[1:]:
+            if node is not successor:
+                node["process"].terminate()
+                node["process"].wait(timeout=10)
+        with pytest.raises(enrollment.bpc_control_state.ControlStateError):
+            p2p.issue(successor["root"] / "control", p2p_state["tokens"][0], {
+                "capabilities": [p2p.CAPABILITY], "host_device_id": p2p_state["devices"][1]["id"],
+            })
     finally:
         for node in nodes:
             process = node.get("process")

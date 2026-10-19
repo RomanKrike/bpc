@@ -149,9 +149,11 @@ jobs:
           cache: false
       - run: pip install -e '.[dev]'
       - run: go build -o /tmp/bpc-controld ./cmd/bpc-controld
-      - run: pytest tests/test_control_processes.py -s
+      - run: go test -c -o /tmp/bpc-p2p.test ./internal/p2p
+      - run: pytest tests/test_control_processes.py tests/test_p2p_authority.py tests/test_p2p_http.py -s
         env:
           BPC_CONTROLD_BINARY: /tmp/bpc-controld
+          BPC_P2P_TEST_BINARY: /tmp/bpc-p2p.test
 
 
   access-kernel-rollback:

@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -221,10 +222,35 @@ func wgHex(t *testing.T, key string) string {
 // deliberately UNFILTERED: a malicious client cannot bypass the HOST's Access.
 // No OS routes, firewall rules or real gaming software are modified.
 func TestWireGuardRelayEndpointAccess(t *testing.T) {
+	runWireGuardRelayEndpointAccess(t, false)
+}
+
+func TestControllerPolicyRevokesWireGuardTraffic(t *testing.T) {
+	runWireGuardRelayEndpointAccess(t, true)
+}
+
+func runWireGuardRelayEndpointAccess(t *testing.T, managed bool) {
 	if testing.Short() {
 		t.Skip("real userspace WireGuard/TLS/TCP/UDP acceptance")
 	}
 	f := newFixture(t)
+	var hostStore *PolicyStore
+	var hostSession *Session
+	if managed {
+		var err error
+		hostStore, err = CreatePolicyStore(filepath.Join(t.TempDir(), "host-policy.db"), fixtureTrust(f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = hostStore.Close() })
+		hostSession, err = hostStore.Track(f.ticket)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = hostStore.Apply(signedPolicy(t, f, 8, true)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	r, address, config := startRelay(t, f)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -245,7 +271,11 @@ func TestWireGuardRelayEndpointAccess(t *testing.T) {
 			t.Fatal(err)
 		}
 		stacks[i] = stack
-		policies[i], err = NewPolicy(f.session, Side(i))
+		policySession := f.session
+		if managed && i == int(Host) {
+			policySession = hostSession
+		}
+		policies[i], err = NewPolicy(policySession, Side(i))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -372,7 +402,13 @@ func TestWireGuardRelayEndpointAccess(t *testing.T) {
 	}
 	// Local endpoint revoke must stop an established stream even with relay
 	// transport still available and an adversarial initiator ignoring revoke.
-	policies[1].Revoke()
+	if managed {
+		if _, err = hostStore.Apply(signedPolicy(t, f, 9, false)); err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		policies[1].Revoke()
+	}
 	if _, err = client.Write(payload); err != nil {
 		t.Fatal(err)
 	}

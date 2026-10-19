@@ -1,5 +1,63 @@
 # Status and evidence
 
+## P2P Controller authority (2026-10-20)
+
+Runtime/CI revision `a402f9315a8a9ab1035bb81d57641d940410beea`.
+Stacked on draft #93 at `042b81504a323b53544722dcfa593cc19f1f9e64`; main
+remains unchanged. [ADR 0003](adr/0003-p2p-controller-authority.md) records the
+task, API, invariants, compatibility, costs and rollback.
+
+Implemented default-off Controller info/consent/issue/sync APIs, exact-state
+Raft authorization fences, same-owner Access and both-Device consent, client
+methods and a durable endpoint policy verifier. Signed denials and revision/time
+floors survive restart; cached allows do not. Managed receiving-host filtering
+stops established TCP/UDP after a signed denial, even with an unfiltered peer.
+Runtime staging includes the new Python module on primary and replica. No new
+FSM operations, state prefixes, dependency, gateway path or installed Agent
+enabling. Polling/renewal, Windows ownership/Wintun, NAT and product acceptance
+remain pending. A committed consent change is not an endpoint enforcement ack.
+
+Local Windows amd64 / Go 1.23.12, Python 3.12: `ruff check .`,
+`gofmt -l cmd internal`, `git diff --check` passed.
+`go test ./internal/p2p ./internal/agentctl ./internal/controlplane ./internal/wgshim
+-count=1 -timeout=120s` passed. The final full Go run also passed these packages
+and Agent; overall native Windows failure remains the pre-existing Linux-only
+`syscall.Kill` in controld. Local race requires CGO, unavailable here.
+
+`go test -c -o ../cross-build/p2p-authority-windows.test.exe ./internal/p2p`
+and `BPC_P2P_TEST_BINARY=<that binary> pytest tests/test_p2p_authority.py
+tests/test_p2p_http.py tests/test_agent.py --basetemp=../p2p-stage2-final-temp -q`
+passed 68 tests, including the Python-issued grant/checkpoint accepted by Go;
+HTTP module skipped on Windows (Linux fcntl dependency). Socket/DB tests ran
+with loopback and workspace temporary files outside sandbox restrictions.
+`GOOS=linux GOARCH=amd64 go vet ./...` and the existing CI cross-build
+matrix passed locally (CGO_ENABLED=0; WGShim Linux amd64/arm64 and Windows
+amd64; relay/controld Linux amd64/arm64; Agent Windows amd64).
+`pytest tests/test_identity.py tests/test_gateway_snapshot.py tests/test_config.py
+--basetemp=../p2p-existing-policy-temp -q` passed 15 tests. Adding the existing
+Access suite stopped collection on Windows because it imports Linux fcntl;
+this is not an Access pass.
+
+Real Linux public HTTP and three-process Raft/mTLS acceptance, including
+quorum-loss rejection, are added to control-runtime CI; until observed they
+are pending, as are the full existing Linux gates. No infrastructure changed.
+
+Initial Linux CI on `0601de2` exposed one stale deployment-test fixture:
+its isolated runtime copy omitted the new bpc_p2p module, although both actual
+installers already staged it. Updated that fixture; no test gate was weakened.
+The initial Python run had 335 passes / 6 skips and this failure. Final CI
+results below supersede that failed run once observed.
+
+Linux CI on `66043605b25396b787833a8706441fceee525d03` subsequently passed
+all nine jobs: Go tests/vet/cross-builds, race, Python 3.11/3.12/3.13,
+control-runtime, privileged Access/systemd rollback, ShellCheck and packaging.
+[Run 39326476714](https://github.com/RomanKrike/bpc/actions/runs/39326476714).
+Python 3.11 reported 336 passed / 6 skipped; the dedicated control-runtime job
+executes the otherwise skipped process and cross-language cases (20 passed,
+including public HTTP). No runtime changes follow that successful revision;
+this evidence-only update is also subject to the unchanged CI workflow.
+This remains isolated/userspace evidence, not installed Windows streaming.
+
 ## Device P2P foundation (2026-10-20)
 
 Baseline: main `ef947e751315885d1196e97391d9139eed973480`. Contract commit

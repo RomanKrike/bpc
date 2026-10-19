@@ -1,5 +1,5 @@
 // Package p2p implements the opt-in Device-to-Device session foundation.
-// It is not wired into Controller issuance or the installed Windows Agent yet.
+// Controller authority is opt-in; installed Windows Agent integration is pending.
 package p2p
 
 import (
@@ -12,6 +12,7 @@ import (
 	"errors"
 	"io"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/RomanKrike/bpc/internal/agentctl"
@@ -64,14 +65,27 @@ type signedGrant struct {
 // deadline retains the local monotonic clock to prevent clock rollback from
 // extending a lease already received in this process.
 type Session struct {
-	grant    Grant
-	ticket   []byte
-	deadline time.Time
+	grant         Grant
+	ticket        []byte
+	deadline      time.Time
+	managed       bool
+	authorization atomic.Pointer[sessionAuthorization]
+}
+
+type sessionAuthorization struct {
+	deadline  time.Time
+	expiresAt int64
 }
 
 func (s *Session) Grant() Grant { return s.grant }
 
 func (s *Session) active(now time.Time) bool {
+	if s.managed {
+		policy := s.authorization.Load()
+		if policy == nil || now.Unix() >= policy.expiresAt || !now.Before(policy.deadline) {
+			return false
+		}
+	}
 	return now.Unix() >= s.grant.IssuedAt && now.Unix() < s.grant.ExpiresAt && now.Before(s.deadline)
 }
 
