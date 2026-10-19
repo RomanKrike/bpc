@@ -1,5 +1,53 @@
 # Status and evidence
 
+## Device P2P foundation (2026-10-20)
+
+Baseline: main `ef947e751315885d1196e97391d9139eed973480`. Contract commit
+`f0f9ef0`; implementation/tests `512f7ff` (same source tree as locally tested
+`0b81714`). See
+[ADR 0002](adr/0002-device-p2p-session-boundary.md) and
+[remaining stages](ROADMAP.md#moonlight--sunshine-device-p2p-2026-10-20).
+
+Implemented an isolated `internal/p2p` package: same-owner signed grants with
+60-second maximum lease, TLS 1.3 relay with Device key proof bound to its TLS
+channel, bounded opaque WireGuard forwarding, and plaintext endpoint filtering.
+There is no production caller, installed listener, Controller grant API, Windows
+UI, direct/NAT traversal, or schema/dependency change. This is a foundation
+prototype, not an enabled Moonlight/Sunshine feature.
+
+Local environment: Windows amd64, Go 1.23.12. Test keys/addresses are synthetic.
+Socket tests ran outside the restricted sandbox with workspace temporary files;
+the sandbox's initial loopback/temporary-file errors are environment failures.
+No OS routes, firewall rules, installed clients or real infrastructure changed.
+
+| Check | Observed result |
+| --- | --- |
+| `go test ./internal/p2p -count=1 -timeout=60s` | Passed, including real userspace WG/TLS/TCP/UDP, malicious unfiltered initiator, forbidden host port, established-flow host revoke, idle lease expiry, proof replay and bounded/concurrent policy tests |
+| `go test ./... -count=1 -timeout=120s` | Agent, agentctl, controlplane, p2p and wgshim passed; overall FAILED because existing controld uses Linux-only `syscall.Kill` on Windows |
+| `GOOS=linux GOARCH=amd64 go vet ./...` | Passed; cross-platform static check, not Linux runtime evidence |
+| `go test -race ./...` | Unavailable locally: `-race requires cgo`; Linux CI must pass it |
+| `go test ./internal/p2p -run='^$' -fuzz=FuzzUntrustedGrant -fuzztime=10s -parallel=2` | Passed, 39,751 executions; bounded run, not exhaustive parser proof |
+| `gofmt -l cmd internal`; `git diff --check` | Passed after CRLF-only checkout normalization; no changes to existing Go sources |
+| Existing CI cross-build matrix | Passed locally: WGShim Linux amd64/arm64 and Windows amd64; relay/controld Linux amd64/arm64; Agent Windows amd64 |
+| P2P test cross-compilation | Passed for Linux amd64/arm64 and Windows amd64; cross-compilation is not execution |
+
+The first relay framing test exposed a test-only telemetry timing assumption:
+the receiver can finish reading before the relay increments its byte counter.
+The test now waits for that asynchronous counter, without changing forwarding.
+
+Full Linux Python/Go/race, process, privileged Access/systemd and cross-build jobs
+remain required on the PR head. CI evidence is recorded separately after it is
+observed. This localhost acceptance does not establish real Sunshine streaming,
+Windows Wintun integration, WAN latency, NAT reachability or stream continuity.
+Persistent revocation/revision reconciliation and Controller authorization are
+mandatory before installed Agent enabling. No merge, deployment or release was
+performed by this change.
+
+The host initially blocked publishing pending explicit user authorization to
+send the implementation to GitHub. The user subsequently authorized this branch
+push and a draft PR for CI, without merge, deployment or release. CI results on
+the published PR head must still be observed before claiming those gates pass.
+
 ## Inspected baseline
 
 2026-10-18: main `c00f265e4a0e464e15fa3804ef4adca3b5be1803`, package
