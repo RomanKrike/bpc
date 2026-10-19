@@ -19,6 +19,18 @@ changes; label missing coverage in the PR and STATUS.
 | MESH-03 | Discovery MUST use authenticated relay health plus matching canonical overlay public key; Controller-issued endpoints MUST NOT be replaced by arbitrary heartbeat hostnames. | `deploy/bpc_node_enrollment.py`; `tests/test_node_enrollment.py`, `test_public_node_provisioning.py` |
 | MESH-04 | Advertised non-default IPv4 CIDRs MUST belong to a site_router Node; heartbeat and route withdrawal MUST commit together. Route advertisement MUST NOT itself confer Device Access. | `tests/test_node_enrollment.py` (`test_site_router_heartbeat_owns_canonical_routes`), controlplane tests; distributed-control-plane.md |
 
+## Device P2P prototype contracts
+
+These apply to the isolated `internal/p2p` foundation; installed Agent enabling
+and Controller policy delivery are not implemented. See
+[ADR 0002](../adr/0002-device-p2p-session-boundary.md).
+
+| ID | Contract | Verification |
+| --- | --- | --- |
+| P2P-01 | A session MUST bind trusted cluster/issuer, revision, distinct same-owner Device identity/WG keys, service and bounded expiry. Device proof MUST bind a fresh relay challenge and TLS channel. A ticket alone MUST NOT authenticate a Device. | `internal/p2p/policy_test.go`, `relay_test.go` |
+| P2P-02 | The receiving endpoint MUST enforce plaintext source/destination, service, initiation/reply direction and expiry independently of the initiator. Local revoke MUST invalidate established flows in both directions; expiry MUST NOT renew offline. | Real userspace WG/TLS/TCP/UDP test with an unfiltered initiator, plus policy tests; installed Windows and persistent revocation remain pending |
+| P2P-03 | A session relay MUST forward only between authenticated participants, retain WG payload encryption, bound connection/session/frame/flow resources, close revoked sessions and reject ticket reattachment for the outstanding lease lifetime. | `internal/p2p/relay_test.go`; no claim of restart persistence or production deployment |
+
 ## Candidate mesh obligations (not implemented by this change)
 
 Before merging a site-router dataplane candidate, specify and test: authenticated
