@@ -207,6 +207,9 @@ def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_runtime(
     assert 'release_access="${BPC_ROOT}/current/deploy/bpc_access.py"' in ENABLE_CONTROL
     access_copy = 'install -m 0600 "${release_access}" "${runtime_tmp}/bpc_access.py"'
     assert access_copy in ENABLE_CONTROL
+    for installer in (ENABLE_CONTROL, ENABLE_CONTROL_REPLICA):
+        assert 'release_p2p="${BPC_ROOT}/current/deploy/bpc_p2p.py"' in installer
+        assert 'install -m 0600 "${release_p2p}" "${runtime_tmp}/bpc_p2p.py"' in installer
     assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in ENABLE_CONTROL
     assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
 

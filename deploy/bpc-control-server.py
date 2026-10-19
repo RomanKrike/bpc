@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 import bpc_control_state
+import bpc_p2p
 from bpc_access import AccessError, effective_routes, sync_access_firewall
 from bpc_controller_enrollment import (
     ControllerEnrollmentError,
@@ -338,6 +339,9 @@ class ControlHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/v1/p2p/info":
+            self._p2p("info")
+            return
         if self.path == "/v1/health":
             self._health()
             return
@@ -359,6 +363,9 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
+        if self.path in {"/v1/p2p/consent", "/v1/p2p/issue", "/v1/p2p/sync"}:
+            self._p2p(self.path.rsplit("/", 1)[1])
+            return
         if self.path == "/v1/auth/login":
             self._auth_login()
             return
@@ -393,6 +400,32 @@ class ControlHandler(BaseHTTPRequestHandler):
             self._node_leave()
             return
         self.send_error(HTTPStatus.NOT_FOUND)
+
+    def _p2p(self, action: str) -> None:
+        token = self._bearer()
+        if token is None:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"error": "Device credential required"})
+            return
+        body = None if action == "info" else self._read_body_json()
+        if action != "info" and body is None:
+            return
+        try:
+            operation = getattr(bpc_p2p, action)
+            result = (
+                operation(self._root(), token)
+                if body is None
+                else operation(self._root(), token, body)
+            )
+        except bpc_p2p.P2PError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": str(exc)})
+            return
+        except bpc_control_state.ControlStateError as exc:
+            self._send_json(HTTPStatus(exc.status), {"error": "P2P consensus unavailable"})
+            return
+        except (OSError, ValueError, TypeError, KeyError):
+            self._send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "P2P authority unavailable"})
+            return
+        self._send_json(HTTPStatus.OK, result)
 
     def _health(self) -> None:
         try:
@@ -1198,66 +1231,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             {
                 "device_id": device_id,
                 **compatibility_enrollment_response(legacy_credential),
-                "config": config,
-                "wireguard": wireguard,
-            },
-        )
-
-    def _serve_config(self) -> None:
-        authenticated = self._authorized_device()
-        if authenticated is None:
-            return
-        _, device = authenticated
-        if bool(device.get("revoked", False)):
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return
-        try:
-            config = self._config_for_device(device)
-        except (OSError, ValueError, json.JSONDecodeError):
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-        self._send_json(HTTPStatus.OK, config)
-
-    def _heartbeat(self) -> None:
-        authenticated = self._authorized_device()
-        if authenticated is None:
-            return
-        device_path, device = authenticated
-        if bool(device.get("revoked", False)):
-            self.send_error(HTTPStatus.FORBIDDEN)
-            return
-        body = self._read_body_json()
-        if body is None:
-            return
-        device["last_seen"] = int(time.time())
-        device["last_version"] = str(body.get("version", ""))[:32]
-        device["last_transport"] = str(body.get("transport", ""))[:32]
-        device["last_status"] = str(body.get("status", ""))[:64]
-        try:
-            self._put_device(device, kind="DeviceHeartbeat")
-        except (OSError, ValueError, bpc_control_state.ControlStateError):
-            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-        self._send_json(HTTPStatus.OK, {"ok": True})
-
-    def _node_join(self) -> None:
-        body = self._read_body_json()
-        if body is None:
-            return
-        token = str(body.get("token", "")).strip()
-        public_key = str(body.get("public_key", "")).strip()
-        name = str(body.get("name", "")).strip()
-        node_join_lock: threading.Lock = self.server.node_join_lock  # type: ignore[attr-defined]
-        try:
-            with node_join_lock:
-                metadata = join_token_metadata(self._root(), token)
-                roles = [str(item) for item in metadata.get("roles", [])]
-                assigned_node_id: str | None = None
-                extra_operations: list[dict[str, Any]] = []
-                controller_payload: dict[str, Any] | None = None
-                if "controller" in roles:
-                    endpoints = metadata.get("endpoints", [])
-                    invited_host = next((str(item["host"]) for item in endpoints
+                "config":…637 tokens truncated…for item in endpoints
                                          if item.get("public") and item.get("enabled")), "")
                     advertise_host = str(
                         body.get("controller_advertise_host", "")
