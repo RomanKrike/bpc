@@ -42,6 +42,12 @@ Real Linux public HTTP and three-process Raft/mTLS acceptance, including
 quorum-loss rejection, are added to control-runtime CI; until observed they
 are pending, as are the full existing Linux gates. No infrastructure changed.
 
+Initial Linux CI on `0601de2` exposed one stale deployment-test fixture:
+its isolated runtime copy omitted the new bpc_p2p module, although both actual
+installers already staged it. Updated that fixture; no test gate was weakened.
+The initial Python run had 335 passes / 6 skips and this failure. Final CI
+results below supersede that failed run once observed.
+
 ## Device P2P foundation (2026-10-20)
 
 Baseline: main `ef947e751315885d1196e97391d9139eed973480`. Contract commit
