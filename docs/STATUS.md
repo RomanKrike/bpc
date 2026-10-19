@@ -146,4 +146,3 @@ observed; Windows UI behavior, real packet continuity and Wi-Fi-triggered
 reproduction remain unverified. No production deployment, release or main
 merge has been performed. Human reviewer should check new status semantics
 and the path convergence/latency tradeoff (MESH-01/MESH-02).
-
