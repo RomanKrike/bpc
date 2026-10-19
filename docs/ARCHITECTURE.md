@@ -7,6 +7,12 @@ This document preserves the existing canonical model. Main includes Node route
 metadata and transport-path failover; a new site-router mesh dataplane is separate
 candidate work, not a feature introduced by these process documents.
 
+The opt-in Device-to-Device work begins with an isolated
+[P2P session foundation](adr/0002-device-p2p-session-boundary.md). It does not
+enable a new installed Agent path or replace gateway `BPC-ACCESS`. Endpoint
+enforcement and Controller authorization integration are prerequisites for
+enabling direct traffic that would bypass that gateway boundary.
+
 ## Canonical server model
 
 BPC server infrastructure is one **Node**. Controller, gateway, relay and

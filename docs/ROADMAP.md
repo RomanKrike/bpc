@@ -17,3 +17,20 @@ architecture explicitly defers the new site-router dataplane. Do not import a
 mesh branch or mark it complete as part of documentation/process adoption.
 Feature work starts with its own acceptance criteria and a small plan, not an
 automatic rewrite of the current runtime.
+
+## Moonlight / Sunshine Device P2P (2026-10-20)
+
+Windows-to-Windows is the requested first platform. Scope and acceptance live in
+[ADR 0002](adr/0002-device-p2p-session-boundary.md), rather than changing the
+existing gateway path contract.
+
+| Stage | State / remaining work |
+| --- | --- |
+| Session foundation | Isolated signed-grant, TLS relay and endpoint filter prototype; userspace WG TCP/UDP acceptance; see STATUS for evidence |
+| Controller integration | Pending: committed Access/ownership evaluation, trust distribution, revision floors, revocation delivery and capability negotiation |
+| Windows runtime | Pending: owned peer/route reconciliation and filters, gateway compatibility, opt-in configuration and deployable relay lifecycle |
+| Direct transport | Pending: UDP relay, same-socket STUN/ICE, data-confirmed switching and rollback |
+| Product acceptance | Pending: Windows UI and real Moonlight/Sunshine, NAT/MTU/suspend/restart/offline tests |
+
+The foundation is not a shipped P2P feature. Existing mesh candidates, production
+deployments and release actions remain separate work.
