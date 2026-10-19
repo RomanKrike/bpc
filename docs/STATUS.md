@@ -48,6 +48,16 @@ installers already staged it. Updated that fixture; no test gate was weakened.
 The initial Python run had 335 passes / 6 skips and this failure. Final CI
 results below supersede that failed run once observed.
 
+Linux CI on `66043605b25396b787833a8706441fceee525d03` subsequently passed
+all nine jobs: Go tests/vet/cross-builds, race, Python 3.11/3.12/3.13,
+control-runtime, privileged Access/systemd rollback, ShellCheck and packaging.
+[Run 39326476714](https://github.com/RomanKrike/bpc/actions/runs/39326476714).
+Python 3.11 reported 336 passed / 6 skipped; the dedicated control-runtime job
+executes the otherwise skipped process and cross-language cases (20 passed,
+including public HTTP). No runtime changes follow that successful revision;
+this evidence-only update is also subject to the unchanged CI workflow.
+This remains isolated/userspace evidence, not installed Windows streaming.
+
 ## Device P2P foundation (2026-10-20)
 
 Baseline: main `ef947e751315885d1196e97391d9139eed973480`. Contract commit
