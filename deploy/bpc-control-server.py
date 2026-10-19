@@ -1231,7 +1231,66 @@ class ControlHandler(BaseHTTPRequestHandler):
             {
                 "device_id": device_id,
                 **compatibility_enrollment_response(legacy_credential),
-                "config":…637 tokens truncated…for item in endpoints
+                "config": config,
+                "wireguard": wireguard,
+            },
+        )
+
+    def _serve_config(self) -> None:
+        authenticated = self._authorized_device()
+        if authenticated is None:
+            return
+        _, device = authenticated
+        if bool(device.get("revoked", False)):
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return
+        try:
+            config = self._config_for_device(device)
+        except (OSError, ValueError, json.JSONDecodeError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(HTTPStatus.OK, config)
+
+    def _heartbeat(self) -> None:
+        authenticated = self._authorized_device()
+        if authenticated is None:
+            return
+        device_path, device = authenticated
+        if bool(device.get("revoked", False)):
+            self.send_error(HTTPStatus.FORBIDDEN)
+            return
+        body = self._read_body_json()
+        if body is None:
+            return
+        device["last_seen"] = int(time.time())
+        device["last_version"] = str(body.get("version", ""))[:32]
+        device["last_transport"] = str(body.get("transport", ""))[:32]
+        device["last_status"] = str(body.get("status", ""))[:64]
+        try:
+            self._put_device(device, kind="DeviceHeartbeat")
+        except (OSError, ValueError, bpc_control_state.ControlStateError):
+            self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        self._send_json(HTTPStatus.OK, {"ok": True})
+
+    def _node_join(self) -> None:
+        body = self._read_body_json()
+        if body is None:
+            return
+        token = str(body.get("token", "")).strip()
+        public_key = str(body.get("public_key", "")).strip()
+        name = str(body.get("name", "")).strip()
+        node_join_lock: threading.Lock = self.server.node_join_lock  # type: ignore[attr-defined]
+        try:
+            with node_join_lock:
+                metadata = join_token_metadata(self._root(), token)
+                roles = [str(item) for item in metadata.get("roles", [])]
+                assigned_node_id: str | None = None
+                extra_operations: list[dict[str, Any]] = []
+                controller_payload: dict[str, Any] | None = None
+                if "controller" in roles:
+                    endpoints = metadata.get("endpoints", [])
+                    invited_host = next((str(item["host"]) for item in endpoints
                                          if item.get("public") and item.get("enabled")), "")
                     advertise_host = str(
                         body.get("controller_advertise_host", "")
