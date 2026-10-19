@@ -55,6 +55,15 @@ send the implementation to GitHub. The user subsequently authorized this branch
 push and a draft PR for CI, without merge, deployment or release. CI results on
 the published PR head must still be observed before claiming those gates pass.
 
+Linux CI was subsequently observed successful on runtime revision
+`cc82d5b3e549855b71b329b665491b020185d880`:
+[run 39321630146](https://github.com/RomanKrike/bpc/actions/runs/39321630146).
+All nine jobs passed: Go tests/vet/cross-builds, race, control-runtime,
+access-kernel-rollback, Python 3.11/3.12/3.13, ShellCheck and packaging. This
+status-only evidence record follows that tested runtime; no runtime source
+changes follow the successful run. It remains userspace/isolated Linux evidence,
+not installed Windows or real Sunshine/NAT acceptance.
+
 ## Inspected baseline
 
 2026-10-18: main `c00f265e4a0e464e15fa3804ef4adca3b5be1803`, package
@@ -137,3 +146,4 @@ observed; Windows UI behavior, real packet continuity and Wi-Fi-triggered
 reproduction remain unverified. No production deployment, release or main
 merge has been performed. Human reviewer should check new status semantics
 and the path convergence/latency tradeoff (MESH-01/MESH-02).
+
