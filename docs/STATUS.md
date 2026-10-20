@@ -1,5 +1,37 @@
 # Status and evidence
 
+## Existing User password administration (2026-10-20)
+
+Baseline a4337438512b90d8c84eac96f08c573552a2d3e2 / 0.22.3. Operator confirmed
+both servers updated, healthy 2/2 quorum, zero lag and healthy routes; next
+Windows recovery needs a forgotten account password. No password requested or
+received; no server access by Codex.
+
+Task/plan: add root `bpc user passwd USER` with existing double-entry/no-echo
+input and optional stdin; retain User ID/status, Devices/keys, Access, P2P and
+existing credentials. This changes a password only, not session revocation.
+Require existing account, same length rules and Argon2id. Commit only the User
+record with expected SHA256 via existing Raft mutation; quorum/conflict failure
+must not write locally or undo a concurrent disable. No schema/floor/network
+change (SEC-02/04/05, MESH-01). Version 0.22.4 uses normal bpc-update.
+Verify old/new password, missing/disabled account, unchanged other records,
+stdin/prompt cancellation, conflict/quorum and real follower-to-leader replication.
+Local Windows tests and full existing CI evidence are recorded at the PR.
+Actual operator password change and pc004 acceptance remain pending.
+Local Windows identity tests: 15 passed. Ruff passed after correcting line lengths.
+The attempted process-suite collection cannot import Linux fcntl on Windows;
+no process test passed locally. Real mTLS follower replication remains a CI gate.
+Initial CI passed the new real follower password write/replication/authentication
+checks, but exposed a pre-existing final P2P quorum-case fixture issue: consent
+was still withdrawn and LOCAL_API still pointed to an earlier follower. Restore
+consent through the signed API while healthy, bind LOCAL_API to the actual tested
+survivor, then require the expected 503 rather than accepting unrelated errors.
+No production consent/authorization behavior changed. Final CI remains required.
+The second run then correctly exposed that the final fixture stopped only one
+of the two other Controllers, leaving 2/3 quorum after an earlier restart. Stop
+both other isolated child processes for this case and keep the strict 503 check.
+This strengthens the existing quorum test; it does not change runtime behavior.
+
 ## Updater live filesystem archive (2026-10-20)
 
 Baseline c1a26add93e44a636995428b9f82a7f1a17e8b65 / 0.22.2. Operator update on

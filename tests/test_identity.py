@@ -65,6 +65,115 @@ def test_user_password_is_argon2id_and_plaintext_is_never_stored(tmp_path: Path)
         identity.authenticate_local_user(tmp_path, "roman", "wrong password")
 
 
+@pytest.mark.parametrize("disabled", [False, True])
+def test_password_change_preserves_identity_sessions_and_status(tmp_path, disabled):
+    user = identity.create_user(tmp_path, "account", "old synthetic password")
+    private = Ed25519PrivateKey.generate()
+    _device(tmp_path, user["id"], private)
+    path = tmp_path / "identity/users" / f"{user['id']}.json"
+    if disabled:
+        user["enabled"] = False
+        identity.atomic_json(path, user)
+    token, _ = identity.issue_access_credential(tmp_path, user_id=user["id"],
+                                               device_id=None, scope="login")
+    before = {p: p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    changed = identity.change_user_password(tmp_path, "AcCoUnT", "new synthetic password")
+    assert {k: v for k, v in changed.items() if k != "password_hash"} == {
+        k: v for k, v in user.items() if k != "password_hash"}
+    assert identity.PASSWORD_HASHER.verify(changed["password_hash"], "new synthetic password")
+    assert "new synthetic password" not in path.read_text()
+    for other, data in before.items():
+        if other != path:
+            assert other.read_bytes() == data
+    with pytest.raises(identity.IdentityError):
+        identity.authenticate_local_user(tmp_path, "account", "old synthetic password")
+    if disabled:
+        with pytest.raises(identity.IdentityError):
+            identity.authenticate_local_user(tmp_path, "account", "new synthetic password")
+    else:
+        authenticated = identity.authenticate_local_user(
+            tmp_path, "account", "new synthetic password")
+        assert authenticated["id"] == user["id"]
+        assert identity.authorize_access_credential(tmp_path, token)[0]["id"] == user["id"]
+
+
+@pytest.mark.parametrize("password", ["short", "x" * 1025])
+def test_password_change_invalid_length_does_not_write(tmp_path, password):
+    user = identity.create_user(tmp_path, "account", "old synthetic password")
+    path = tmp_path / "identity/users" / f"{user['id']}.json"
+    before = path.read_bytes()
+    with pytest.raises(identity.IdentityError, match="password must"):
+        identity.change_user_password(tmp_path, "account", password)
+    assert path.read_bytes() == before
+
+
+def test_password_change_missing_user_does_not_create(tmp_path):
+    with pytest.raises(identity.IdentityError, match="user not found"):
+        identity.change_user_password(tmp_path, "missing", "new synthetic password")
+    assert not list(tmp_path.rglob("*.json"))
+
+
+@pytest.mark.parametrize("failure", [None, "conflict", "quorum"])
+def test_password_change_consensus_precondition_and_no_local_fallback(
+    tmp_path, monkeypatch, failure,
+):
+    import hashlib
+
+    user = identity.create_user(tmp_path, "account", "old synthetic password")
+    path = tmp_path / "identity/users" / f"{user['id']}.json"
+    before = path.read_bytes()
+    monkeypatch.setattr(identity.bpc_control_state, "cluster_enabled", lambda root: True)
+    monkeypatch.setattr(identity.bpc_control_state, "strong_read", lambda root: {})
+
+    def commit(root, kind, operations):
+        assert kind == "ChangeUserPassword" and len(operations) == 1
+        op = operations[0]
+        assert op["path"] == path
+        assert op["expected_sha256"] == hashlib.sha256(before).hexdigest()
+        if failure == "conflict":
+            concurrent = {**user, "enabled": False}
+            path.write_text(json.dumps(concurrent))
+            raise identity.bpc_control_state.ControlStateError("conflict", 409)
+        if failure == "quorum":
+            raise identity.bpc_control_state.ControlStateError("quorum unavailable", 503)
+        path.write_bytes(op["data"])
+        return {}
+
+    monkeypatch.setattr(identity.bpc_control_state, "mutation", commit)
+    if failure:
+        with pytest.raises(identity.IdentityError, match="conflict|quorum"):
+            identity.change_user_password(tmp_path, "account", "new synthetic password")
+        stored = json.loads(path.read_bytes())
+        assert stored["password_hash"] == user["password_hash"]
+        assert stored["enabled"] == (failure != "conflict")
+    else:
+        identity.change_user_password(tmp_path, "account", "new synthetic password")
+        authenticated = identity.authenticate_local_user(
+            tmp_path, "account", "new synthetic password")
+        assert authenticated["id"] == user["id"]
+
+
+def test_password_command_stdin_output_and_prompt_validation(tmp_path, monkeypatch, capsys):
+    import io
+
+    identity.create_user(tmp_path, "account", "old synthetic password")
+    monkeypatch.setattr(identity.sys, "stdin", io.StringIO("new synthetic password\n"))
+    args = identity.parser().parse_args(["--state-dir", str(tmp_path), "user-passwd",
+                                        "account", "--password-stdin"])
+    assert args.func(args) == 0
+    output = capsys.readouterr().out
+    assert "Password changed for account" in output and "new synthetic password" not in output
+    answers = iter(["пароль-тестовый", "пароль-тестовый"])
+    monkeypatch.setattr(identity.getpass, "getpass", lambda *a: next(answers))
+    assert identity._read_password(False) == "пароль-тестовый"
+    answers = iter(["first", "different"])
+    with pytest.raises(identity.IdentityError, match="do not match"):
+        identity._read_password(False)
+    monkeypatch.setattr(identity.sys, "stdin", io.StringIO(""))
+    with pytest.raises(identity.IdentityError, match="empty"):
+        identity._read_password(True)
+
+
 def test_access_credential_is_short_lived_and_only_hash_is_stored(tmp_path: Path) -> None:
     user = identity.create_user(tmp_path, "roman", "correct horse battery staple", now=100)
     token, expires = identity.issue_access_credential(

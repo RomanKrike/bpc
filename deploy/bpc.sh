@@ -36,6 +36,7 @@ Usage:
   bpc cluster replay-checkpoint --source https://LEADER:9447
   bpc cluster reconcile-revision [--gateway-receipt NODE_ID=SNAPSHOT_FILE]
   bpc user add USER [--password-stdin]
+  bpc user passwd USER [--password-stdin]
   bpc user disable USER
   bpc device list
   bpc device revoke DEVICE
@@ -160,6 +161,10 @@ case "${scope}" in
       disable)
         shift
         exec python3 "${IDENTITY}" --state-dir "${CONTROL_DIR}" user-disable "$@"
+        ;;
+      passwd)
+        shift
+        exec python3 "${IDENTITY}" --state-dir "${CONTROL_DIR}" user-passwd "$@"
         ;;
       *)
         usage >&2

@@ -225,6 +225,32 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         expected = (nodes[0]["root"] / relative).read_bytes()
         for node in nodes:
             until(lambda node=node: (node["root"] / relative).read_bytes() == expected)
+        # Password administration through a real follower must commit via Raft
+        # and preserve the User identity/status on every Controller.
+        import bpc_identity as identity
+
+        account = identity.create_user(nodes[0]["root"] / "control", "password-test",
+                                       "old synthetic process password")
+        user_relative = Path("control/identity/users") / f"{account['id']}.json"
+        expected_user = (nodes[0]["root"] / user_relative).read_bytes()
+        for node in nodes:
+            until(lambda node=node: (node["root"] / user_relative).read_bytes() == expected_user)
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[1]["local"])
+        changed = identity.change_user_password(nodes[1]["root"] / "control", "password-test",
+                                                "new synthetic process password")
+        expected_user = (nodes[1]["root"] / user_relative).read_bytes()
+        for node in nodes:
+            until(lambda node=node: (node["root"] / user_relative).read_bytes() == expected_user)
+        assert changed["id"] == account["id"] and changed["enabled"] is True
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[0]["local"])
+        with pytest.raises(identity.IdentityError):
+            identity.authenticate_local_user(nodes[0]["root"] / "control", "password-test",
+                                             "old synthetic process password")
+        authenticated = identity.authenticate_local_user(
+            nodes[0]["root"] / "control", "password-test", "new synthetic process password")
+        assert authenticated["id"] == account["id"]
         if LEGACY_BINARY:
             # Actual pre-watermark binary must block administrative recovery.
             before_revision = api(nodes[0], "/v1/health")["revision"]
@@ -571,14 +597,30 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         )
         # No quorum must prevent signing, including after successful earlier
         # issuance. Only isolated child processes are stopped here.
-        for node in nodes[1:]:
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + successor["local"],
+        )
+        # The preceding consent-revocation case intentionally left the host
+        # opted out. Explicitly consent again while quorum is healthy, so the
+        # quorum case reaches its commit fence with otherwise valid inputs.
+        host_info = p2p.info(successor["root"] / "control", p2p_state["tokens"][1])
+        message = p2p.consent_message(
+            p2p_state["tokens"][1], host_info["device_id"], True, host_info["access_sha256"]
+        )
+        assert p2p.consent(successor["root"] / "control", p2p_state["tokens"][1], {
+            "capabilities": [p2p.CAPABILITY], "enabled": True,
+            "expected_sha256": host_info["access_sha256"],
+            "signature": base64.b64encode(p2p_state["keys"][1].sign(message)).decode(),
+        })["ok"]
+        for node in nodes:
             if node is not successor:
                 node["process"].terminate()
                 node["process"].wait(timeout=10)
-        with pytest.raises(enrollment.bpc_control_state.ControlStateError):
+        with pytest.raises(enrollment.bpc_control_state.ControlStateError) as no_quorum:
             p2p.issue(successor["root"] / "control", p2p_state["tokens"][0], {
                 "capabilities": [p2p.CAPABILITY], "host_device_id": p2p_state["devices"][1]["id"],
             })
+        assert no_quorum.value.status == 503
         with pytest.raises(enrollment.bpc_control_state.ControlStateError):
             p2p.inbox(successor["root"] / "control", p2p_state["tokens"][0], {
                 "capabilities": [p2p.CAPABILITY],
