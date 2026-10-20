@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.2
+
+### Fixed
+- Reopening a prepared account installer with an expired/expiring saved session now requests sign-in and restores credentials for the same existing Device, keys and overlay address. It no longer silently reuses an unusable session and leaves the service stopped.
+- Add a dedicated existing-device reauthentication endpoint: authenticated account, Device proof, exact existing ID/key/owner/WireGuard binding and active identity required. No fallback registration on older Controllers; missing/revoked/mismatched identities are refused.
+- Preserve the existing protected Windows state ACL and old identity file when credential replacement fails. Stop the old Agent before saving new credentials. P2P consent/trust/reservations remain unchanged.
+- Show installer failures in a native Windows dialog, record runtime termination errors and report service exit codes immediately instead of waiting for a generic timeout.
+
+### Upgrade
+- Upgrade all Controllers first, then generate a fresh prepared personal EXE and open it on the affected PC. Sign in with the existing owner account. Do not delete state.json or copy keys between PCs.
+- Recovery cannot restore a revoked/deleted Device or use another account. A damaged/unwritable state file still fails closed. The older log-file permission repair remains separate; no broad permission reset is performed.
+
 ## 0.22.1
 
 ### Fixed

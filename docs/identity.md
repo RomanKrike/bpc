@@ -1,5 +1,28 @@
 # User and Device identity
 
+## Existing account-session recovery (0.22.2)
+
+Reopening a prepared account installer with an expired/expiring saved session
+requests interactive sign-in. POST `/v1/devices/reauthenticate` requires a short
+login credential, registration proof over that credential and the saved Device
+and WireGuard public keys, plus the exact saved `device_id`. The authenticated
+User must still own the active Device. Missing, revoked, foreign-owner and
+mismatched identities fail; this endpoint never creates a Device or rewrites
+its metadata. Old Controllers return an error; clients must not fall back to
+ordinary registration. Existing registration clients remain compatible.
+
+The client retains its stored Controller endpoints/update trust and private keys,
+and validates the returned Device ID, overlay address and runtime profile. Only
+then does it stop the old service and replace credentials, preserving the old
+state file on failure and its protected Windows DACL on replacement. Access and
+P2P consent/policy files are unchanged. Background services never request a
+password. Upgrade Controllers before distributing a fresh prepared installer;
+recovery cannot restore deleted/revoked identities or switch account ownership.
+
+Evidence: public HTTP recovery negative cases, HTTPS client proof/binding and
+failure-preservation tests, Windows DACL/sharing-lock replacement tests. Native
+interactive installation acceptance remains separate from automated CI.
+
 Stage 3 adds a controller-owned identity layer for BP Connect without changing
 the BPC transport cryptography.
 

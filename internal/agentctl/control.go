@@ -116,6 +116,7 @@ type LoginResponse struct {
 }
 
 type DeviceRegistrationRequest struct {
+	DeviceID           string `json:"device_id,omitempty"`
 	Name               string `json:"name"`
 	PublicKey          string `json:"public_key"`
 	WireGuardPublicKey string `json:"wireguard_public_key"`
@@ -266,11 +267,24 @@ func (c *Client) RegisterDevice(
 	accessToken string,
 	req DeviceRegistrationRequest,
 ) (*DeviceRegistrationResponse, error) {
+	return c.registerDevice(ctx, "/v1/devices/register", accessToken, req)
+}
+
+func (c *Client) ReauthenticateDevice(ctx context.Context, token string, req DeviceRegistrationRequest) (*DeviceRegistrationResponse, error) {
+	if req.DeviceID == "" {
+		return nil, errors.New("existing device ID is required for sign-in recovery")
+	}
+	// A distinct endpoint fails safely on older Controllers; never fall back to
+	// registration, which could create a replacement identity.
+	return c.registerDevice(ctx, "/v1/devices/reauthenticate", token, req)
+}
+
+func (c *Client) registerDevice(ctx context.Context, path, accessToken string, req DeviceRegistrationRequest) (*DeviceRegistrationResponse, error) {
 	var response DeviceRegistrationResponse
 	if err := c.doJSON(
 		ctx,
 		http.MethodPost,
-		"/v1/devices/register",
+		path,
 		accessToken,
 		req,
 		&response,
@@ -652,12 +666,32 @@ func SaveState(path string, state State) error {
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	file, err := os.CreateTemp(filepath.Dir(path), ".state-*")
+	if err != nil {
 		return err
 	}
-	_ = os.Remove(path)
-	return os.Rename(tmp, path)
+	name := file.Name()
+	defer os.Remove(name)
+	if err := preserveStateACL(path, name); err != nil {
+		file.Close()
+		return err
+	}
+	if err = file.Chmod(0600); err == nil {
+		_, err = file.Write(raw)
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closeErr := file.Close()
+	if err != nil {
+		return err
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	// On Windows os.Rename uses MoveFileEx(REPLACE_EXISTING). Do not unlink
+	// the old identity before replacement; preserve it on a sharing/ACL failure.
+	return os.Rename(name, path)
 }
 
 func LoadState(path string) (*State, error) {

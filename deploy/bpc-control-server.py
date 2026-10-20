@@ -380,6 +380,9 @@ class ControlHandler(BaseHTTPRequestHandler):
         if self.path == "/v1/auth/logout":
             self._auth_logout()
             return
+        if self.path == "/v1/devices/reauthenticate":
+            self._device_register(require_existing=True)
+            return
         if self.path == "/v1/devices/register":
             self._device_register()
             return
@@ -888,13 +891,17 @@ class ControlHandler(BaseHTTPRequestHandler):
             return
         self._send_json(HTTPStatus.OK, {"ok": True})
 
-    def _device_register(self) -> None:
+    def _device_register(self, *, require_existing: bool = False) -> None:
         access_token = self._bearer()
         if access_token is None:
             self.send_error(HTTPStatus.UNAUTHORIZED)
             return
         body = self._read_body_json()
         if body is None:
+            return
+        expected_id = str(body.get("device_id", "")).strip() if require_existing else ""
+        if require_existing and not expected_id:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "existing device ID required"})
             return
         device_name = str(body.get("name", body.get("device", ""))).strip()
         public_key = str(body.get("public_key", "")).strip()
@@ -934,6 +941,14 @@ class ControlHandler(BaseHTTPRequestHandler):
         enroll_lock: threading.Lock = self.server.enroll_lock  # type: ignore[attr-defined]
         with enroll_lock:
             existing = find_device_by_public_key(self._root(), public_key)
+            if require_existing and (
+                existing is None
+                or str(existing.get("id", existing.get("device_id", ""))) != expected_id
+            ):
+                self._send_json(
+                    HTTPStatus.CONFLICT, {"error": "existing device identity does not match"}
+                )
+                return
             if existing is not None:
                 if str(existing.get("user_id", "")) != str(user["id"]):
                     self._send_json(
@@ -955,13 +970,14 @@ class ControlHandler(BaseHTTPRequestHandler):
                     return
                 device = existing
                 device_id = str(device.get("id", device.get("device_id", "")))
-                device["last_seen"] = int(time.time())
-                device["last_version"] = agent_version
-                try:
-                    self._put_device(device, kind="UpdateRegisteredDevice")
-                except (OSError, ValueError, bpc_control_state.ControlStateError):
-                    self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
-                    return
+                if not require_existing:
+                    device["last_seen"] = int(time.time())
+                    device["last_version"] = agent_version
+                    try:
+                        self._put_device(device, kind="UpdateRegisteredDevice")
+                    except (OSError, ValueError, bpc_control_state.ControlStateError):
+                        self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR)
+                        return
             else:
                 device_id = uuid.uuid4().hex
                 wgshim_psk = base64.b64encode(secrets.token_bytes(32)).decode("ascii")

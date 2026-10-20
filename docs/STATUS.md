@@ -1,5 +1,42 @@
 # Status and evidence
 
+## Windows existing-session recovery (2026-10-20)
+
+Baseline 27458d54fee59c75e5cafbc04cb6a78ad03dc8a8 / 0.22.1. Operator reported
+installer timeout, then foreground failure opening an old Agent log. After a
+targeted operator log permission repair, new starts were recorded and foreground
+execution proved HTTP 401 invalid refresh credential. The installed binary was
+still the unified mesh transition and reused a historic account Device profile.
+No private state or keys were requested or received; no live PC access by Codex.
+
+Task/plan: explicit installer sign-in for an expired/expiring saved account
+session; use stored Controller trust and existing Device/Ed25519/WireGuard identity.
+Add a distinct existing-only endpoint, never fall back to fresh registration.
+Require active same-owner ID/key/WG binding; recovery must not rewrite Device
+metadata and resurrect a concurrent revoke. Preserve Access, P2P consent/policy
+and private keys. Validate response ID/address/config before stopping the old
+service and replacing credentials. Failed/cancelled/old-server/mismatched recovery
+must retain the old local file. Keep state replacement atomic without pre-unlink
+and preserve existing Windows DACL before writing the temporary credential file.
+Native install error dialog and runtime termination logging expose future failures.
+
+Invariants SEC-02/04/05, MESH-01 and P2P-05/06/07. No Raft/schema/floor reset,
+transport or Access rewrite, log ACL reset, background password prompts or removal
+of old identities. Version 0.22.2 requires Controllers first, then a fresh prepared
+EXE on the PC. Recovery is interactive and cannot revive a revoked/deleted Device.
+Checks: Go real HTTPS proof/recovery and failure preservation, native Windows
+protected-DACL/sharing-lock replacement, real public HTTP negative identity cases,
+full existing CI/process/kernel/Windows gates. Native interactive acceptance is
+still operator-owned; exact final verification is recorded at the PR.
+
+Local Windows/Go 1.23.12 checks: Agent/client tests passed, including real HTTPS
+recovery proof, old-server/revoked/mismatched/cancelled/stop-failure cases, saved
+identity preservation and protected-DACL/sharing-lock tests on temporary files.
+Ruff passed; 50 Python Agent checks passed; public HTTP recovery module explicitly
+skipped locally because Controller imports require Linux. Full Linux process,
+HTTP/security, race, kernel and packaged-Windows CI remains required. No real
+Windows installation, service/network change or server deployment by Codex.
+
 ## Controller replica / owned gateway sandbox fix (2026-10-20)
 
 Baseline: unified main aa3b5fd5500227bffce8d758fdae61265b72573d (0.22.0).
