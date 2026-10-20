@@ -300,6 +300,55 @@ def test_rejected_bundle_never_switches_release(tmp_path, installation):
     assert (root / "current").resolve().name == "previous"
 
 
+@pytest.mark.parametrize("status,corrupt,ok", [
+    (0, False, True), (1, False, True), (2, False, False), (0, True, False),
+])
+def test_live_filesystem_archive_status_before_activation(tmp_path, installation,
+                                                        status, corrupt, ok):
+    import shutil
+
+    root, state, env = installation
+    archive_tool = shutil.which("tar")
+    assert archive_tool
+    stub = tmp_path / "archive-stubs"
+    stub.mkdir()
+    wrapper = stub / "tar"
+    # Real archive creation and validation; inject only the creation result or
+    # corrupt bytes. No host service or live state is used by this fixture.
+    wrapper.write_text('''#!/bin/bash
+"$BPC_TEST_REAL_TAR" "$@" || exit $?
+if [[ "$*" == *"-czf"* ]]; then
+  if [[ "$BPC_TEST_CORRUPT" == 1 ]]; then
+    printf 'not a gzip archive' > "$4"
+  fi
+  exit "$BPC_TEST_TAR_STATUS"
+fi
+''')
+    wrapper.chmod(0o755)
+    env.update(PATH=str(stub) + os.pathsep + env["PATH"],
+               BPC_TEST_REAL_TAR=archive_tool, BPC_TEST_TAR_STATUS=str(status),
+               BPC_TEST_CORRUPT="1" if corrupt else "0")
+    path, sha, version = bundle(tmp_path)
+    result = update(env, path, sha)
+    assert result.returncode == (0 if ok else 4), result.stdout + result.stderr
+    assert (state / "raft-and-gateway").read_bytes() == b"current committed state"
+    archives = list((tmp_path / "backups").iterdir())
+    assert len(archives) == 1
+    assert archives[0].stat().st_mode & 0o077 == 0
+    if ok:
+        assert (root / "current/VERSION").read_text().strip() == version
+        assert archives[0].name.endswith(".tar.gz")
+        with tarfile.open(archives[0]) as saved:
+            assert saved.extractfile("state/raft-and-gateway").read() == b"current committed state"
+        if status == 1:
+            assert "NOT a Raft restore point" in result.stderr
+    else:
+        assert (root / "current").resolve().name == "previous"
+        assert not (root / "releases" / version).exists()
+        assert archives[0].name.endswith(".partial")
+        assert "active release unchanged" in result.stderr
+
+
 def agent_update_environment(tmp_path, candidate_release):
     root = tmp_path / "root"
     current = root / "current"
