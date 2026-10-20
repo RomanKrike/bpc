@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.3
+
+### Fixed
+- Server updater accepts GNU tar's live-file-change status 1 for its explicitly non-consistent private filesystem copy, after verifying the archive is readable. Active Controller writes no longer abort an otherwise valid update before activation.
+- Fatal archive errors and unreadable archives still stop before release activation. Incomplete copies retain a `.partial` suffix; diagnostics distinguish a filesystem copy from a consistent Leader `bpc cluster backup`. No services are stopped for copying and no replicated state is restored.
+
 ## 0.22.2
 
 ### Fixed

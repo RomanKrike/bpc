@@ -84,6 +84,14 @@ there is no automatic database rewind. Same-version retry rechecks migration
 and health instead of hiding the failure. This wrapper does not make a live
 Bolt database backup; use the Controller's documented consistent backup.
 
+Since 0.22.3 the private filesystem copy accepts GNU tar creation status 1
+(files changed during copying), validates archive readability, and explicitly
+warns that it is not a Raft restore point. Status 2 or unreadable output aborts
+before activation; incomplete copies keep a `.partial` suffix. This does not
+replace a consistent `bpc cluster backup` on the healthy Leader. Older installed
+updaters that abort on changing files need a verified forward-updater bootstrap
+once; publishing a new bundle alone cannot change the running old wrapper.
+
 To return to a **previous compatible mesh candidate**, retain its original bundle
 and trusted checksum, then run:
 

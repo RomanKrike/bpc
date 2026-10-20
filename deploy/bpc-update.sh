@@ -143,7 +143,23 @@ backup="${BACKUP_DIR}/state-$(date -u +%Y%m%dT%H%M%SZ)-${current_version}.tar.gz
 
 if [[ -d "${BPC_STATE_DIR}" ]]; then
   umask 077
-  tar -C "$(dirname "${BPC_STATE_DIR}")" -czf "${backup}" "$(basename "${BPC_STATE_DIR}")"
+  backup_status=0
+  tar -C "$(dirname "${BPC_STATE_DIR}")" -czf "${backup}.partial" \
+    "$(basename "${BPC_STATE_DIR}")" || backup_status=$?
+  # GNU tar returns 1 when live files change during creation. This private
+  # filesystem copy is not a consistent Raft restore point, even with status 0.
+  if [[ ${backup_status} -ne 0 && ${backup_status} -ne 1 ]]; then
+    echo "State archive failed (tar status ${backup_status}); active release unchanged. Incomplete copy: ${backup}.partial" >&2
+    exit 4
+  fi
+  if ! tar -tzf "${backup}.partial" >/dev/null; then
+    echo "State archive is unreadable; active release unchanged. Incomplete copy: ${backup}.partial" >&2
+    exit 4
+  fi
+  mv -- "${backup}.partial" "${backup}"
+  if [[ ${backup_status} -eq 1 ]]; then
+    echo "Warning: live files changed during archive creation; continuing with a private filesystem copy, NOT a Raft restore point. Use bpc cluster backup on a healthy Leader for consistent backup." >&2
+  fi
 fi
 if [[ -d "${new_target}" ]] && ! diff -qr --exclude=__pycache__ "${tmp}/release" "${new_target}" >/dev/null; then
   echo "Candidate version already exists with different contents." >&2

@@ -1,5 +1,24 @@
 # Status and evidence
 
+## Updater live filesystem archive (2026-10-20)
+
+Baseline c1a26add93e44a636995428b9f82a7f1a17e8b65 / 0.22.2. Operator update on
+a running Controller verified the release but GNU tar reported changing files;
+`set -e` aborted before the release-pointer switch. Operator status confirmed the
+previous runtime remained active and healthy. No server access by Codex.
+
+Task/plan: accept GNU tar creation status 1 only for the already documented private
+filesystem copy, validate archive readability, and warn that it is NOT a Raft
+restore point. Fatal status or corrupt output must stop before activation; keep
+incomplete copies private and labelled `.partial`. No Controller stop, database
+restore, schema/floor/identity/Access/network changes (SEC-02/04/05, MESH-01).
+Temporary-fixture updater tests use real tar plus injected status/corruption;
+verify status 0/1 success, status 2/corrupt failure, private permissions, unchanged
+state and no activation on failure. Linux root tests require CI; Windows skip is
+not a pass. Version 0.22.3 also needs a one-time verified new-updater bootstrap
+for already installed wrappers, which cannot update themselves past this failure.
+Do not bypass archive failures or stop both voters. Full final CI required.
+
 ## Windows existing-session recovery (2026-10-20)
 
 Baseline 27458d54fee59c75e5cafbc04cb6a78ad03dc8a8 / 0.22.1. Operator reported
