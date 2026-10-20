@@ -1,7 +1,7 @@
 """Opt-in P2P authority over existing canonical identity and Access records.
 
-No session addresses or transport state are replicated. Conditional puts of
-unchanged security records fence authorization against concurrent revocation.
+Only bounded public delivery slots are replicated, never keys or packet state.
+Conditional puts fence authorization against concurrent revocation.
 """
 
 from __future__ import annotations
@@ -234,6 +234,7 @@ def info(root: Path, token: str) -> dict[str, Any]:
         "issuer_certificate_sha256": snapshot.key_id,
         "enabled": policy.get("p2p_enabled") is True,
         "access_sha256": hashlib.sha256(raw).hexdigest() if raw is not None else "",
+        "account_mode": snapshot.read(root / "config.json").get("p2p_account_mode") is True,
     }
 
 
@@ -379,3 +380,89 @@ def sync(root: Path, token: str, body: dict[str, Any]) -> dict[str, Any]:
         "allowed": allowed,
     }
     return {"checkpoint": snapshot.sign(POLICY_DOMAIN, policy)}
+
+
+def _account(snapshot: _Snapshot) -> str:
+    config = snapshot.read(snapshot.root / "config.json")
+    relay = config.get("p2p_relay", "")
+    if config.get("p2p_account_mode") is not True:
+        raise P2PError("account P2P is not enabled", 404)
+    # Operator-configured DNS/IPv4 TLS endpoint, never a caller's dial target.
+    if not isinstance(relay, str) or not re.fullmatch(r"[A-Za-z0-9.-]{1,253}:[0-9]{1,5}", relay):
+        raise P2PError("account P2P relay is unavailable", 503)
+    if not 1 <= int(relay.rsplit(":", 1)[1]) <= 65535:
+        raise P2PError("account P2P relay is unavailable", 503)
+    return relay
+
+
+def peers(root: Path, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    _request(body, set())
+    snapshot = _Snapshot(root, token)
+    _account(snapshot)
+    values = []
+    # Bound each response; each listed candidate is fenced below. A Device name
+    # is display data, never an address or an authorization input.
+    for path in sorted((root / "devices").glob("*.json")):
+        if len(values) >= 128:
+            break
+        if path.stem == snapshot.device or not re.fullmatch(r"[0-9a-f]{32}", path.stem):
+            continue
+        try:
+            pair = snapshot.pair(snapshot.device, path.stem)
+        except P2PError as exc:
+            if exc.status == 403:
+                continue
+            raise
+        device = snapshot.read(path)
+        values.append({
+            "id": path.stem,
+            "name": str(device.get("name", path.stem))[:128],
+            "address": pair[1]["address"],
+        })
+    snapshot.commit("ListP2PPeers")
+    return {"peers": values}
+
+
+def connect(root: Path, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    # Preserve the existing grant format and sign only after its authority fence.
+    initial = _Snapshot(root, token)
+    _account(initial)
+    ticket = issue(root, token, body)["ticket"]
+    snapshot = _Snapshot(root, token)
+    relay = _account(snapshot)
+    grant = _grant(snapshot, ticket)
+    current = snapshot.pair(*(p["device_id"] for p in grant["participants"]))
+    if current != grant["participants"]:
+        raise P2PError("P2P participants changed", 409)
+    offer = {"ticket": ticket, "relay": relay, "expires_at": grant["expires_at"]}
+    updates = {}
+    for participant in current:
+        path = root / "p2p-delivery" / f"{participant['device_id']}.json"
+        previous = snapshot.read(path, optional=True)
+        if previous and int(previous.get("expires_at", 0)) > snapshot.started:
+            raise P2PError("a P2P session is already pending; wait for expiry", 409)
+        updates[path] = _json(offer)
+    snapshot.commit("DeliverP2PSession", updates)
+    if int(time.time()) >= grant["expires_at"]:
+        raise P2PError("P2P delivery expired", 409)
+    return {"queued": True, "expires_at": grant["expires_at"]}
+
+
+def inbox(root: Path, token: str, body: dict[str, Any]) -> dict[str, Any]:
+    _request(body, set())
+    snapshot = _Snapshot(root, token)
+    relay = _account(snapshot)
+    offer = snapshot.read(root / "p2p-delivery" / f"{snapshot.device}.json", optional=True)
+    if not offer or int(offer.get("expires_at", 0)) <= snapshot.started:
+        return {"offer": None}
+    grant = _grant(snapshot, offer["ticket"])
+    try:
+        current = snapshot.pair(*(p["device_id"] for p in grant["participants"]))
+    except P2PError as exc:
+        if exc.status == 403:
+            return {"offer": None}
+        raise
+    if current != grant["participants"] or offer["relay"] != relay:
+        return {"offer": None}
+    snapshot.commit("ReceiveP2PSession")
+    return {"offer": offer}
