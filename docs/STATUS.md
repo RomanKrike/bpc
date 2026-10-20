@@ -21,6 +21,12 @@ Actual operator password change and pc004 acceptance remain pending.
 Local Windows identity tests: 15 passed. Ruff passed after correcting line lengths.
 The attempted process-suite collection cannot import Linux fcntl on Windows;
 no process test passed locally. Real mTLS follower replication remains a CI gate.
+Initial CI passed the new real follower password write/replication/authentication
+checks, but exposed a pre-existing final P2P quorum-case fixture issue: consent
+was still withdrawn and LOCAL_API still pointed to an earlier follower. Restore
+consent through the signed API while healthy, bind LOCAL_API to the actual tested
+survivor, then require the expected 503 rather than accepting unrelated errors.
+No production consent/authorization behavior changed. Final CI remains required.
 
 ## Updater live filesystem archive (2026-10-20)
 

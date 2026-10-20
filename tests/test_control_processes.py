@@ -597,14 +597,30 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         )
         # No quorum must prevent signing, including after successful earlier
         # issuance. Only isolated child processes are stopped here.
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + successor["local"],
+        )
+        # The preceding consent-revocation case intentionally left the host
+        # opted out. Explicitly consent again while quorum is healthy, so the
+        # quorum case reaches its commit fence with otherwise valid inputs.
+        host_info = p2p.info(successor["root"] / "control", p2p_state["tokens"][1])
+        message = p2p.consent_message(
+            p2p_state["tokens"][1], host_info["device_id"], True, host_info["access_sha256"]
+        )
+        assert p2p.consent(successor["root"] / "control", p2p_state["tokens"][1], {
+            "capabilities": [p2p.CAPABILITY], "enabled": True,
+            "expected_sha256": host_info["access_sha256"],
+            "signature": base64.b64encode(p2p_state["keys"][1].sign(message)).decode(),
+        })["ok"]
         for node in nodes[1:]:
             if node is not successor:
                 node["process"].terminate()
                 node["process"].wait(timeout=10)
-        with pytest.raises(enrollment.bpc_control_state.ControlStateError):
+        with pytest.raises(enrollment.bpc_control_state.ControlStateError) as no_quorum:
             p2p.issue(successor["root"] / "control", p2p_state["tokens"][0], {
                 "capabilities": [p2p.CAPABILITY], "host_device_id": p2p_state["devices"][1]["id"],
             })
+        assert no_quorum.value.status == 503
         with pytest.raises(enrollment.bpc_control_state.ControlStateError):
             p2p.inbox(successor["root"] / "control", p2p_state["tokens"][0], {
                 "capabilities": [p2p.CAPABILITY],
