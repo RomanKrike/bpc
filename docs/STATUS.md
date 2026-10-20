@@ -27,6 +27,10 @@ was still withdrawn and LOCAL_API still pointed to an earlier follower. Restore
 consent through the signed API while healthy, bind LOCAL_API to the actual tested
 survivor, then require the expected 503 rather than accepting unrelated errors.
 No production consent/authorization behavior changed. Final CI remains required.
+The second run then correctly exposed that the final fixture stopped only one
+of the two other Controllers, leaving 2/3 quorum after an earlier restart. Stop
+both other isolated child processes for this case and keep the strict 503 check.
+This strengthens the existing quorum test; it does not change runtime behavior.
 
 ## Updater live filesystem archive (2026-10-20)
 

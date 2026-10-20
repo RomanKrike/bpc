@@ -612,7 +612,7 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
             "expected_sha256": host_info["access_sha256"],
             "signature": base64.b64encode(p2p_state["keys"][1].sign(message)).decode(),
         })["ok"]
-        for node in nodes[1:]:
+        for node in nodes:
             if node is not successor:
                 node["process"].terminate()
                 node["process"].wait(timeout=10)
