@@ -1,5 +1,5 @@
 // Package p2p implements the opt-in Device-to-Device session foundation.
-// Controller authority is opt-in; installed Windows Agent integration is pending.
+// Controller authority and the Windows Agent pilot are explicitly opt-in.
 package p2p
 
 import (

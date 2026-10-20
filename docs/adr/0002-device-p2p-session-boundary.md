@@ -1,6 +1,6 @@
 # ADR 0002: Device-to-Device P2P session boundary
 
-Date: 2026-10-20. Status: proposed, implemented as an isolated foundation only.
+Date: 2026-10-20. Status: accepted isolated foundation, merged in #93.
 Baseline: main `ef947e751315885d1196e97391d9139eed973480`.
 
 ## Outcome and scope

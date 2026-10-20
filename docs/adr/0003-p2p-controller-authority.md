@@ -1,7 +1,7 @@
 # ADR 0003: P2P Controller authority and durable endpoint policy
 
-Date: 2026-10-20. Status: proposed; opt-in implementation for review.
-Parent: [ADR 0002](0002-device-p2p-session-boundary.md), draft PR #93.
+Date: 2026-10-20. Status: accepted opt-in authority, merged in #94.
+Parent: [ADR 0002](0002-device-p2p-session-boundary.md), merged PR #93.
 
 ## Task and acceptance
 

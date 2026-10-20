@@ -1,5 +1,64 @@
 # Status and evidence
 
+## Windows P2P pilot runtime (2026-10-20)
+
+Authorized merges: #93 -> d939bffb6aa4c4a04b36df22fe1eb40490dd1081;
+#94 -> aecf34e7ddec15135b3fd4c352b72d367f78dade (this task baseline).
+The retargeted #94 merge tree matched its tested head. Main CI subsequently
+passed: [39329400368](https://github.com/RomanKrike/bpc/actions/runs/39329400368).
+Existing Release automation ran after main CI; no workflow was manually
+triggered and no host/install/service/network mutation was performed here.
+
+[ADR 0004](adr/0004-p2p-windows-pilot-runtime.md) specifies the bounded task,
+invariants, compatibility and rollback; [operator guide](p2p-windows-pilot.md).
+Implemented explicit Agent trust/consent/request/start/stop commands, a policy
+polling lifecycle, shared-adapter endpoint filters and durable peer deny
+reservations restored before gateway startup. Default (uninitialized) gateway
+path uses its original TUN unchanged. Only current-adapter GUID/index /32 routes
+may be added; conflicting routes are refused. An explicit standalone TLS relay
+pilot command is included in the Linux amd64/arm64 bundle and cross-build gates.
+
+This is one active, unrenewed <=60s pilot session, with up to 16 retained peer
+reservations. Native Wintun/NetTCPIP, ACL, service and actual Moonlight/Sunshine
+acceptance remain PENDING; no actual Windows route/adapter tests ran. Automatic
+ticket delivery, coordinated long-stream renewal, relay service provisioning,
+UI and UDP/NAT traversal remain pending. An initialized missing/corrupt store
+prevents overlay startup; do not reset it to bypass trust/revision floors.
+
+Published runtime/CI source: `87e51313064020cd7b84738cf87241634804b862`.
+Local Windows amd64, Go 1.23.12 / Python 3.12; local tested commit a9c4b05
+followed only by docs/package comments in d3fee33. `go test ./... -count=1 -timeout=120s`
+passed Agent, pilot relay, agentctl, controlplane, p2p and wgshim; the overall
+native Windows run still FAILS at pre-existing Linux-only syscall.Kill in
+controld. `go test -race ./internal/p2p` is unavailable locally (CGO absent);
+Linux CI remains required. `pytest tests/test_agent.py --basetemp=../p2p-stage3-agent-temp
+-q` passed 50 tests; `ruff check .` passed. `gofmt -l cmd internal`, `git diff --check` and
+`GOOS=linux GOARCH=amd64 go vet ./...` passed. Existing cross-build matrix
+passed with CGO_ENABLED=0, plus new pilot relay Linux amd64/arm64.
+`go test -c -o ../cross-build/p2p-stage3-windows.test.exe ./internal/p2p` and
+`BPC_P2P_TEST_BINARY=<that binary> pytest tests/test_p2p_authority.py
+--basetemp=../p2p-stage3-contract-temp -q` passed 18 tests including Python-issued
+wire compatibility with the new durable reservation state.
+
+Published head e602f6d66d67bed0faa0dfb52111825258add1f0 passed all nine Linux
+CI jobs: [39375921357](https://github.com/RomanKrike/bpc/actions/runs/39375921357).
+This includes Go tests/vet/cross-builds, race, Python 3.11/3.12/3.13,
+control-runtime, privileged Access/systemd rollback, ShellCheck and packaging
+with both new relay binaries. Python 3.11: 336 passed / 6 skipped; dedicated
+control-runtime executes the process/wire cases: 20 passed. This evidence-only
+record follows that successful runtime; native Windows acceptance remains pending.
+
+Actual userspace HTTPS policy/TLS relay/WireGuard TCP+UDP acceptance passes
+signed denial, Controller failure, idle expiry and expiry during blocked sync.
+The blocked-sync fixture initially waited for HTTP cancellation before reading
+the request body, causing httptest.Close to hang; it now consumes the body and
+has an explicit test-only cleanup release. The runtime expiry watcher was not
+weakened. An initial handshake test assumed simultaneous peer arrival; removed
+unnecessary keepalive on the loopback UDP bridge and synchronized the test peers.
+Tests also cover local key/address mismatch before route/network changes,
+queued/malformed peer isolation from gateway, bounds, durable local stop and
+reservations, and bootstrap refusal on missing initialized state.
+
 ## P2P Controller authority (2026-10-20)
 
 Runtime/CI revision `a402f9315a8a9ab1035bb81d57641d940410beea`.

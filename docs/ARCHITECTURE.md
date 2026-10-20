@@ -7,11 +7,13 @@ This document preserves the existing canonical model. Main includes Node route
 metadata and transport-path failover; a new site-router mesh dataplane is separate
 candidate work, not a feature introduced by these process documents.
 
-The opt-in Device-to-Device work begins with an isolated
-[P2P session foundation](adr/0002-device-p2p-session-boundary.md). It does not
-enable a new installed Agent path or replace gateway `BPC-ACCESS`. Endpoint
-enforcement and Controller authorization integration are prerequisites for
-enabling direct traffic that would bypass that gateway boundary.
+Device-to-Device work includes the merged [session foundation](adr/0002-device-p2p-session-boundary.md)
+and [Controller authority](adr/0003-p2p-controller-authority.md). The explicit
+[Windows pilot](adr/0004-p2p-windows-pilot-runtime.md) shares the owned BPC adapter
+with separately filtered Device peers; default mode preserves the original
+gateway path. It does not replace gateway `BPC-ACCESS`. Native Windows acceptance,
+long-session coordination and NAT traversal remain pending; see the
+[operator guide](p2p-windows-pilot.md).
 
 ## Canonical server model
 

@@ -26,9 +26,9 @@ existing gateway path contract.
 
 | Stage | State / remaining work |
 | --- | --- |
-| Session foundation | Isolated signed-grant, TLS relay and endpoint filter prototype; userspace WG TCP/UDP acceptance; see STATUS for evidence |
-| Controller integration | Opt-in APIs/client and durable policy verifier implemented for review; committed Access/consent fences, signed checkpoints and restart/replay tests; installed polling/renewal remains in Windows runtime |
-| Windows runtime | Pending: owned peer/route reconciliation and filters, gateway compatibility, opt-in configuration and deployable relay lifecycle |
+| Session foundation | Merged #93; isolated signed-grant, TLS relay and endpoint filtering, userspace WG TCP/UDP acceptance |
+| Controller integration | Merged #94; default-off APIs/client, committed Access/consent fences, signed checkpoints and durable revision/revoke state |
+| Windows runtime | Explicit bounded pilot: pinned trust, policy polling, shared-adapter filtered peers, durable deny reservations and owned /32 route plans; native Windows acceptance, coordinated long-session renewal/delivery and relay service lifecycle remain pending |
 | Direct transport | Pending: UDP relay, same-socket STUN/ICE, data-confirmed switching and rollback |
 | Product acceptance | Pending: Windows UI and real Moonlight/Sunshine, NAT/MTU/suspend/restart/offline tests |
 

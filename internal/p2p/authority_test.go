@@ -5,12 +5,61 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestManagedLocalStopAndReservationsSurviveRestart(t *testing.T) {
+	f := newFixture(t)
+	path := filepath.Join(t.TempDir(), "policy.db")
+	trust := fixtureTrust(f)
+	store, err := CreatePolicyStore(path, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Track(f.ticket); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Apply(signedPolicy(t, f, 8, true)); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Stop(f.grant.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.Close()
+	store, err = OpenPolicyStore(path, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	peers, err := store.ReservedPeers()
+	if err != nil || len(peers) != 1 || peers[0] != f.grant.Participants[0].Address {
+		t.Fatal("restart lost peer blackhole", err)
+	}
+	if _, err = store.Track(f.ticket); err == nil {
+		t.Fatal("locally stopped ticket reattached after restart")
+	}
+	// Only a deny reservation is restored into the TUN, never cached allow.
+	raw := newPipeTUN()
+	mux, _ := NewMuxTUN(raw)
+	defer mux.Close()
+	if err = mux.Reserve(peers[0]); err != nil {
+		t.Fatal(err)
+	}
+	packet := ipPacket(f, true, 17, 51000, 47998, 0)
+	gateway := append([]byte(nil), packet...)
+	copy(gateway[16:20], netip.MustParseAddr("10.99.0.1").AsSlice())
+	raw.in <- packet
+	raw.in <- gateway
+	got := readTestPacket(t, mux)
+	if string(got) != string(gateway) {
+		t.Fatal("restart leaked reserved peer via gateway")
+	}
+}
 
 func fixtureTrust(f fixture) Trust {
 	return Trust{ClusterID: f.grant.ClusterID, DeviceID: f.grant.Participants[1].DeviceID, Issuer: f.issuer.Public().(ed25519.PublicKey)}
