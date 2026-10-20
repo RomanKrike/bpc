@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.21.0
+
+### Added
+- Experimental Windows-to-Windows Moonlight/Sunshine P2P pilot with signed bounded grants, TLS/TCP relay, endpoint service filtering and durable revoke/replay protection.
+- Account-owned Device discovery and automatic delivery of one public session to both Agents; no BPC invitation acceptance or manual ticket transfer is needed.
+- Windows tray/settings controls for preparing an existing PC, selecting a computer, requesting a connection and withdrawing consent. Fresh account enrollment prepares P2P when the Controller explicitly enables account mode.
+- Standalone TLS P2P relay binaries for Linux amd64/arm64 and a Windows Agent/client/UI-parser CI job alongside all existing quality gates.
+
+### Fixed
+- Synchronize the Windows Agent version with the deployment/package version so signed self-updates compare the actual release. Add a regression check against future version drift.
+
+### Upgrade
+- P2P is default-off. Upgrade every Controller to this version before enabling `p2p_enabled`, `p2p_account_mode` and a canonical TLS `p2p_relay`; account delivery adds the replicated `control/p2p-delivery/` prefix.
+- Existing Windows Agents receive this code only after the operator publishes the signed Agent update. Existing prepared download links retain their old executable; generate fresh links from this release for new installs.
+- Existing installations enable the pilot through its window once; reinstallation/restart does not undo withdrawn consent. Preserve Device/WireGuard identity and protected P2P trust/database during upgrade.
+- Controller downgrade after using the new prefix needs explicit snapshot/schema review; do not treat restoring an older Controller binary as an automatic rollback.
+
+### Limitations
+- This is an explicitly enabled experimental pilot, not completed production P2P: one active unrenewed session, at most 60 seconds, with up to 16 retained peer deny reservations. Busy delivery slots are reused after expiry.
+- Uses TLS/TCP relay; direct UDP, NAT traversal, long-session renewal and managed relay provisioning remain pending. Sunshine/Moonlight installation and their own pairing remain separate.
+- Native interactive Windows UI/UAC, Wintun/routes/ACL/service and real two-PC streaming acceptance are still pending. CI/userspace acceptance is not evidence of that operational validation.
+
 ## 0.20.2
 
 ### Fixed

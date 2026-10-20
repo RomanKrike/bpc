@@ -66,6 +66,23 @@ jobs:
           pip install build
           python -m build
 
+      - name: Prepare release notes
+        if: steps.version.outputs.exists != 'true'
+        shell: bash
+        run: |
+          python - '${{ steps.version.outputs.version }}' "${RUNNER_TEMP}/bpc-release-notes.md" <<'PY'
+          import pathlib
+          import sys
+
+          version, output = sys.argv[1:]
+          changelog = pathlib.Path('CHANGELOG.md').read_text(encoding='utf-8')
+          marker = f'## {version}\n'
+          if marker not in changelog:
+              raise SystemExit(f'Missing changelog for release {version}')
+          notes = changelog.split(marker, 1)[1].split('\n## ', 1)[0].strip()
+          pathlib.Path(output).write_text(f'# BPC v{version}\n\n{notes}\n', encoding='utf-8')
+          PY
+
       - name: Build deployment bundle
         if: steps.version.outputs.exists != 'true'
         run: |
@@ -81,6 +98,7 @@ jobs:
           tag_name: v${{ steps.version.outputs.version }}
           target_commitish: ${{ github.event.workflow_run.head_sha || github.sha }}
           name: BPC v${{ steps.version.outputs.version }}
+          body_path: ${{ runner.temp }}/bpc-release-notes.md
           generate_release_notes: true
           make_latest: true
           files: release-dist/*

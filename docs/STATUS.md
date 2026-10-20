@@ -1,5 +1,31 @@
 # Status and evidence
 
+## Release 0.21.0 preparation (2026-10-20)
+
+The maintainer explicitly requested a release. #95 merged as
+`aba8c4711ba99c978c72c87a7e1e3ab00e7cb4a8`; #96 merged as
+`a2582c907e72c3eb0f064490306d4014eebdac39` (release-branch baseline).
+The retargeted #96 merge tree matched its tested head exactly. #95 passed
+[nine jobs](https://github.com/RomanKrike/bpc/actions/runs/39376264479); #96
+passed [all ten jobs](https://github.com/RomanKrike/bpc/actions/runs/39380269517),
+including Windows Agent/client/script parsing, Linux race and real Raft/mTLS.
+
+Release scope: bump package and Windows Agent together to 0.21.0, guard version
+agreement, and publish the matching CHANGELOG section in automatic release notes.
+The Agent previously still advertised 0.16.2 while the package was 0.20.2.
+The version change goes through a tested PR; successful main CI triggers the
+existing Release workflow. No manual workflow dispatch, server/Agent deployment,
+signed update publication or P2P enabling is performed by this release task.
+Real Windows/two-PC acceptance remains pending and is stated in release notes;
+P2P stays experimental and explicitly enabled only. See the pilot guide and
+ADR 0005 for all-Controller upgrade order and downgrade constraints.
+
+Release preparation local checks: Ruff and 51 Agent Python checks passed;
+Windows Agent builds and `version` reports 0.21.0. Executing the release-note
+extraction from the workflow produced only the matching changelog section with
+the experimental limits/upgrade instructions. Formatting and diff checks passed.
+The full required CI runs on the version PR and again after merge on main.
+
 ## Account P2P delivery and Windows window (2026-10-20)
 
 Candidate based on #95 head da3c7edc4d4b0769409afb144b4941d2c10c18fd;
