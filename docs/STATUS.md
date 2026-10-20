@@ -1,5 +1,32 @@
 # Status and evidence
 
+## Controller replica / owned gateway sandbox fix (2026-10-20)
+
+Baseline: unified main aa3b5fd5500227bffce8d758fdae61265b72573d (0.22.0).
+After an operator update, a public API replica on a Node also owning a local
+WireGuard gateway repeatedly exited in sync_wireguard_peers with EAFNOSUPPORT.
+Raft retained healthy quorum and zero lag; the API never opened its HTTPS port.
+The replica unit allowed AF_INET/AF_INET6 while the owned-gateway startup path
+requires AF_NETLINK. Operator applied a named systemd drop-in adding only that
+family and restarted only the API. Reported health/API and local WG recovered;
+older failures remained in the historical journal. No production access by Codex.
+
+Task/plan: add AF_NETLINK to the replica installer, preserve all other sandbox
+and ownership/Access behavior (SEC-02/03/04/05), reproduce the old filter and
+exercise the new installer value with real systemd/WireGuard in an isolated
+namespace. Keep root integration in CI; never target an existing host interface.
+Version 0.22.1 packages the correction for ordinary updates. No schema, Raft,
+floor, key, migration, transport selection or Access-policy rewrite. The earlier
+RU-only migration tail is not changed: Controller runtime reconciliation already
+refreshes enrolled replicas before that tail. Full final CI remains required.
+
+The operator subsequently reported healthy API, both mesh paths healthy with
+zero observed loss, quorum 2/2 and zero replication lag after the drop-in. This
+is operator-reported recovery, not a broader WAN/session acceptance claim.
+Local Windows verification: 65 focused Python checks and Ruff passed; two real
+systemd/netns cases explicitly skipped on Windows. Bash syntax and diff checks
+passed. Runtime change is confined to the generated replica address-family list.
+
 ## Unified mesh/P2P release 0.22.0 (2026-10-20)
 
 Maintainer requested unification after the incompatible stable/mesh update was

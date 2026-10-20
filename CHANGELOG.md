@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.22.1
+
+### Fixed
+- Permit AF_NETLINK in the public Controller replica service sandbox. A Controller that also owns a local WireGuard gateway reconciles peers and Access before opening HTTPS; the old IPv4/IPv6-only sandbox caused a restart loop and no port 8444 listener.
+- Preserve all other service hardening and existing ownership/Access checks. No Raft state, identity, transport or firewall-policy changes.
+- Add a real systemd/WireGuard regression in a disposable network namespace, reproducing the previous sandbox failure and verifying the corrected installer setting.
+
+### Upgrade
+- Use normal `bpc-update` from the unified transition or stable 0.22.x, one Node at a time. The existing candidate transition requirement remains for older pre-unification mesh updaters.
+- An already applied `70-bpc-wg-netlink.conf` override may remain; it grants the same address family as the corrected installer. No emergency state restore or Controller downgrade is needed.
+
 ## 0.22.0
 
 ### Unified release

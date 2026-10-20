@@ -13,9 +13,10 @@ usage() {
 Usage:
   bpc-enable-control-replica --hostname HOST [--port PORT] [--email EMAIL]
 
-Starts the public BPC control API on an additional Controller without creating
-or mutating a local Agent/WireGuard dataplane. Canonical control/config.json is
-expected to have arrived through Raft first.
+Starts the public BPC control API on an additional Controller without provisioning
+a local Agent/WireGuard dataplane. If this Node already owns a local gateway,
+the API reconciles its peers and Access. Canonical control/config.json is expected
+to have arrived through Raft first.
 USAGE
 }
 
@@ -212,7 +213,9 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 RestrictNamespaces=true
-RestrictAddressFamilies=AF_INET AF_INET6
+# A Controller may also own a local gateway. The API reconciles its existing
+# WireGuard peers and Access policy before opening the HTTPS listener.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_NETLINK
 SystemCallArchitectures=native
 
 [Install]
