@@ -259,3 +259,8 @@ jobs:
         run: sudo env BPC_TEST_NETNS=1 "$(which python)" -m pytest tests/test_access_kernel.py -q -s
       - name: Verify rollback after command failure and SIGKILL
         run: sudo env BPC_TEST_SYSTEMD=1 "$(which python)" -m pytest tests/test_firewall_probe_systemd.py -q -s
+      - name: Verify replica API WireGuard sandbox in an isolated network namespace
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends wireguard-tools
+          sudo env BPC_TEST_SYSTEMD=1 "$(which python)" -m pytest tests/test_control_replica_systemd.py -q -s
