@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"sort"
 	"sync"
@@ -48,6 +49,7 @@ type policyState struct {
 	Revision uint64           `json:"revision"`
 	IssuedAt int64            `json:"issued_at"`
 	Denied   map[string]int64 `json:"denied"`
+	Reserved []netip.Addr     `json:"reserved,omitempty"`
 }
 
 // PolicyStore persists public trust, a revision/time floor and signed denials
@@ -124,6 +126,16 @@ func (p *PolicyStore) state(b *bolt.Bucket) (policyState, error) {
 	if state.Version != 1 || state.Trust.ClusterID != p.trust.ClusterID || state.Trust.DeviceID != p.trust.DeviceID || !bytes.Equal(state.Trust.Issuer, p.trust.Issuer) || state.Denied == nil || len(state.Denied) > 4096 {
 		return state, errors.New("P2P stored trust/state mismatch")
 	}
+	if len(state.Reserved) > MaxManagedSessions {
+		return state, errors.New("invalid P2P reservations")
+	}
+	seen := make(map[netip.Addr]bool)
+	for _, ip := range state.Reserved {
+		if !ip.Is4() || !ip.IsPrivate() || seen[ip] {
+			return state, errors.New("invalid P2P reservation")
+		}
+		seen[ip] = true
+	}
 	return state, nil
 }
 
@@ -148,15 +160,29 @@ func (p *PolicyStore) Track(ticket []byte) (*Session, error) {
 	if s.grant.Participants[0].DeviceID != p.trust.DeviceID && s.grant.Participants[1].DeviceID != p.trust.DeviceID {
 		return nil, errors.New("P2P grant belongs to another Device")
 	}
-	err = p.db.View(func(tx *bolt.Tx) error {
-		state, err := p.state(tx.Bucket(policyBucket))
+	err = p.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(policyBucket)
+		state, err := p.state(bucket)
 		if err != nil {
 			return err
 		}
 		if state.Denied[s.grant.SessionID] > time.Now().Unix() {
 			return errors.New("P2P session was revoked")
 		}
-		return nil
+		remote := s.grant.Participants[0].Address
+		if s.grant.Participants[0].DeviceID == p.trust.DeviceID {
+			remote = s.grant.Participants[1].Address
+		}
+		for _, ip := range state.Reserved {
+			if ip == remote {
+				return nil
+			}
+		}
+		if len(state.Reserved) >= MaxManagedSessions {
+			return errors.New("P2P reservation capacity exhausted")
+		}
+		state.Reserved = append(state.Reserved, remote)
+		return putPolicyState(bucket, state)
 	})
 	if err != nil {
 		return nil, err
@@ -181,9 +207,61 @@ func (p *PolicyStore) Track(ticket []byte) (*Session, error) {
 	return s, nil
 }
 
+// ReservedPeers restores only blackholes, never a cached allow. Call before
+// starting gateway WG so a restart cannot route stale P2P traffic via gateway.
+func (p *PolicyStore) ReservedPeers() ([]netip.Addr, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.db == nil {
+		return nil, errors.New("P2P store closed")
+	}
+	var result []netip.Addr
+	err := p.db.View(func(tx *bolt.Tx) error {
+		state, err := p.state(tx.Bucket(policyBucket))
+		if err != nil {
+			return err
+		}
+		result = append(result, state.Reserved...)
+		return nil
+	})
+	return result, err
+}
+
 // FailClosed must be called on sync/transport errors. It never advances a floor
 // or renews authorization. A later fresh, signed checkpoint may restore access.
 func (p *PolicyStore) FailClosed() { p.mu.Lock(); defer p.mu.Unlock(); p.failClosed() }
+
+// Stop persists local terminal intent without advancing the Controller floor.
+// A cancelled/failed pilot ticket cannot be reattached after process restart.
+func (p *PolicyStore) Stop(id string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.failClosed()
+	if p.db == nil {
+		return errors.New("P2P policy store closed")
+	}
+	s := p.sessions[id]
+	if s == nil {
+		return errors.New("unknown P2P session")
+	}
+	return p.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(policyBucket)
+		state, err := p.state(b)
+		if err != nil {
+			return err
+		}
+		for id, expiry := range state.Denied {
+			if expiry <= time.Now().Unix() {
+				delete(state.Denied, id)
+			}
+		}
+		if len(state.Denied) >= 4096 {
+			return errors.New("P2P revocation capacity exhausted")
+		}
+		state.Denied[id] = s.grant.ExpiresAt
+		return putPolicyState(b, state)
+	})
+}
 func (p *PolicyStore) failClosed() {
 	for _, s := range p.sessions {
 		s.authorization.Store(nil)
