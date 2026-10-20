@@ -37,6 +37,11 @@ skipped locally because Controller imports require Linux. Full Linux process,
 HTTP/security, race, kernel and packaged-Windows CI remains required. No real
 Windows installation, service/network change or server deployment by Codex.
 
+Linux CI on initial recovery head 3866e3212cbbebcedcfba5d0fac005ce4fc3fc9d
+passed Windows/Go/race/kernel gates and all new HTTP cases except the disabled-user
+expectation: existing authorization returns 403 (not 401). Corrected only that
+test expectation; no authentication behavior was weakened. Full final CI is required.
+
 ## Controller replica / owned gateway sandbox fix (2026-10-20)
 
 Baseline: unified main aa3b5fd5500227bffce8d758fdae61265b72573d (0.22.0).

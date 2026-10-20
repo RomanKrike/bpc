@@ -25,7 +25,7 @@ from test_p2p_http import controller  # noqa: E402
 @pytest.mark.parametrize("case,code", [
     ("ok", 200), ("missing-id", 400), ("different-id", 409),
     ("unknown-key", 409), ("wrong-owner", 409), ("revoked", 403),
-    ("disabled-user", 401), ("wrong-wg", 409), ("bad-proof", 401),
+    ("disabled-user", 403), ("wrong-wg", 409), ("bad-proof", 401),
 ])
 def test_reauthenticate_existing_device(tmp_path, monkeypatch, case, code):
     context = seed_p2p(tmp_path)
