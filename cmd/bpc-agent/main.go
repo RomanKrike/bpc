@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	version              = "0.16.2"
+	version              = "0.21.0"
 	legacyTaskName       = "BPC Agent"
 	bootstrapStart       = "\nBPC_AGENT_BOOTSTRAP_V3\n"
 	legacyBootstrapStart = "\nBPC_AGENT_BOOTSTRAP_V2\n"
