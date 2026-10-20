@@ -21,8 +21,9 @@ changes; label missing coverage in the PR and STATUS.
 
 ## Device P2P prototype contracts
 
-These apply to the foundation and opt-in Controller authority; installed Agent
-enabling remains pending. See [ADR 0002](../adr/0002-device-p2p-session-boundary.md)
+These apply to the foundation and opt-in Controller authority and the explicit
+Windows pilot. Native Windows acceptance remains pending. See
+[ADR 0002](../adr/0002-device-p2p-session-boundary.md)
 and [ADR 0003](../adr/0003-p2p-controller-authority.md).
 
 | ID | Contract | Verification |
@@ -30,9 +31,9 @@ and [ADR 0003](../adr/0003-p2p-controller-authority.md).
 | P2P-01 | A session MUST bind trusted cluster/issuer, revision, distinct same-owner Device identity/WG keys, service and bounded expiry. Device proof MUST bind a fresh relay challenge and TLS channel. A ticket alone MUST NOT authenticate a Device. | `internal/p2p/policy_test.go`, `relay_test.go` |
 | P2P-02 | The receiving endpoint MUST enforce plaintext source/destination, service, initiation/reply direction and expiry independently of the initiator. Local revoke MUST invalidate established flows in both directions; expiry MUST NOT renew offline. | Real userspace WG/TLS/TCP/UDP test with an unfiltered initiator, plus policy tests; durable managed-policy revoke tests; installed Windows remains pending |
 | P2P-03 | A session relay MUST forward only between authenticated participants, retain WG payload encryption, bound connection/session/frame/flow resources, close revoked sessions and reject ticket reattachment for the outstanding lease lifetime. | `internal/p2p/relay_test.go`; no claim of restart persistence or production deployment |
-
 | P2P-04 | Grant/policy signing MUST follow a committed fence of exact identity, credential, configuration and Access inputs. Both Devices MUST consent; initiating Access MUST allow the host and deny MUST win. | `tests/test_p2p_authority.py`, real Raft/mTLS `test_control_processes.py`, public `test_p2p_http.py` |
-| P2P-05 | Managed endpoints MUST persist trusted issuer and revision/time floors, restore no cached allow after restart, reject replay and invalidate established traffic on signed denial or expiry. Sync failure MUST fail closed before renewal. | `internal/p2p/authority_test.go`, managed real-WG relay test; installed Agent loop remains pending |
+| P2P-05 | Managed endpoints MUST persist trusted issuer and revision/time floors, restore no cached allow after restart, reject replay and invalidate established traffic on signed denial or expiry. Sync failure MUST fail closed before renewal. | `internal/p2p/authority_test.go`, managed real-WG relay test; pilot Agent loop in managed_endpoint.go; native Windows acceptance pending |
+| P2P-06 | A reserved peer /32 MUST use its receiving endpoint policy and MUST NOT fall back to the gateway after denial, expiry, stop or restart. Restore deny reservations before gateway startup; default mode MUST preserve the gateway, and route mutations MUST verify the live owned adapter instance and refuse conflicts. | `internal/p2p/mux_test.go`, `managed_endpoint_test.go`, durable restart test and Agent route-plan tests; real Wintun/NetTCPIP/ACL acceptance pending |
 
 ## Candidate mesh obligations (not implemented by this change)
 
