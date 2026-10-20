@@ -236,6 +236,10 @@ func waitServiceState(service *mgr.Service, desired svc.State, timeout time.Dura
 		if status.State == desired {
 			return nil
 		}
+		if desired == svc.Running && status.State == svc.Stopped {
+			return fmt.Errorf("BPC Agent service exited (Windows code %d, service code %d); see ProgramData\\BPC\\agent.log",
+				status.Win32ExitCode, status.ServiceSpecificExitCode)
+		}
 		time.Sleep(250 * time.Millisecond)
 	}
 	return errors.New("timed out waiting for BPC Agent service state")

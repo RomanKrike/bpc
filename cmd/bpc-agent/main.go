@@ -117,6 +117,9 @@ func main() {
 		err = fmt.Errorf("unknown command %q", cmd)
 	}
 	if err != nil {
+		if cmd == "install" {
+			showInstallError(err)
+		}
 		fatalf("%v", err)
 	}
 }
@@ -217,6 +220,9 @@ func enrollOrLoadState(
 	statePath string,
 ) (*agentctl.State, error) {
 	if state, err := agentctl.LoadState(statePath); err == nil {
+		if bootstrap.Version != agentctl.LegacyBootstrapVersion && state.NeedsRefresh(time.Now()) {
+			return recoverDeviceSession(ctx, state, statePath, readLoginCredentials, stopWindowsService)
+		}
 		return state, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -363,7 +369,7 @@ func runAgent() error {
 	return runAgentContext(context.Background())
 }
 
-func runAgentContext(parent context.Context) error {
+func runAgentContext(parent context.Context) (runErr error) {
 	_, _, statePath, err := installPaths()
 	if err != nil {
 		return err
@@ -386,6 +392,11 @@ func runAgentContext(parent context.Context) error {
 		return err
 	}
 	defer closer.Close()
+	defer func() {
+		if runErr != nil {
+			logger.Printf("agent stopped: %v", runErr)
+		}
+	}()
 	logger.Printf(
 		"starting BPC Agent version=%s device=%s id=%s control=%s",
 		version,
