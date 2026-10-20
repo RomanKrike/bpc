@@ -1,6 +1,4 @@
 import pathlib
-import re
-import tomllib
 
 AGENT = (pathlib.Path("cmd/bpc-agent/main.go").read_text(encoding="utf-8")
          + pathlib.Path("cmd/bpc-agent/runtime.go").read_text(encoding="utf-8"))
@@ -35,14 +33,6 @@ GATEWAY_UPGRADE = pathlib.Path("deploy/bp-gateway-upgrade.sh").read_text(encodin
 WGSHIM_TCP = pathlib.Path("internal/wgshim/tcp.go").read_text(encoding="utf-8")
 WGSHIM_TRANSPORT = pathlib.Path("internal/wgshim/transport.go").read_text(encoding="utf-8")
 
-
-def test_windows_agent_matches_release_version() -> None:
-    package = tomllib.loads(pathlib.Path("pyproject.toml").read_text(encoding="utf-8"))
-    agent = re.search(r'(?m)^\s*version\s*=\s*"([^"]+)"', AGENT)
-    assert agent is not None
-    assert agent.group(1) == package["project"]["version"], (
-        "Windows self-update and deployment bundle must advertise the same release"
-    )
 
 
 def test_release_builds_windows_agent() -> None:

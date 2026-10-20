@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.0
+
+### Unified release
+- Combine routed mesh, topology and watermarked Raft recovery with the existing Windows P2P/account pilot and stable transport/UI fixes.
+- Include routed and P2P runtimes in the normal release, with a complete hashed `RELEASE.json` compatibility manifest. Plain `bpc-update` accepts only compatible, nondecreasing stable releases.
+- Ship `bpc-connect-mesh-transition.tar.gz` for one pinned update from older mesh candidates. Their installed updater cannot accept a stable manifest; after this transition, use ordinary `bpc-update` on each Node.
+- Preserve live canonical/Raft state and revision floors on failed updates. No automatic filesystem restore or Controller downgrade; recovery requires a compatible forward fix.
+
+### Upgrade and limits
+- Follow [the unified update procedure](docs/unified-release-update.md). Back up the healthy Leader, update one Follower at a time and verify health/quorum/lag/paths before the next Node. A two-voter cluster temporarily loses write quorum during each restart.
+- Keep P2P disabled until all Controllers are upgraded. Signed Windows Agent publication resumes on the stable release; prepared personal download links must be regenerated to deliver a new executable.
+- Mesh WAN continuity and native Windows/Moonlight/Sunshine acceptance remain pending. P2P is default-off, uses TLS/TCP relay and one unrenewed session of at most 60 seconds; direct UDP/NAT traversal and long-session renewal remain pending.
+
 ## 0.21.0
 
 ### Added

@@ -4,10 +4,11 @@
 
 Main at 832a969 retains the original established-before-Access bypass. PR #87
 merged as 172e09f into feature/site-router-mesh, not main. Its CI #526 passed.
-PR #68 is still the main-targeting mesh integration/release gate. This is the Access-only stable backport, separately from mesh PR #88.
-It brings atomic chain replacement, serialized reconciliation and gapless tagged
-jump migration alongside bidirectional revocation, without importing the mesh
-runtime, changing existing paths, or changing one-command join.
+PR #68 is still the main-targeting mesh integration/release gate. This follow-up
+targets the mesh branch so it preserves the compatibility ingress guard, atomic
+chain replacement, routed policy table, multi-path runtime and join flow.
+Do not merge all mesh changes to stable solely to obtain this Access fix.
+A stable backport needs the Access-only parts and its own privileged checks.
 
 No tracked bpc-mark-rollback-* or bpc-mesh-icmp-rollback-* scripts/units were
 found in main or the mesh branch. Previously installed transient units cannot
@@ -55,11 +56,12 @@ It does not add any Access ACCEPT or change INPUT, OUTPUT, routing or NAT.
 The helper creates a unique bpc-mesh-icmp-rollback-* or bpc-mark-rollback-* timer,
 verifies it is active BEFORE insertion, and serializes insertion and cleanup
 with flock. The watchdog removes the exact uniquely tagged rule at a fixed UTC
-OnCalendar deadline with Persistent=true. Relative OnActive timers must not be
-used: repeated manager reloads on the actual VPS postponed their expiry.
-The root integration test includes SIGKILL plus repeated daemon-reload to guard
-this production failure mode. The watchdog operates independently of SSH and the
-test process. Normal completion, nonzero exit and timeout clean
+OnCalendar deadline with Persistent=true. Relative OnActive
+timers must not be used: repeated manager reloads on the actual VPS postponed
+their expiry. The root integration test includes SIGKILL plus repeated
+daemon-reload to guard this production failure mode.
+The watchdog operates independently of SSH and the test process. Normal completion,
+nonzero exit and timeout clean
 up immediately. Cleanup errors leave the watchdog armed; service failures retry.
 SIGKILL cannot run finally, so the real systemd integration test explicitly
 checks that case. Keep the script and its Python executable available until
@@ -73,9 +75,9 @@ unrelated pre-existing rules.
 Unit tests cover exact rule scoping, invalid inputs, watchdog setup refusal,
 failed insertion/test, timeout and cleanup errors. The privileged CI job checks
 actual systemd cleanup after a failed command and SIGKILL with an unmatchable
-test interface, alongside the existing namespace/kernel suite. The compatibility namespace
-test checks both directions of an already-established TCP socket after revoke and
-source preservation. Mesh fallback remains tested separately in PR #88.
+test interface, alongside the existing namespace/kernel suite. The namespace
+test checks both directions of an already-established TCP socket after revoke,
+source preservation and fail-closed fallback.
 
 Local Windows cannot run the Linux server suite (fcntl, Linux uid and privileged
 network namespaces are required). No live VPS, Termius session, provider-console

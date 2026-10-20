@@ -113,12 +113,13 @@ release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
 release_identity="${BPC_ROOT}/current/deploy/bpc_identity.py"
 release_access="${BPC_ROOT}/current/deploy/bpc_access.py"
 release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"
+release_topology="${BPC_ROOT}/current/deploy/bpc_topology.py"
 release_p2p="${BPC_ROOT}/current/deploy/bpc_p2p.py"
 release_controller_enrollment="${BPC_ROOT}/current/deploy/bpc_controller_enrollment.py"
 release_gateway_snapshot="${BPC_ROOT}/current/deploy/bpc_gateway_snapshot.py"
 release_gateway_dataplane="${BPC_ROOT}/current/deploy/bpc_gateway_dataplane.py"
 release_package="${BPC_ROOT}/current/src/bpc_connect"
-for required in "${release_control_server}" "${release_node_enrollment}" "${release_identity}" "${release_access}" "${release_control_state}" "${release_p2p}" "${release_controller_enrollment}" "${release_gateway_snapshot}" "${release_gateway_dataplane}" "${release_package}"; do
+for required in "${release_control_server}" "${release_node_enrollment}" "${release_identity}" "${release_access}" "${release_control_state}" "${release_topology}" "${release_p2p}" "${release_controller_enrollment}" "${release_gateway_snapshot}" "${release_gateway_dataplane}" "${release_package}"; do
   if [[ ! -e "${required}" ]]; then
     echo "BPC control runtime dependency is missing from the current release: ${required}" >&2
     exit 3
@@ -134,6 +135,7 @@ install -m 0600 "${release_node_enrollment}" "${runtime_tmp}/bpc_node_enrollment
 install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"
 install -m 0600 "${release_access}" "${runtime_tmp}/bpc_access.py"
 install -m 0600 "${release_control_state}" "${runtime_tmp}/bpc_control_state.py"
+install -m 0600 "${release_topology}" "${runtime_tmp}/bpc_topology.py"
 install -m 0600 "${release_p2p}" "${runtime_tmp}/bpc_p2p.py"
 install -m 0600 "${release_controller_enrollment}" "${runtime_tmp}/bpc_controller_enrollment.py"
 install -m 0600 "${release_gateway_snapshot}" "${runtime_tmp}/bpc_gateway_snapshot.py"
@@ -243,8 +245,12 @@ CONTROL_HOST=${SUBSCRIPTION_HOST}
 CONTROL_PORT=${PORT}
 CONTROL_CERT=${SUBSCRIPTION_CERT}
 CONTROL_KEY=${SUBSCRIPTION_KEY}
+CONTROL_MODE=primary
 RUNTIME
 chmod 0600 "${CONTROL_DIR}/runtime.env"
+
+python3 "${BPC_ROOT}/current/deploy/bpc_control_runtime.py" \
+  --state-dir "${BPC_STATE_DIR}" --release-root "${BPC_ROOT}"
 
 cat > /etc/systemd/system/bpc-control.service <<UNIT
 [Unit]
@@ -263,7 +269,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=${CONTROL_DIR} ${AGENT_DIR}
+ReadWritePaths=${CONTROL_DIR} ${AGENT_DIR} ${BPC_STATE_DIR}/runtime-topology
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
@@ -302,7 +308,7 @@ if [[ -f "${node_model}" ]]; then
 fi
 
 if [[ -x "${BPC_ROOT}/current/deploy/bpc-agent.sh" ]]; then
-  "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update
+  "${BPC_ROOT}/current/deploy/bpc-agent.sh" publish-update --automatic
 fi
 
 cat <<DONE

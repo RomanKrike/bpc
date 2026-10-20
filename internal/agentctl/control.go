@@ -72,6 +72,20 @@ type State struct {
 	WireGuard        WireGuardProfile `json:"wireguard"`
 }
 
+// ValidateRuntimeConfig checks persisted paths against the locally saved peer.
+// Config sync deliberately stores the full WireGuard profile outside Config;
+// server responses still use the standalone ValidateRuntimeConfig validator.
+func (s State) ValidateRuntimeConfig() error {
+	cfg := s.Config
+	if cfg.WireGuard == nil && s.WireGuard.PeerPublicKey != "" {
+		profile := s.WireGuard
+		profile.PrivateKey = ""
+		profile.PresharedKey = ""
+		cfg.WireGuard = &profile
+	}
+	return ValidateRuntimeConfig(cfg)
+}
+
 type EnrollmentRequest struct {
 	Token              string `json:"token"`
 	Device             string `json:"device"`

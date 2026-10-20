@@ -250,6 +250,44 @@ def ingress_fixture(tmp_path: Path, monkeypatch):
     return root, commands, replacements, chains
 
 
+def test_mesh_ingress_preserves_source_and_blocks_legacy_fallback(tmp_path, monkeypatch):
+    root, commands, replacements, _ = ingress_fixture(tmp_path, monkeypatch)
+    access.sync_access_firewall(root)
+    guard = next(rules for _, chain, rules in replacements if chain == "BPC-MESH-GUARD")
+    assert guard == [["-s", "10.253.0.2/32", "-d", "192.168.88.0/24",
+                      "!", "-o", "bpcrt0", "-j", "DROP"]]
+    rules = next(rules for _, chain, rules in replacements if chain == access.CHAIN_NAME)
+    assert rules[0] == ["-j", "BPC-MESH-GUARD"]
+    assert rules.index(["-s", "10.253.0.2/32", "-j", "DROP"]) < len(rules) - 1
+    assert any("PREROUTING" in command and "-I" in command for command in commands)
+    assert not any("nat" in command or command[0] == "ip" for command in commands)
+
+
+def test_withdrawn_route_and_revoked_device_remain_fail_closed(tmp_path, monkeypatch):
+    root, _, replacements, _ = ingress_fixture(tmp_path, monkeypatch)
+    access.sync_access_firewall(root)
+    access.atomic_json(tmp_path / "enrollment.json", {"config": {"routing": {
+        "version": 1, "local_public": True, "routes": [],
+    }}})
+    access.atomic_json(root / "devices" / "d1.json", device(revoked=True))
+    replacements.clear()
+    access.sync_access_firewall(root)
+    guard = next(rules for _, chain, rules in replacements if chain == "BPC-MESH-GUARD")
+    assert "192.168.88.0/24" in guard[0]
+    rules = next(rules for _, chain, rules in replacements if chain == access.CHAIN_NAME)
+    assert ["-s", "10.253.0.2/32", "-j", "DROP"] in rules
+    assert not any("192.168.88.0/24" in rule and "ACCEPT" in rule for rule in rules)
+
+
+def test_mesh_ingress_refuses_foreign_chain(tmp_path, monkeypatch):
+    root, commands, _, chains = ingress_fixture(tmp_path, monkeypatch)
+    chains.add("BPC-MESH-IN")
+    with pytest.raises(access.AccessError, match="ownership is not proven"):
+        access.sync_access_firewall(root)
+    assert not any("-F" in command for command in commands)
+    assert not (root / "mesh-ingress-firewall.json").exists()
+
+
 @pytest.mark.parametrize("change", ["deny", "revoke", "delete", "renumber"])
 def test_compat_revoke_and_retired_addresses_block_both_directions(tmp_path, monkeypatch, change):
     root, commands, replacements, _ = ingress_fixture(tmp_path, monkeypatch)

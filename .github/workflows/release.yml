@@ -86,8 +86,7 @@ jobs:
       - name: Build deployment bundle
         if: steps.version.outputs.exists != 'true'
         run: |
-          chmod +x scripts/build-release.sh
-          ./scripts/build-release.sh "${{ steps.version.outputs.version }}" release-dist
+          bash scripts/build-unified-release.sh "${{ steps.version.outputs.version }}" release-dist
           cp dist/* release-dist/
           (cd release-dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\n' | sort | xargs -r sha256sum > SHA256SUMS)
 

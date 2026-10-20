@@ -1,5 +1,15 @@
 # Development roadmap
 
+Current work: unify mesh and P2P into stable 0.22.0 with a verified one-time
+candidate transition and guarded ordinary updates. See [procedure](unified-release-update.md)
+and ADR 0006. Operational mesh and Windows streaming acceptance remain pending.
+
+Previous candidate context: P2P was transplanted onto the installed mesh
+commit 8c1abbaf454261fc500f788370ffb54bb70f265e, preserving routed topology and
+watermarked Raft recovery. See [candidate update](mesh-p2p-update.md) and STATUS.
+The stable-branch history below does not authorize replacing an active mesh
+server with a stable bundle or claim native operational acceptance.
+
 Baseline: main `c00f265` (2026-10-18 inspection). This is a process roadmap;
 existing feature branches are not claims of shipped main behavior.
 

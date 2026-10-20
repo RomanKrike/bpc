@@ -66,6 +66,27 @@ if [[ ! -s "${BPC_STATE_DIR}/cluster/controller.json" ]]; then
   echo "Distributed Controller marker is missing; complete Raft enrollment first" >&2
   exit 3
 fi
+# Historical files may still need projection after Raft catch-up.
+python3 - "${BPC_ROOT}/current/deploy" "${CONTROL_DIR}" <<'PY_BARRIER'
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+import bpc_control_state
+
+deadline = time.monotonic() + 45
+while True:
+    try:
+        result = bpc_control_state.strong_read(Path(sys.argv[2]))
+        break
+    except bpc_control_state.ControlStateError:
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(2)
+if result.get("local_fallback"):
+    raise SystemExit("Distributed Controller barrier is unavailable")
+PY_BARRIER
 if [[ ! -s "${CONTROL_DIR}/config.json" ]]; then
   echo "Canonical control/config.json has not caught up through Raft" >&2
   exit 3
@@ -76,12 +97,13 @@ release_node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
 release_identity="${BPC_ROOT}/current/deploy/bpc_identity.py"
 release_access="${BPC_ROOT}/current/deploy/bpc_access.py"
 release_control_state="${BPC_ROOT}/current/deploy/bpc_control_state.py"
+release_topology="${BPC_ROOT}/current/deploy/bpc_topology.py"
 release_p2p="${BPC_ROOT}/current/deploy/bpc_p2p.py"
 release_controller_enrollment="${BPC_ROOT}/current/deploy/bpc_controller_enrollment.py"
 release_gateway_snapshot="${BPC_ROOT}/current/deploy/bpc_gateway_snapshot.py"
 release_gateway_dataplane="${BPC_ROOT}/current/deploy/bpc_gateway_dataplane.py"
 release_package="${BPC_ROOT}/current/src/bpc_connect"
-for required in   "${release_control_server}" "${release_node_enrollment}"   "${release_identity}" "${release_access}" "${release_control_state}" "${release_p2p}"   "${release_controller_enrollment}" "${release_gateway_snapshot}"   "${release_gateway_dataplane}" "${release_package}"; do
+for required in   "${release_control_server}" "${release_node_enrollment}"   "${release_identity}" "${release_access}" "${release_control_state}" "${release_topology}" "${release_p2p}"   "${release_controller_enrollment}" "${release_gateway_snapshot}"   "${release_gateway_dataplane}" "${release_package}"; do
   if [[ ! -e "${required}" ]]; then
     echo "BPC control runtime dependency is missing: ${required}" >&2
     exit 3
@@ -134,6 +156,7 @@ install -m 0600 "${release_node_enrollment}" "${runtime_tmp}/bpc_node_enrollment
 install -m 0600 "${release_identity}" "${runtime_tmp}/bpc_identity.py"
 install -m 0600 "${release_access}" "${runtime_tmp}/bpc_access.py"
 install -m 0600 "${release_control_state}" "${runtime_tmp}/bpc_control_state.py"
+install -m 0600 "${release_topology}" "${runtime_tmp}/bpc_topology.py"
 install -m 0600 "${release_p2p}" "${runtime_tmp}/bpc_p2p.py"
 install -m 0600 "${release_controller_enrollment}" "${runtime_tmp}/bpc_controller_enrollment.py"
 install -m 0600 "${release_gateway_snapshot}" "${runtime_tmp}/bpc_gateway_snapshot.py"
@@ -157,8 +180,12 @@ CONTROL_HOST=${HOSTNAME}
 CONTROL_PORT=${PORT}
 CONTROL_CERT=${cert_file}
 CONTROL_KEY=${key_file}
+CONTROL_MODE=replica
 RUNTIME
 chmod 0600 "${CONTROL_DIR}/runtime.env"
+
+python3 "${BPC_ROOT}/current/deploy/bpc_control_runtime.py" \
+  --state-dir "${BPC_STATE_DIR}" --release-root "${BPC_ROOT}"
 
 cat > /etc/systemd/system/bpc-control.service <<UNIT
 [Unit]
@@ -177,7 +204,7 @@ PrivateTmp=true
 PrivateDevices=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=${CONTROL_DIR} ${BPC_STATE_DIR}/cluster
+ReadWritePaths=${CONTROL_DIR} ${BPC_STATE_DIR}/cluster ${BPC_STATE_DIR}/runtime-topology
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/raft"
@@ -16,19 +17,30 @@ import (
 
 const ProtocolVersion = 1
 
+// Public Controllers use a WAN profile; the library retains upstream defaults
+// when callers leave the optional timing fields at zero.
+const (
+	DefaultRaftHeartbeatTimeout   = 3 * time.Second
+	DefaultRaftElectionTimeout    = 3 * time.Second
+	DefaultRaftLeaderLeaseTimeout = 2 * time.Second
+)
+
 var ErrNotLeader = errors.New("not raft leader")
 
 type NodeConfig struct {
-	NodeID            string
-	RaftBindAddress   string
-	RaftAddress       string
-	StateRoot         string
-	DataDir           string
-	TLS               TLSMaterial
-	Bootstrap         bool
-	SnapshotRetain    int
-	SnapshotThreshold uint64
-	SnapshotInterval  time.Duration
+	NodeID                 string
+	RaftBindAddress        string
+	RaftAddress            string
+	StateRoot              string
+	DataDir                string
+	TLS                    TLSMaterial
+	Bootstrap              bool
+	SnapshotRetain         int
+	SnapshotThreshold      uint64
+	SnapshotInterval       time.Duration
+	RaftHeartbeatTimeout   time.Duration
+	RaftElectionTimeout    time.Duration
+	RaftLeaderLeaseTimeout time.Duration
 }
 
 type ControllerMember struct {
@@ -48,6 +60,7 @@ type Status struct {
 	LastLogIndex    uint64             `json:"last_log_index"`
 	SnapshotIndex   uint64             `json:"snapshot_index"`
 	Revision        uint64             `json:"revision"`
+	RevisionFloor   uint64             `json:"revision_floor"`
 	StateSchema     uint64             `json:"state_schema_version"`
 	ProtocolVersion uint64             `json:"protocol_version"`
 	RaftProtocol    uint64             `json:"raft_protocol_version"`
@@ -59,11 +72,38 @@ type Status struct {
 }
 
 type Node struct {
-	config    NodeConfig
-	store     *Store
-	fsm       *StateMachine
-	raft      *raft.Raft
-	transport *raft.NetworkTransport
+	config        NodeConfig
+	store         *Store
+	fsm           *StateMachine
+	raft          *raft.Raft
+	transport     *raft.NetworkTransport
+	revisionFloor uint64
+	snapshots     raft.SnapshotStore
+	mutationMu    sync.RWMutex
+}
+
+func raftRuntimeConfig(config NodeConfig) (*raft.Config, error) {
+	result := raft.DefaultConfig()
+	result.LocalID = raft.ServerID(config.NodeID)
+	result.SnapshotThreshold = config.SnapshotThreshold
+	result.SnapshotInterval = config.SnapshotInterval
+	result.ShutdownOnRemove = true
+	for _, setting := range []struct {
+		value  time.Duration
+		target *time.Duration
+	}{
+		{config.RaftHeartbeatTimeout, &result.HeartbeatTimeout},
+		{config.RaftElectionTimeout, &result.ElectionTimeout},
+		{config.RaftLeaderLeaseTimeout, &result.LeaderLeaseTimeout},
+	} {
+		if setting.value != 0 {
+			*setting.target = setting.value
+		}
+	}
+	if err := raft.ValidateConfig(result); err != nil {
+		return nil, fmt.Errorf("invalid Raft configuration: %w", err)
+	}
+	return result, nil
 }
 
 func NewNode(config NodeConfig) (*Node, error) {
@@ -81,6 +121,10 @@ func NewNode(config NodeConfig) (*Node, error) {
 	}
 	if config.SnapshotInterval <= 0 {
 		config.SnapshotInterval = 30 * time.Second
+	}
+	raftConfig, err := raftRuntimeConfig(config)
+	if err != nil {
+		return nil, err
 	}
 	if err := os.MkdirAll(config.DataDir, 0o700); err != nil {
 		return nil, err
@@ -100,6 +144,16 @@ func NewNode(config NodeConfig) (*Node, error) {
 		_ = store.Close()
 		return nil, err
 	}
+	availableSnapshots, err := snapshots.List()
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	revisionFloor, err := store.prepareReplay(len(availableSnapshots) != 0)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	stream, err := NewTLSStreamLayer(config.RaftBindAddress, config.RaftAddress, config.TLS)
 	if err != nil {
 		_ = store.Close()
@@ -110,12 +164,6 @@ func NewNode(config NodeConfig) (*Node, error) {
 		MaxPool: 4,
 		Timeout: 5 * time.Second,
 	})
-
-	raftConfig := raft.DefaultConfig()
-	raftConfig.LocalID = raft.ServerID(config.NodeID)
-	raftConfig.SnapshotThreshold = config.SnapshotThreshold
-	raftConfig.SnapshotInterval = config.SnapshotInterval
-	raftConfig.ShutdownOnRemove = true
 
 	existing, err := raft.HasExistingState(store, store, snapshots)
 	if err != nil {
@@ -153,7 +201,7 @@ func NewNode(config NodeConfig) (*Node, error) {
 			return nil, err
 		}
 	}
-	return &Node{config: config, store: store, fsm: fsm, raft: instance, transport: transport}, nil
+	return &Node{config: config, store: store, fsm: fsm, raft: instance, transport: transport, revisionFloor: revisionFloor, snapshots: snapshots}, nil
 }
 
 func (n *Node) IsLeader() bool { return n.raft.State() == raft.Leader }
@@ -176,8 +224,16 @@ func (n *Node) WaitForLeader(timeout time.Duration) error {
 }
 
 func (n *Node) Submit(command Mutation, timeout time.Duration) (MutationResult, error) {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
+	if command.Kind == "ReconcileRevision" || command.RevisionMinimum != 0 {
+		return MutationResult{}, errors.New("use administrative revision reconciliation")
+	}
 	if !n.IsLeader() {
 		return MutationResult{}, ErrNotLeader
+	}
+	if err := n.checkRevisionFloor(); err != nil {
+		return MutationResult{}, err
 	}
 	raw, err := json.Marshal(command)
 	if err != nil {
@@ -189,6 +245,7 @@ func (n *Node) Submit(command Mutation, timeout time.Duration) (MutationResult, 
 	}
 	switch response := future.Response().(type) {
 	case MutationResult:
+		response.CommitIndex = future.Index()
 		return response, nil
 	case error:
 		return MutationResult{}, response
@@ -206,6 +263,9 @@ func (n *Node) StrongRead(timeout time.Duration) (uint64, uint64, error) {
 	if err := n.raft.Barrier(timeout).Error(); err != nil {
 		return 0, 0, err
 	}
+	if err := n.checkRevisionFloor(); err != nil {
+		return 0, 0, err
+	}
 	if err := n.fsm.ReconcileProjection(); err != nil {
 		return 0, 0, err
 	}
@@ -216,6 +276,9 @@ func (n *Node) WaitApplied(index uint64, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if n.raft.AppliedIndex() >= index {
+			if err := n.checkRevisionFloor(); err != nil {
+				return err
+			}
 			return n.fsm.ReconcileProjection()
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -223,9 +286,21 @@ func (n *Node) WaitApplied(index uint64, timeout time.Duration) error {
 	return fmt.Errorf("local controller did not apply commit index %d before timeout", index)
 }
 
+func (n *Node) checkRevisionFloor() error {
+	if revision := n.fsm.Revision(); revision < n.revisionFloor {
+		return fmt.Errorf("canonical revision %d is below preserved pre-replay floor %d; migration requires revision reconciliation", revision, n.revisionFloor)
+	}
+	return nil
+}
+
 func (n *Node) AddMember(id, address string, voter bool, timeout time.Duration) error {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
 	if !n.IsLeader() {
 		return ErrNotLeader
+	}
+	if err := n.checkRevisionFloor(); err != nil {
+		return err
 	}
 	var future raft.IndexFuture
 	if voter {
@@ -237,8 +312,13 @@ func (n *Node) AddMember(id, address string, voter bool, timeout time.Duration) 
 }
 
 func (n *Node) RemoveMember(id string, force bool, timeout time.Duration) error {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
 	if !n.IsLeader() {
 		return ErrNotLeader
+	}
+	if err := n.checkRevisionFloor(); err != nil {
+		return err
 	}
 	configuration := n.raft.GetConfiguration()
 	if err := configuration.Error(); err != nil {
@@ -263,9 +343,19 @@ func (n *Node) RemoveMember(id string, force bool, timeout time.Duration) error 
 	return n.raft.RemoveServer(raft.ServerID(id), 0, timeout).Error()
 }
 
-func (n *Node) Snapshot() error { return n.raft.Snapshot().Error() }
+func (n *Node) Snapshot() error {
+	if err := n.checkRevisionFloor(); err != nil {
+		return err
+	}
+	return n.raft.Snapshot().Error()
+}
 
-func (n *Node) ExportSnapshot() ([]byte, error) { return n.fsm.ExportSnapshot() }
+func (n *Node) ExportSnapshot() ([]byte, error) {
+	if err := n.checkRevisionFloor(); err != nil {
+		return nil, err
+	}
+	return n.fsm.ExportSnapshot()
+}
 
 func (n *Node) Revision() uint64 { return n.fsm.Revision() }
 
@@ -298,6 +388,8 @@ func SnapshotClusterID(raw []byte) (string, error) {
 }
 
 func (n *Node) RestoreSnapshot(raw []byte, timeout time.Duration) error {
+	n.mutationMu.RLock()
+	defer n.mutationMu.RUnlock()
 	if !n.IsLeader() {
 		return ErrNotLeader
 	}
@@ -326,6 +418,7 @@ func (n *Node) Status() (Status, error) {
 		NodeID:          n.config.NodeID,
 		RaftRole:        stats["state"],
 		Revision:        n.fsm.Revision(),
+		RevisionFloor:   n.revisionFloor,
 		StateSchema:     n.fsm.SchemaVersion(),
 		ProtocolVersion: ProtocolVersion,
 		RaftProtocol:    parseUint(stats["protocol_version"]),

@@ -19,6 +19,7 @@ from bpc_gateway_snapshot import (  # noqa: E402
     GatewaySnapshotError,
     build_security_snapshot,
     install_security_snapshot,
+    load_valid_security_snapshot,
     snapshot_allows_device,
     snapshot_contains_sensitive_auth_db,
     verify_security_snapshot,
@@ -224,3 +225,71 @@ def test_gateway_snapshot_install_rejects_revision_rollback(tmp_path: Path) -> N
     install_security_snapshot(gateway, current, verification_key, now=2_010)
     with pytest.raises(GatewaySnapshotError, match="rollback"):
         install_security_snapshot(gateway, older, verification_key, now=2_020)
+
+
+def test_runtime_update_preserves_snapshot_trust_deadline_and_revision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import bpc_node_enrollment as enrollment
+
+    controller = tmp_path / "controller"
+    seed_cluster(controller)
+    seed_security_state(controller / "control")
+    snapshot, key = build_security_snapshot(
+        controller / "control", revision=10, now=2000, valid_for=300,
+    )
+    gateway = tmp_path / "gateway"
+    enrollment.stage_node_runtime(gateway)
+    install_security_snapshot(gateway, snapshot, key, now=2010)
+    names = ("security-snapshot.json", "security-trust.json")
+    before = {name: (gateway / "runtime" / name).read_bytes() for name in names}
+    enrollment.stage_node_runtime(gateway)  # repair the same installed version
+    release = tmp_path / "new-release"
+    release.mkdir()
+    (release / "VERSION").write_text("0.21.0-dev\n")
+    (release / "deploy").symlink_to(enrollment.ROOT / "deploy", target_is_directory=True)
+    (release / "src").symlink_to(enrollment.ROOT / "src", target_is_directory=True)
+    monkeypatch.setattr(enrollment, "ROOT", release)
+    enrollment.stage_node_runtime(gateway)
+    assert (gateway / "runtime").resolve().name == "runtime-0.21.0-dev"
+    for name in names:
+        path = gateway / "runtime" / name
+        assert path.read_bytes() == before[name]
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert load_valid_security_snapshot(gateway, now=2020)["revision"] == 10
+    with pytest.raises(GatewaySnapshotError, match="expired"):
+        load_valid_security_snapshot(gateway, now=2301)
+    older, _ = build_security_snapshot(controller / "control", revision=9, now=2021)
+    with pytest.raises(GatewaySnapshotError, match="rollback"):
+        install_security_snapshot(gateway, older, key, now=2022)
+
+
+def test_snapshot_refresh_and_runtime_repair_are_serialized(tmp_path: Path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    import bpc_node_enrollment as enrollment
+
+    controller = tmp_path / "controller"
+    seed_cluster(controller)
+    seed_security_state(controller / "control")
+    snapshots = [
+        build_security_snapshot(controller / "control", revision=revision, now=2000)
+        for revision in range(10, 16)
+    ]
+    gateway = tmp_path / "gateway"
+    enrollment.stage_node_runtime(gateway)
+    install_security_snapshot(gateway, *snapshots[0], now=2010)
+
+    def repair() -> None:
+        for _ in range(5):
+            enrollment.stage_node_runtime(gateway)
+
+    def refresh() -> None:
+        for snapshot, key in snapshots[1:]:
+            install_security_snapshot(gateway, snapshot, key, now=2010)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        tasks = [executor.submit(repair), executor.submit(refresh)]
+        for task in tasks:
+            task.result(timeout=15)
+    assert load_valid_security_snapshot(gateway, now=2020)["revision"] == 15

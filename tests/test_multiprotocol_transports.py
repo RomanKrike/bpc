@@ -120,8 +120,14 @@ def test_listener_checker_covers_every_expected_socket() -> None:
 def test_update_recovery_is_release_safe_and_repairs_firewalls() -> None:
     assert 'repair_firewall_service "${ru_dir}/awg/enabled" "bpc-awg-firewall.service"' in MIGRATE
     assert 'repair_firewall_service "${ru_dir}/wg/enabled" "bpc-wg-firewall.service"' in MIGRATE
-    assert '"${BPC_ROOT}/current/deploy/bpc-migrate.sh" || true' in UPDATE
+    # A live Controller may have committed newer security state. Do not rerun
+    # migration under an older release or restore the old filesystem snapshot.
+    # Root-owned updater fixtures exercise failed-health state preservation.
+    assert '"${BPC_ROOT}/current/deploy/bpc-migrate.sh" || true' not in UPDATE
     assert '"${new_target}/deploy/bpc-migrate.sh" || true' not in UPDATE
+    assert 'rm -rf "${BPC_STATE_DIR}"' not in UPDATE
+    assert 'tar -C /etc -xzf "${backup}"' not in UPDATE
+    assert "current state retained" in UPDATE
     assert 'if ! "${BPC_ROOT}/current/deploy/bpc-migrate.sh"; then' in UPDATE
     assert "Update migration failed." in UPDATE
 

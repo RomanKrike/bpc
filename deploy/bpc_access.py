@@ -323,6 +323,67 @@ def _replace_firewall_chain(table: str, chain: str, rules: list[list[str]]) -> N
         raise AccessError(completed.stderr.strip() or "firewall chain replacement failed")
 
 
+def sync_mesh_ingress(root: Path, interface: str) -> bool:
+    """Bridge the owned compatibility ingress to routed mesh, preserving source IP.
+
+    The forwarding guard survives missing/expired enrollment and stopped mesh.
+    Thus a marked packet cannot fall through to a legacy LAN route when the
+    routed daemon removes its policy rule/table. Access remains a separate gate.
+    """
+    marker = root / "mesh-ingress-firewall.json"
+    previous = read_json(marker) if marker.is_file() else {}
+    enrollment_path = root.parent / "enrollment.json"
+    enrollment = read_json(enrollment_path) if enrollment_path.is_file() else {}
+    routing = enrollment.get("config", {}).get("routing", {})
+    if not isinstance(routing, dict):
+        raise AccessError("invalid local mesh enrollment")
+    enabled = bool(routing.get("local_public")) and routing.get("version") == 1
+    if not enabled and not previous:
+        return False
+    if previous and previous.get("interface") != interface:
+        raise AccessError("mesh ingress interface changed; refusing adoption")
+
+    # Retain previously managed CIDRs/sources after withdrawal or revocation.
+    # They must be denied rather than silently routed through compatibility WG.
+    routes = set(previous.get("routes", []))
+    sources = set(previous.get("sources", []))
+    if enabled:
+        for route in routing.get("routes", []):
+            routes.add(canonical_cidr(str(route["cidr"])))
+    for item in _active_client_devices(root, include_inactive=True):
+        sources.add(item["_access_source"])
+    routes = sorted(canonical_cidr(str(value)) for value in routes)
+    sources = sorted(str(ipaddress.IPv4Interface(value).ip) + "/32" for value in sources)
+    if not routes or not sources:
+        return False
+
+    chains = [("filter", "BPC-MESH-GUARD"), ("mangle", "BPC-MESH-IN")]
+    exists = {}
+    for table, chain in chains:
+        exists[chain] = _run(["iptables", "-t", table, "-nL", chain], check=False).returncode == 0
+        if exists[chain] and previous.get("chains") != [name for _, name in chains]:
+            raise AccessError(f"ownership is not proven for chain {chain}")
+    # Persist ownership before creating chains, so interrupted setup is retryable.
+    atomic_json(marker, {"version": 1, "interface": interface,
+                         "chains": [name for _, name in chains],
+                         "routes": routes, "sources": sources})
+    for table, chain in chains:
+        if not exists[chain]:
+            _run(["iptables", "-t", table, "-N", chain])
+
+    guard, marks = [], []
+    for source in sources:
+        for route in routes:
+            match = ["-s", source, "-d", route]
+            guard.append([*match, "!", "-o", "bpcrt0", "-j", "DROP"])
+            marks.append([*match, "-j", "MARK", "--set-xmark", "0x425043/0xffffffff"])
+    # Install the guard before the mark. With a missing mesh route/rule the
+    # legacy output interface is blocked; unrelated sources/routes are untouched.
+    _replace_firewall_chain("filter", "BPC-MESH-GUARD", guard)
+    _replace_firewall_chain("mangle", "BPC-MESH-IN", marks)
+    return True
+
+
 def _prepend_access_jump(interface: str, direction: str = "-i") -> None:
     # Distinct owned comments let us remove the old jump by its exact spec
     # after inserting the new one. Never delete a mutable numeric rule index.
@@ -403,7 +464,8 @@ def _sync_access_firewall_locked(root: Path) -> None:
     else:
         atomic_json(state_path, {"version": 1, "interface": interface, "chain": CHAIN_NAME})
         _run(["iptables", "-N", CHAIN_NAME])
-    rules = []
+    mesh_enabled = sync_mesh_ingress(root, interface)
+    rules = [["-j", "BPC-MESH-GUARD"]] if mesh_enabled else []
     # Check current authorization before broad established allowances.
     # A stale established flow must not bypass an Access withdrawal.
     known_sources = set(previous.get("sources", []))
@@ -420,6 +482,8 @@ def _sync_access_firewall_locked(root: Path) -> None:
     # the responder's initiation policy here would break permitted peer flows.
     authorized = [(str(device["_access_source"]), effective_routes(root, device))
                   for device in devices]
+    if mesh_enabled:
+        known_sources.update(read_json(root / "mesh-ingress-firewall.json")["sources"])
     active_sources = {str(device["_access_source"]) for device in devices
                       if bool(device.get("enabled", True))
                       and not bool(device.get("revoked", False))
@@ -462,6 +526,10 @@ def _sync_access_firewall_locked(root: Path) -> None:
 
     _prepend_access_jump(interface, "-o")
     _prepend_access_jump(interface)
+    if mesh_enabled:
+        jump = ["-i", interface, "-j", "BPC-MESH-IN"]
+        if _run(["iptables", "-t", "mangle", "-C", "PREROUTING", *jump], check=False).returncode:
+            _run(["iptables", "-t", "mangle", "-I", "PREROUTING", "1", *jump])
 
     atomic_json(
         state_path,

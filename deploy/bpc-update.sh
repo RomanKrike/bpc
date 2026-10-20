@@ -5,6 +5,16 @@ REPO="${BPC_REPO:-RomanKrike/bpc}"
 BPC_ROOT="${BPC_ROOT:-/opt/bpc}"
 BPC_STATE_DIR="${BPC_STATE_DIR:-/etc/bpc-connect}"
 BACKUP_DIR="${BPC_BACKUP_DIR:-/var/backups/bpc}"
+LOCAL_BUNDLE=""
+EXPECTED_SHA=""
+if [[ $# -gt 0 ]]; then
+  if [[ $# -ne 4 || "$1" != --bundle || "$3" != --sha256 ]]; then
+    echo "Usage: bpc-update [--bundle FILE --sha256 TRUSTED_SHA256]" >&2
+    exit 2
+  fi
+  LOCAL_BUNDLE="$2"
+  EXPECTED_SHA="$4"
+fi
 
 if [[ ${EUID} -ne 0 ]]; then
   echo "Run bpc-update as root" >&2
@@ -51,12 +61,27 @@ reconcile_command_links() {
   done
 }
 
+umask 077
+exec 9>"${BPC_ROOT}/.update.lock"
+flock -n 9 || { echo "Another BPC update is running." >&2; exit 3; }
+
 current_target="$(readlink -f "${BPC_ROOT}/current")"
 current_version="$(tr -d '[:space:]' < "${BPC_ROOT}/current/VERSION")"
 
-# Repair command links on every invocation, even when the installed version is
-# already the latest. This also exposes commands that were introduced by the
-# release being installed by an older updater.
+updater_path="$(readlink -f -- "${BASH_SOURCE[0]}")"
+verifier="$(cd -- "$(dirname -- "${updater_path}")/../scripts" && pwd)/verify-mesh-candidate.py"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT
+mkdir -p "${tmp}/release"
+if [[ -n "${LOCAL_BUNDLE}" ]]; then
+  verification_options=()
+  if [[ -f "${BPC_ROOT}/current/RELEASE.json" ]]; then
+    verification_options=(--stable-from "${current_version}")
+  fi
+  python3 "${verifier}" "${LOCAL_BUNDLE}" "${EXPECTED_SHA}" \
+    "${verification_options[@]}" --extract "${tmp}/release"
+else
 reconcile_command_links "${BPC_ROOT}/current"
 
 if [[ -x "${BPC_ROOT}/current/deploy/bpc-ensure-dns.sh" ]]; then
@@ -69,8 +94,6 @@ if ! python3 -c 'import yaml' >/dev/null 2>&1; then
   apt-get install -y --no-install-recommends python3 python3-yaml
 fi
 
-tmp="$(mktemp -d)"
-trap 'rm -rf "${tmp}"' EXIT
 asset_base="https://github.com/${REPO}/releases/latest/download"
 
 curl --fail --location --proto '=https' --tlsv1.2 \
@@ -88,11 +111,24 @@ curl --fail --location --proto '=https' --tlsv1.2 \
   printf '%s\n' "${checksum_line}" | sha256sum --check --strict -
 )
 
-mkdir -p "${tmp}/release"
-tar -xzf "${tmp}/bpc-connect-deploy.tar.gz" -C "${tmp}/release"
+download_sha="$(sha256sum "${tmp}/bpc-connect-deploy.tar.gz" | cut -d ' ' -f 1)"
+python3 "${verifier}" "${tmp}/bpc-connect-deploy.tar.gz" "${download_sha}" \
+  --stable-from "${current_version}" --extract "${tmp}/release"
+fi
+
 latest_version="$(tr -d '[:space:]' < "${tmp}/release/VERSION")"
 
 if [[ "${latest_version}" == "${current_version}" ]]; then
+  if ! diff -qr --exclude=__pycache__ "${tmp}/release" "${current_target}" >/dev/null; then
+    echo "Installed candidate differs from pinned bundle." >&2
+    exit 3
+  fi
+  if [[ -n "${LOCAL_BUNDLE}" || -f "${current_target}/RELEASE.json" ]]; then
+    if ! "${BPC_ROOT}/current/deploy/bpc-migrate.sh" || ! "${BPC_ROOT}/current/deploy/bpc-healthcheck.sh"; then
+      echo "Installed candidate failed validation; current state retained." >&2
+      exit 5
+    fi
+  fi
   echo "BPC ${current_version} is already up to date."
   exit 0
 fi
@@ -106,7 +142,12 @@ new_target="${BPC_ROOT}/releases/${latest_version}"
 backup="${BACKUP_DIR}/state-$(date -u +%Y%m%dT%H%M%SZ)-${current_version}.tar.gz"
 
 if [[ -d "${BPC_STATE_DIR}" ]]; then
-  tar -C /etc -czf "${backup}" "$(basename "${BPC_STATE_DIR}")"
+  umask 077
+  tar -C "$(dirname "${BPC_STATE_DIR}")" -czf "${backup}" "$(basename "${BPC_STATE_DIR}")"
+fi
+if [[ -d "${new_target}" ]] && ! diff -qr --exclude=__pycache__ "${tmp}/release" "${new_target}" >/dev/null; then
+  echo "Candidate version already exists with different contents." >&2
+  exit 3
 fi
 if [[ ! -d "${new_target}" ]]; then
   mv "${tmp}/release" "${new_target}"
@@ -114,27 +155,14 @@ fi
 chmod 0755 "${new_target}/deploy/"*.sh
 
 rollback() {
-  echo "Update health check failed. Rolling back to BPC ${current_version}." >&2
-  ln -sfn "${current_target}" "${BPC_ROOT}/current"
-  reconcile_command_links "${BPC_ROOT}/current"
-  if [[ -f "${backup}" ]]; then
-    rm -rf "${BPC_STATE_DIR}"
-    tar -C /etc -xzf "${backup}"
-  fi
-
-  # Always run the migration logic from the release we just restored. Running
-  # the failed/new release migration against an old current symlink can call
-  # helpers that do not exist in the rollback target (observed on 0.7.2 -> 0.7.1).
-  if [[ -x "${BPC_ROOT}/current/deploy/bpc-migrate.sh" ]]; then
-    "${BPC_ROOT}/current/deploy/bpc-migrate.sh" || true
-  fi
-  if [[ -f "${BPC_STATE_DIR}/ru-node/config.json" && -x /usr/local/bin/xray ]]; then
-    /usr/local/bin/xray run -test -config "${BPC_STATE_DIR}/ru-node/config.json" >/dev/null || true
-    systemctl restart xray || true
-  fi
+  # Raft may already have committed entries while migration was running.
+  # Restoring a filesystem backup or an older FSM would rewind security state.
+  echo "Update failed validation; active release and current state retained." >&2
+  echo "Previous release: ${current_target}. Use a compatible forward fix to recover." >&2
 }
 
-ln -sfn "${new_target}" "${BPC_ROOT}/current"
+ln -sfn "${new_target}" "${BPC_ROOT}/.current-next"
+mv -Tf "${BPC_ROOT}/.current-next" "${BPC_ROOT}/current"
 reconcile_command_links "${BPC_ROOT}/current"
 
 if ! "${BPC_ROOT}/current/deploy/bpc-migrate.sh"; then
@@ -158,6 +186,6 @@ fi
 
 cat <<DONE
 BPC updated successfully: ${current_version} -> ${latest_version}
-Backup: ${backup}
+State backup (private filesystem copy, not a Raft restore point): ${backup}
 Current release: ${new_target}
 DONE

@@ -61,6 +61,9 @@ if [[ -f "${node_model}" ]]; then
 fi
 
 node_enrollment="${BPC_ROOT}/current/deploy/bpc_node_enrollment.py"
+if [[ -s "${BPC_STATE_DIR}/cluster/controller.json" && -f "${node_enrollment}" ]]; then
+  python3 "${node_enrollment}" --state-dir "${BPC_STATE_DIR}" controller-runtime-install
+fi
 if [[ -s "${BPC_STATE_DIR}/enrollment.json" && -f "${node_enrollment}" ]]; then
   python3 "${node_enrollment}" --state-dir "${BPC_STATE_DIR}" runtime-install
 fi
