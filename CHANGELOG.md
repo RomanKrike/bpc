@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.22.4
+
+### Added
+- Root administration command `bpc user passwd USER` prompts twice for a new Argon2id password on an existing account. `--password-stdin` supports automation without a password argument. User ID/status, Devices, keys, Access, P2P consent and existing sessions are retained; missing users are not created and disabled users are not enabled.
+- Cluster password changes use a canonical Raft mutation with an exact previous-record hash precondition, preserving concurrent administrative changes and refusing unavailable quorum without a local-write fallback.
+
 ## 0.22.3
 
 ### Fixed

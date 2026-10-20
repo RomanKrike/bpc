@@ -68,11 +68,22 @@ Administration:
 
 ~~~bash
 bpc user add roman
+bpc user passwd roman
 bpc user disable roman
 ~~~
 
 User add reads the password without placing it in the process command line.
 For automation, --password-stdin is available.
+
+Since 0.22.4 `bpc user passwd USER` changes the password of an existing User.
+It prompts twice without echo (or accepts `--password-stdin`), validates the
+same password length as creation and stores only a fresh Argon2id hash. Run as
+root on a Controller with healthy quorum. The cluster commit compares the exact
+prior User record, so a concurrent disable/change fails rather than being undone.
+Missing accounts are refused; disabled accounts remain disabled. User ID,
+Devices/keys, Access, P2P consent and current credentials/sessions are preserved.
+This command does not log out other computers or revoke a compromised session;
+use the existing explicit Device revocation action for that separate purpose.
 
 Disabling a User invalidates access/refresh credentials and disables owned
 Devices.

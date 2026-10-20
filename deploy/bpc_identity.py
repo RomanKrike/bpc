@@ -272,6 +272,38 @@ def create_user(root: Path, username: str, password: str, now: int | None = None
     return user
 
 
+def change_user_password(root: Path, username: str, password: str) -> dict[str, Any]:
+    """Change an existing account password; retain identity and existing sessions."""
+    if not 8 <= len(password) <= 1024:
+        raise IdentityError("password must contain between 8 and 1024 characters")
+    strong_read(root)
+    user = load_user_by_username(root, username)
+    if user is None:
+        raise IdentityError("user not found", 404)
+    path = _users(root) / f"{user['id']}.json"
+    original = path.read_bytes()
+    current = json.loads(original)
+    if not isinstance(current, dict) or current.get("id") != user["id"]:
+        raise IdentityError("user changed; retry password change", 409)
+    # Read the current complete record again: never overwrite a concurrent
+    # disable, rename or administrative change with an earlier cached User.
+    if normalize_username(str(current.get("username", ""))) != normalize_username(username):
+        raise IdentityError("user changed; retry password change", 409)
+    current["password_hash"] = PASSWORD_HASHER.hash(password)
+    if bpc_control_state.cluster_enabled(root):
+        try:
+            bpc_control_state.mutation(root, "ChangeUserPassword", [{
+                "op": "put", "path": path,
+                "data": json.dumps(current, sort_keys=True, separators=(",", ":")).encode(),
+                "expected_sha256": hashlib.sha256(original).hexdigest(),
+            }])
+        except bpc_control_state.ControlStateError as exc:
+            _raise_control_state(exc)
+    else:
+        atomic_json(path, current)
+    return current
+
+
 def load_user(root: Path, user_id: str) -> dict[str, Any]:
     if not re.fullmatch(r"[0-9a-f]{32}", user_id):
         raise IdentityError("invalid user", 401)
@@ -869,7 +901,7 @@ def _read_password(stdin: bool) -> str:
         return value.rstrip("\r\n")
     first = getpass.getpass("Password: ")
     second = getpass.getpass("Confirm password: ")
-    if not secrets.compare_digest(first, second):
+    if not secrets.compare_digest(first.encode("utf-8"), second.encode("utf-8")):
         raise IdentityError("passwords do not match")
     return first
 
@@ -884,6 +916,13 @@ def cmd_user_add(args: argparse.Namespace) -> int:
 def cmd_user_disable(args: argparse.Namespace) -> int:
     user = disable_user(Path(args.state_dir), args.username)
     print(f"Disabled user {user['username']}")
+    return 0
+
+
+def cmd_user_passwd(args: argparse.Namespace) -> int:
+    password = _read_password(bool(args.password_stdin))
+    user = change_user_password(Path(args.state_dir), args.username, password)
+    print(f"Password changed for {user['username']}; devices and existing sessions retained")
     return 0
 
 
@@ -924,6 +963,11 @@ def parser() -> argparse.ArgumentParser:
     add.add_argument("username")
     add.add_argument("--password-stdin", action="store_true")
     add.set_defaults(func=cmd_user_add)
+
+    passwd = commands.add_parser("user-passwd")
+    passwd.add_argument("username")
+    passwd.add_argument("--password-stdin", action="store_true")
+    passwd.set_defaults(func=cmd_user_passwd)
 
     disable = commands.add_parser("user-disable")
     disable.add_argument("username")

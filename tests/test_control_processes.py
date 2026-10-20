@@ -225,6 +225,32 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         expected = (nodes[0]["root"] / relative).read_bytes()
         for node in nodes:
             until(lambda node=node: (node["root"] / relative).read_bytes() == expected)
+        # Password administration through a real follower must commit via Raft
+        # and preserve the User identity/status on every Controller.
+        import bpc_identity as identity
+
+        account = identity.create_user(nodes[0]["root"] / "control", "password-test",
+                                       "old synthetic process password")
+        user_relative = Path("control/identity/users") / f"{account['id']}.json"
+        expected_user = (nodes[0]["root"] / user_relative).read_bytes()
+        for node in nodes:
+            until(lambda node=node: (node["root"] / user_relative).read_bytes() == expected_user)
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[1]["local"])
+        changed = identity.change_user_password(nodes[1]["root"] / "control", "password-test",
+                                                "new synthetic process password")
+        expected_user = (nodes[1]["root"] / user_relative).read_bytes()
+        for node in nodes:
+            until(lambda node=node: (node["root"] / user_relative).read_bytes() == expected_user)
+        assert changed["id"] == account["id"] and changed["enabled"] is True
+        monkeypatch.setattr(
+            enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[0]["local"])
+        with pytest.raises(identity.IdentityError):
+            identity.authenticate_local_user(nodes[0]["root"] / "control", "password-test",
+                                             "old synthetic process password")
+        authenticated = identity.authenticate_local_user(
+            nodes[0]["root"] / "control", "password-test", "new synthetic process password")
+        assert authenticated["id"] == account["id"]
         if LEGACY_BINARY:
             # Actual pre-watermark binary must block administrative recovery.
             before_revision = api(nodes[0], "/v1/health")["revision"]
