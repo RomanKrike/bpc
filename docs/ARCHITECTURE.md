@@ -15,6 +15,15 @@ gateway path. It does not replace gateway `BPC-ACCESS`. Native Windows acceptanc
 long-session coordination and NAT traversal remain pending; see the
 [operator guide](p2p-windows-pilot.md).
 
+The [account delivery candidate](adr/0005-account-p2p-delivery.md) reuses prepared
+HTTPS downloads and the existing tray UI. Explicit account mode prepares fresh
+enrollments and delivers one public session to both owned Devices without host
+invitation acceptance. One expiring public slot per Device is replicated under
+`control/p2p-delivery/`; keys, packets and flow state are never stored there.
+This extends ADR 0003's earlier no-session-state scope for replica-safe delivery.
+Consent withdrawal survives restart/reinstall; Access and endpoint policy still
+authorize traffic. All Controllers must support the prefix before enabling it.
+
 ## Canonical server model
 
 BPC server infrastructure is one **Node**. Controller, gateway, relay and
