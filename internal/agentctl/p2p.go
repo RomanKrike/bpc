@@ -22,6 +22,7 @@ type P2PInfo struct {
 	IssuerCertificateSHA256 string   `json:"issuer_certificate_sha256"`
 	Enabled                 bool     `json:"enabled"`
 	AccessSHA256            string   `json:"access_sha256"`
+	AccountMode             bool     `json:"account_mode"`
 }
 
 func (c *Client) FetchP2PInfo(ctx context.Context) (*P2PInfo, error) {
@@ -102,4 +103,56 @@ func (c *Client) SyncP2PPolicy(ctx context.Context, tickets [][]byte) ([]byte, e
 		return nil, errors.New("invalid P2P checkpoint response")
 	}
 	return result.Checkpoint, nil
+}
+
+type P2PPeer struct {
+	ID      string `json:"id"`
+	Name    string `json:"name"`
+	Address string `json:"address"`
+}
+
+type P2POffer struct {
+	Ticket    []byte `json:"ticket"`
+	Relay     string `json:"relay"`
+	ExpiresAt int64  `json:"expires_at"`
+}
+
+func (c *Client) P2PPeers(ctx context.Context) ([]P2PPeer, error) {
+	var result struct {
+		Peers []P2PPeer `json:"peers"`
+	}
+	err := c.doJSON(ctx, http.MethodPost, "/v1/p2p/peers", c.Token, map[string]any{"capabilities": []string{P2PCapability}}, &result)
+	if err != nil {
+		return nil, err
+	}
+	if len(result.Peers) > 128 {
+		return nil, errors.New("too many P2P peers")
+	}
+	for _, peer := range result.Peers {
+		if !p2pHex(peer.ID, 32) {
+			return nil, errors.New("invalid P2P peer")
+		}
+	}
+	return result.Peers, nil
+}
+
+func (c *Client) ConnectP2P(ctx context.Context, host string) error {
+	if !p2pHex(host, 32) {
+		return errors.New("invalid P2P host")
+	}
+	return c.doJSON(ctx, http.MethodPost, "/v1/p2p/connect", c.Token, map[string]any{"host_device_id": host, "capabilities": []string{P2PCapability}}, nil)
+}
+
+func (c *Client) P2PInbox(ctx context.Context) (*P2POffer, error) {
+	var result struct {
+		Offer *P2POffer `json:"offer"`
+	}
+	err := c.doJSON(ctx, http.MethodPost, "/v1/p2p/inbox", c.Token, map[string]any{"capabilities": []string{P2PCapability}}, &result)
+	if err != nil {
+		return nil, err
+	}
+	if result.Offer != nil && (len(result.Offer.Ticket) == 0 || len(result.Offer.Ticket) > 8192 || len(result.Offer.Relay) > 260) {
+		return nil, errors.New("invalid P2P delivery")
+	}
+	return result.Offer, nil
 }

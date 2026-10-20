@@ -363,7 +363,10 @@ class ControlHandler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path in {"/v1/p2p/consent", "/v1/p2p/issue", "/v1/p2p/sync"}:
+        if self.path in {
+            "/v1/p2p/consent", "/v1/p2p/issue", "/v1/p2p/sync",
+            "/v1/p2p/peers", "/v1/p2p/connect", "/v1/p2p/inbox",
+        }:
             self._p2p(self.path.rsplit("/", 1)[1])
             return
         if self.path == "/v1/auth/login":

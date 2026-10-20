@@ -119,7 +119,8 @@ func runEmbeddedWireGuard(
 		return fmt.Errorf("bring embedded WireGuard up: %w", err)
 	}
 	// P2P owns virtual peers only. The gateway peer, key, address and lifetime
-	// stay under the existing supervisor. No request file means no P2P activity.
+	// stay under the existing supervisor. Account delivery creates local requests
+	// only after authenticated Controller delivery and local binding verification.
 	if pilot {
 		p2pCtx, p2pCancel := context.WithCancel(ctx)
 		p2pDone := make(chan struct{})

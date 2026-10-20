@@ -7,6 +7,40 @@ and [STATUS](STATUS.md) before treating any test as real Windows acceptance.
 
 ## Prerequisites
 
+### Account pilot: download, sign in, select your computer
+
+The new account UI builds on this pilot; see [ADR 0005](adr/0005-account-p2p-delivery.md).
+The operator first upgrades all Controllers to the matching version and enables
+`p2p_enabled: true`, `p2p_account_mode: true` and `p2p_relay: "HOST:24446"`
+through the existing canonical consensus-backed config mutation. Provision the
+TLS relay below and retain the initiating Access allow/deny policy. A mixed
+Controller quorum is not supported after enabling the new delivery prefix.
+
+Use the existing personal HTTPS download link for a prepared Windows Agent
+generated from this version's deployment bundle. Download and open the executable,
+approve Windows elevation, and sign into the same account on both computers.
+Fresh account enrollment automatically initializes P2P trust and signs consent
+when the Controller advertises account mode. If the Controller is unavailable,
+the optional setup is deferred; use the window's enable button after recovery.
+An old prepared executable does not acquire new code just because its link exists.
+
+Open BP Connect from the tray, choose Settings -> Moonlight / Sunshine (also in
+the tray context menu). Existing installations use **Enable on this PC** once;
+the dialog explicitly warns about the Agent restart and short BPC interruption.
+On the initiating computer, refresh the list, select the owned Sunshine computer,
+and press **Connect**. No ticket file, invitation acceptance or terminal is needed
+on the host. The list is an authorized-device list, not proof of online status.
+Open Moonlight and add the displayed BPC address. Sunshine installation and its
+own Moonlight pairing remain separate; do not bypass their authentication.
+
+The UI reports a queued request, not confirmed packet delivery. Both Agents poll
+their own authenticated delivery slot every two seconds; grants remain <=60s.
+**Disable P2P on this PC** stops locally and withdraws consent. Restart/reinstall
+does not automatically restore withdrawn consent. A pending slot cannot be replaced
+until expiry, including after local stop. Long-session renewal remains pending.
+
+The command-line procedure below is retained for compatibility and diagnostics.
+
 Use two separately authorized, isolated Windows test computers with installed
 BPC Agents and functioning gateway tunnels. The service must have the current
 pilot binary and its existing Wintun dependency. Keep existing Device identity,

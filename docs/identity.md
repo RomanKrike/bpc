@@ -177,6 +177,12 @@ password. The password is used only for that login request and is not persisted.
 BP Connect then registers the new local Device and normally does not ask for the
 password again while the refresh credential remains valid.
 
+In the explicitly configured account P2P pilot, fresh enrollment also initializes
+the Controller pin and signs local Device consent before the service starts.
+Both computers use the same account; a host accepts no invitation. The Controller
+still checks Device ownership, consent and initiating Access. Later restarts or
+reinstalls preserve a user's withdrawn consent. See [pilot guide](p2p-windows-pilot.md).
+
 Bootstrap v2 and State v1 remain readable for Stage 2 migration compatibility.
 
 ## Future authentication methods

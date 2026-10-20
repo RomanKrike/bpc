@@ -35,6 +35,15 @@ and [ADR 0003](../adr/0003-p2p-controller-authority.md).
 | P2P-05 | Managed endpoints MUST persist trusted issuer and revision/time floors, restore no cached allow after restart, reject replay and invalidate established traffic on signed denial or expiry. Sync failure MUST fail closed before renewal. | `internal/p2p/authority_test.go`, managed real-WG relay test; pilot Agent loop in managed_endpoint.go; native Windows acceptance pending |
 | P2P-06 | A reserved peer /32 MUST use its receiving endpoint policy and MUST NOT fall back to the gateway after denial, expiry, stop or restart. Restore deny reservations before gateway startup; default mode MUST preserve the gateway, and route mutations MUST verify the live owned adapter instance and refuse conflicts. | `internal/p2p/mux_test.go`, `managed_endpoint_test.go`, durable restart test and Agent route-plan tests; real Wintun/NetTCPIP/ACL acceptance pending |
 
+Account delivery additionally follows **P2P-07**: same-owner, consent and Access
+checks remain mandatory without host invitation acceptance. Both public delivery
+slots commit atomically with exact security preconditions, expire without offline
+renewal and reject replacement while busy. A Device reads only its own slot;
+local signature/binding/policy checks remain mandatory. Restart/reinstall must not
+reverse withdrawn consent. Evidence: `test_p2p_delivery.py`, public HTTP and real
+three-Controller process tests, authenticated client and Agent preparation tests.
+Native Windows UI/UAC acceptance remains pending; see ADR 0005.
+
 ## Candidate mesh obligations (not implemented by this change)
 
 Before merging a site-router dataplane candidate, specify and test: authenticated

@@ -57,6 +57,15 @@ func TestControllerP2PClientProofAndWire(t *testing.T) {
 				t.Error("request supplied authority-owned identity fields")
 			}
 			_ = json.NewEncoder(w).Encode(map[string][]byte{"ticket": []byte("signed-grant")})
+		case "/v1/p2p/peers":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peers": []P2PPeer{{ID: strings.Repeat("e", 32), Name: "host", Address: "10.253.0.3"}}})
+		case "/v1/p2p/connect":
+			if len(body) != 2 {
+				t.Error("connect supplied authority fields")
+			}
+			_, _ = w.Write([]byte(`{"queued":true}`))
+		case "/v1/p2p/inbox":
+			_ = json.NewEncoder(w).Encode(map[string]any{"offer": P2POffer{Ticket: []byte("signed-grant"), Relay: "relay.test:24446", ExpiresAt: 123}})
 		case "/v1/p2p/sync":
 			var tickets [][]byte
 			_ = json.Unmarshal(body["tickets"], &tickets)
@@ -88,5 +97,19 @@ func TestControllerP2PClientProofAndWire(t *testing.T) {
 	policy, err := client.SyncP2PPolicy(context.Background(), [][]byte{ticket})
 	if err != nil || string(policy) != "signed-policy" {
 		t.Fatalf("sync failed: %v", err)
+	}
+	peers, err := client.P2PPeers(context.Background())
+	if err != nil || len(peers) != 1 {
+		t.Fatalf("peers failed: %v", err)
+	}
+	if err = client.ConnectP2P(context.Background(), peers[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = client.ConnectP2P(context.Background(), "untrusted & host"); err == nil {
+		t.Fatal("invalid host accepted")
+	}
+	offer, err := client.P2PInbox(context.Background())
+	if err != nil || offer == nil || string(offer.Ticket) != "signed-grant" {
+		t.Fatalf("inbox failed: %v", err)
 	}
 }

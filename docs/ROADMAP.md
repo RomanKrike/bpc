@@ -30,7 +30,8 @@ existing gateway path contract.
 | Controller integration | Merged #94; default-off APIs/client, committed Access/consent fences, signed checkpoints and durable revision/revoke state |
 | Windows runtime | Explicit bounded pilot: pinned trust, policy polling, shared-adapter filtered peers, durable deny reservations and owned /32 route plans; native Windows acceptance, coordinated long-session renewal/delivery and relay service lifecycle remain pending |
 | Direct transport | Pending: UDP relay, same-socket STUN/ICE, data-confirmed switching and rollback |
-| Product acceptance | Pending: Windows UI and real Moonlight/Sunshine, NAT/MTU/suspend/restart/offline tests |
+| Account delivery / UI | Implemented candidate: existing HTTPS prepared Agent, first-login setup in explicit account mode, owned-device list, same grant delivered to both Agents, no invitation acceptance; CI/native acceptance tracked in STATUS |
+| Product acceptance | Pending: real Windows UI/UAC and Moonlight/Sunshine, NAT/MTU/suspend/restart/offline tests |
 
 The foundation is not a shipped P2P feature. Existing mesh candidates, production
 deployments and release actions remain separate work.

@@ -15,7 +15,7 @@ import pytest
 if sys.platform != "linux":
     pytest.skip("public Controller server requires Linux fcntl", allow_module_level=True)
 
-from p2p_support import seed_p2p  # noqa: E402
+from p2p_support import seed_p2p, write_json  # noqa: E402
 from test_p2p_authority import FakeConsensus  # noqa: E402
 
 DEPLOY = Path(__file__).parents[1] / "deploy"
@@ -33,6 +33,10 @@ spec.loader.exec_module(controller)
 
 def test_public_p2p_http_lifecycle(tmp_path, monkeypatch):
     context = seed_p2p(tmp_path)
+    write_json(context["control"] / "config.json", {
+        "p2p_enabled": True, "p2p_account_mode": True,
+        "p2p_relay": "relay.example.test:24446",
+    })
     consensus = FakeConsensus()
     monkeypatch.setattr(bpc_control_state, "strong_read", consensus.barrier)
     monkeypatch.setattr(bpc_control_state, "mutation", consensus.commit)
@@ -66,6 +70,11 @@ def test_public_p2p_http_lifecycle(tmp_path, monkeypatch):
             **capability,
         )
         assert status == 200 and grant["ticket"]
+        assert request("POST", "/v1/p2p/peers", context["tokens"][0], **capability)[0] == 200
+        assert request("POST", "/v1/p2p/connect", context["tokens"][0],
+                       host_device_id=context["devices"][1]["id"], **capability)[0] == 200
+        status, delivered = request("POST", "/v1/p2p/inbox", context["tokens"][1], **capability)
+        assert status == 200 and delivered["offer"]["ticket"]
         message = bpc_p2p.consent_message(
             context["tokens"][1], info["device_id"], False, info["access_sha256"]
         )

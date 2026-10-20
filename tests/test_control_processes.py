@@ -220,6 +220,10 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         p2p_state = seed_p2p(
             tmp_path / "p2p-seed", ca_key=ca_key, ca_cert=ca, cluster_id="process-test"
         )
+        (p2p_state["control"] / "config.json").write_text(json.dumps({
+            "p2p_enabled": True, "p2p_account_mode": True,
+            "p2p_relay": "relay.example.test:24446",
+        }), encoding="utf-8")
         operations = []
         for path in sorted(p2p_state["control"].rglob("*.json")):
             relative_path = "control/" + path.relative_to(p2p_state["control"]).as_posix()
@@ -256,9 +260,17 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
                 "host_device_id": p2p_state["devices"][1]["id"],
             },
         )["ticket"]
+        assert p2p.connect(nodes[0]["root"] / "control", p2p_state["tokens"][0], {
+            "capabilities": [p2p.CAPABILITY],
+            "host_device_id": p2p_state["devices"][1]["id"],
+        })["queued"]
         monkeypatch.setattr(
             enrollment.bpc_control_state, "LOCAL_API", "http://" + nodes[1]["local"]
         )
+        delivered = p2p.inbox(nodes[1]["root"] / "control", p2p_state["tokens"][1], {
+            "capabilities": [p2p.CAPABILITY],
+        })["offer"]
+        assert delivered and delivered["relay"] == "relay.example.test:24446"
         host_info = p2p.info(nodes[1]["root"] / "control", p2p_state["tokens"][1])
         message = p2p.consent_message(
             p2p_state["tokens"][1], host_info["device_id"], False, host_info["access_sha256"]
@@ -324,6 +336,10 @@ def test_three_real_controller_processes(tmp_path, monkeypatch):
         with pytest.raises(enrollment.bpc_control_state.ControlStateError):
             p2p.issue(successor["root"] / "control", p2p_state["tokens"][0], {
                 "capabilities": [p2p.CAPABILITY], "host_device_id": p2p_state["devices"][1]["id"],
+            })
+        with pytest.raises(enrollment.bpc_control_state.ControlStateError):
+            p2p.inbox(successor["root"] / "control", p2p_state["tokens"][0], {
+                "capabilities": [p2p.CAPABILITY],
             })
     finally:
         for node in nodes:

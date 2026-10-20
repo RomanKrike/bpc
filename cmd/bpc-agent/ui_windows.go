@@ -549,6 +549,9 @@ $disconnect.Add_Click($doDisconnect)
 $connectItem.Add_Click($doConnect)
 $disconnectItem.Add_Click($doDisconnect)
 
+$p2pItem = $menu.Items.Add('Moonlight / Sunshine (pilot)')
+$p2pItem.Add_Click({ Start-Process -FilePath $exe -ArgumentList 'p2p-ui' -WindowStyle Hidden })
+
 $settings.Add_Click({
     $details = New-Object System.Windows.Forms.Form
     $details.Text = 'Connect details'
@@ -599,6 +602,13 @@ $settings.Add_Click({
     $routeBox.BackColor = $card
     $routeBox.Text = $routesValue.Text
     $details.Controls.Add($routeBox)
+
+    $p2pButton = New-Object System.Windows.Forms.Button
+    $p2pButton.Text = 'Moonlight / Sunshine'
+    $p2pButton.Location = New-Object System.Drawing.Point(22, 326)
+    $p2pButton.Size = New-Object System.Drawing.Size(210, 30)
+    $p2pButton.Add_Click({ Start-Process -FilePath $exe -ArgumentList 'p2p-ui' -WindowStyle Hidden })
+    $details.Controls.Add($p2pButton)
 
     $close = New-Object System.Windows.Forms.Button
     $close.Text = 'Close'
