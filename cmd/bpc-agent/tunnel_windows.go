@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RomanKrike/bpc/internal/agentctl"
+	"github.com/RomanKrike/bpc/internal/p2p"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -31,6 +32,17 @@ func runEmbeddedWireGuard(
 ) error {
 	if err := agentctl.ValidateWireGuardProfile(profile); err != nil {
 		return err
+	}
+	_, _, statePath, pathErr := installPaths()
+	if pathErr != nil {
+		return pathErr
+	}
+	p2pStore, p2pTrust, pilot, p2pErr := openP2PAuthority(statePath)
+	if p2pErr != nil {
+		return fmt.Errorf("P2P authority unavailable; refusing unsafe fallback: %w", p2pErr)
+	}
+	if p2pStore != nil {
+		defer p2pStore.Close()
 	}
 
 	if cfg.LegacyTunnel != "" {
@@ -59,7 +71,38 @@ func runEmbeddedWireGuard(
 			logger.Printf("wireguard error: "+format, args...)
 		},
 	}
-	wgDevice := device.NewDevice(tunDevice, conn.NewDefaultBind(), wgLogger)
+	var input tun.Device = tunDevice
+	var mux *p2p.MuxTUN
+	var addP2PRoute func(context.Context, netip.Addr) error
+	if pilot {
+		native, ok := tunDevice.(*tun.NativeTun)
+		if !ok {
+			_ = tunDevice.Close()
+			return fmt.Errorf("P2P requires the owned native BPC adapter")
+		}
+		addP2PRoute = p2pOwnedRoute(native, profile)
+		peers, err := p2pStore.ReservedPeers()
+		if err != nil {
+			_ = tunDevice.Close()
+			return err
+		}
+		mux, err = p2p.NewMuxTUN(tunDevice)
+		if err != nil {
+			_ = tunDevice.Close()
+			return err
+		}
+		for _, peer := range peers {
+			if err = mux.Reserve(peer); err == nil {
+				err = addP2PRoute(ctx, peer)
+			}
+			if err != nil {
+				_ = mux.Close()
+				return err
+			}
+		}
+		input = mux
+	}
+	wgDevice := device.NewDevice(input, conn.NewDefaultBind(), wgLogger)
 	defer wgDevice.Close()
 
 	uapi, err := embeddedUAPI(cfg, profile)
@@ -74,6 +117,17 @@ func runEmbeddedWireGuard(
 	if err := wgDevice.Up(); err != nil {
 		wgDevice.Close()
 		return fmt.Errorf("bring embedded WireGuard up: %w", err)
+	}
+	// P2P owns virtual peers only. The gateway peer, key, address and lifetime
+	// stay under the existing supervisor. No request file means no P2P activity.
+	if pilot {
+		p2pCtx, p2pCancel := context.WithCancel(ctx)
+		p2pDone := make(chan struct{})
+		go func() {
+			defer close(p2pDone)
+			runP2PLoop(p2pCtx, mux, p2pStore, p2pTrust, profile, logger, addP2PRoute)
+		}()
+		defer func() { p2pCancel(); <-p2pDone }()
 	}
 
 	logger.Printf(

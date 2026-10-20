@@ -65,6 +65,8 @@ func main() {
 		err = installAgent()
 	case "run":
 		err = runAgent()
+	case "p2p":
+		err = p2pCommand(os.Args[2:])
 	case "run-service":
 		err = runWindowsService()
 	case "status":
@@ -1264,6 +1266,7 @@ func usage() {
 		"  bpc-agent.exe                 Enroll and install a prepared agent package\n" +
 		"  bpc-agent.exe install         Enroll/reinstall and start at boot\n" +
 		"  bpc-agent.exe run             Run the foreground agent loop (diagnostics)\n" +
+		"  bpc-agent.exe p2p             Explicit P2P pilot commands (Administrator)\n" +
 		"  bpc-agent.exe status          Show local agent state\n" +
 		"  bpc-agent.exe connect         Enable the tunnel service\n" +
 		"  bpc-agent.exe disconnect      Disable the tunnel service\n" +
