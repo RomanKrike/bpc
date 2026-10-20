@@ -44,13 +44,18 @@ reverse withdrawn consent. Evidence: `test_p2p_delivery.py`, public HTTP and rea
 three-Controller process tests, authenticated client and Agent preparation tests.
 Native Windows UI/UAC acceptance remains pending; see ADR 0005.
 
-## Candidate mesh obligations (not implemented by this change)
+## Unified mesh verification obligations
 
 Before merging a site-router dataplane candidate, specify and test: authenticated
 source identity across hops, deny/revoke in both directions across every ingress,
 route ownership conflicts/withdrawals, stale or expired policy, loop/default-route
 rejection, external-network preservation, restart/failure and rollback. Compare
 to main explicitly; do not infer coverage from transport-only failover tests.
+The unified implementation retains internal/routed source/session/route-policy
+tests, privileged mesh ingress/Access denial tests and real Controller replay,
+floor/checkpoint/recovery tests. Update compatibility/downgrade and state
+preservation are exercised in test_mesh_candidate.py; ADR 0006 defines release
+compatibility. These gates do not replace the pending operational checks below.
 
 Userspace tests use a surviving routed destination and explicit return-path
 assumptions. They do not promise survival of gateway-local NAT/conntrack flows,

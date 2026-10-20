@@ -26,6 +26,7 @@ REPLICATED_PREFIXES = (
     "control/node-public-keys/",
     "control/node-credentials/",
     "control/routes/",
+    "control/topology/links/",
     "control/revocations/",
     "cluster/controllers/",
 )

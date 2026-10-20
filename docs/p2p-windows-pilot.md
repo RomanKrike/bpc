@@ -1,5 +1,10 @@
 # Windows P2P pilot (explicit, experimental)
 
+For a server already on a pinned mesh candidate, use the
+[mesh-compatible candidate procedure](mesh-p2p-update.md). Stable v0.21.0 is not
+an upgrade for that server. Candidate Windows updates use fresh prepared links;
+the candidate's existing signed auto-update publication guard remains in force.
+
 This is an operator pilot, not a finished Moonlight/Sunshine product. It uses
 one active session per Agent, default Sunshine ports, same-owner Devices and
 an unrenewed grant of at most 60 seconds. Read [ADR 0004](adr/0004-p2p-windows-pilot-runtime.md)

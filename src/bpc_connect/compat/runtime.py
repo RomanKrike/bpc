@@ -41,7 +41,17 @@ def service_state(name: str) -> str:
     return completed.stdout.strip() or "inactive"
 
 
-def default_role_config(state_dir: Path, roles: list[str]) -> dict[str, Any]:
+def routed_dataplane(role_config: dict[str, Any]) -> bool:
+    """Explicit mesh mode never provisions the historical Agent transports."""
+    gateway = role_config.get("gateway", {})
+    return isinstance(gateway, dict) and gateway.get("mode") == "routed"
+
+
+def default_role_config(
+    state_dir: Path, roles: list[str], *, dataplane: str = "compat",
+) -> dict[str, Any]:
+    if dataplane not in {"compat", "routed"}:
+        raise RuntimeCompatibilityError(f"unsupported dataplane: {dataplane}")
     result: dict[str, Any] = {}
     legacy = legacy_node_dir(state_dir)
     if "gateway" in roles:
@@ -50,8 +60,10 @@ def default_role_config(state_dir: Path, roles: list[str]) -> dict[str, Any]:
             "reality_server_name": reality_name or "www.bing.com",
             "xray_port": 443,
         }
+        if dataplane == "routed":
+            result["gateway"] = {"mode": "routed"}
     if "relay" in roles:
-        result["relay"] = {"mode": "agent"}
+        result["relay"] = {"mode": "routed" if dataplane == "routed" else "agent"}
     if "site_router" in roles:
         result["site_router"] = {"advertised_routes": []}
     return result
@@ -81,7 +93,24 @@ def reconcile_transport_roles(
     results: dict[str, str] = {}
     legacy = legacy_node_dir(state_dir)
 
-    if bool(roles.get("gateway")):
+    mesh_only = routed_dataplane(role_config)
+    gateway = role_config.get("gateway", {})
+    if isinstance(gateway, dict) and gateway.get("mode", "compat") not in {"compat", "routed"}:
+        raise RuntimeCompatibilityError("unsupported Gateway dataplane mode")
+    relay = role_config.get("relay", {})
+    relay_mode = relay.get("mode", "agent") if isinstance(relay, dict) else "agent"
+    if (bool(roles.get("gateway")) and bool(roles.get("relay"))
+            and mesh_only != (relay_mode == "routed")):
+        raise RuntimeCompatibilityError("Gateway and Relay dataplane modes must agree")
+
+    # Service readiness is assessed from routed policy/status after the first
+    # heartbeat supplies links. No legacy service is started in this mode.
+    if mesh_only and bool(roles.get("gateway")):
+        results["gateway"] = "configured"
+    if relay_mode == "routed" and bool(roles.get("relay")):
+        results["relay"] = "configured"
+
+    if bool(roles.get("gateway")) and not mesh_only:
         gateway = role_config.get("gateway", {})
         if not isinstance(gateway, dict):
             gateway = {}
@@ -101,7 +130,7 @@ def reconcile_transport_roles(
             )
         results["gateway"] = service_state("xray.service")
 
-    if bool(roles.get("relay")):
+    if bool(roles.get("relay")) and relay_mode != "routed":
         relay = role_config.get("relay", {})
         if not isinstance(relay, dict):
             relay = {}

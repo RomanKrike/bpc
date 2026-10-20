@@ -123,3 +123,77 @@ def test_restore_requires_exact_cluster_confirmation(tmp_path: Path) -> None:
     )
     with pytest.raises(ops.ClusterOpsError, match="confirmation mismatch"):
         ops.cmd_restore(args)
+
+
+@pytest.mark.parametrize("returncode", [0, 2])
+def test_replay_checkpoint_uses_offline_binary_and_preserves_marker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, returncode: int,
+) -> None:
+    state = tmp_path / "state"
+    cluster = state / "cluster"
+    cluster.mkdir(parents=True)
+    marker = {
+        "node_id": "recipient", "raft_address": "recipient:9445",
+        "cluster_api_address": "recipient:9447", "local_api_address": "127.0.0.1:9446",
+        "certificate_file": str(cluster / "cert.pem"), "key_file": str(cluster / "key.pem"),
+        "ca_file": str(cluster / "ca.pem"), "local_api_token_file": str(cluster / "token"),
+    }
+    marker_path = cluster / "controller.json"
+    original = json.dumps(marker).encode()
+    marker_path.write_bytes(original)
+    install = tmp_path / "install"
+    binary = install / "current/bin/bpc-controld-linux-amd64"
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+    monkeypatch.setenv("BPC_ROOT", str(install))
+    monkeypatch.setattr(ops.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(ops.platform, "machine", lambda: "x86_64")
+    calls = []
+
+    def run(command, *, check):
+        assert not check
+        calls.append(command)
+        # Never stop/restart the cluster or send a logical restore operation.
+        assert command[0] == str(binary)
+        assert command[-2:] == ["--replay-checkpoint-source", "https://donor:9447"]
+        return ops.subprocess.CompletedProcess(command, returncode)
+
+    monkeypatch.setattr(ops.subprocess, "run", run)
+    args = ops.argparse.Namespace(state_dir=state, source="https://donor:9447")
+    if returncode:
+        with pytest.raises(ops.ClusterOpsError, match="checkpoint import failed"):
+            ops.cmd_replay_checkpoint(args)
+    else:
+        assert ops.cmd_replay_checkpoint(args) == 0
+    assert len(calls) == 1
+    assert marker_path.read_bytes() == original
+
+
+def test_revision_recovery_sends_exact_signed_gateway_evidence(tmp_path, monkeypatch):
+    from bpc_gateway_snapshot import _signing_bytes
+
+    snapshot = {"cluster_id": "cluster", "revision": 500, "signature": "c2ln"}
+    receipt = tmp_path / "accepted.json"
+    receipt.write_text(json.dumps(snapshot))
+    original = receipt.read_bytes()
+    monkeypatch.setattr(ops.os, "geteuid", lambda: 0)
+    calls = []
+
+    def request(state, method, path, body):
+        assert method == "POST" and path == "/v1/reconcile-revision"
+        calls.append(body)
+        proof = body["gateway_receipts"]["gateway"]
+        assert ops.base64.b64decode(proof["signed"]) == _signing_bytes(snapshot)
+        assert proof["signature"] == snapshot["signature"]
+        return {"revision": 500, "commit_index": 100}
+
+    monkeypatch.setattr(ops, "_request_json", request)
+    args = ops.argparse.Namespace(
+        state_dir=tmp_path, gateway_receipt=[f"gateway={receipt}"],
+    )
+    assert ops.cmd_reconcile_revision(args) == 0
+    assert len(calls) == 1 and receipt.read_bytes() == original
+    args.gateway_receipt.append(f"gateway={receipt}")
+    with pytest.raises(ops.ClusterOpsError, match="unique"):
+        ops.cmd_reconcile_revision(args)
+    assert len(calls) == 1

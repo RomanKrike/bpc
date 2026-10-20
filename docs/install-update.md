@@ -164,6 +164,9 @@ subscription tokens.
 
 ## Update
 
+Older mesh candidates need the [one-time unified transition](unified-release-update.md)
+before the command below. Stable 0.21.0 is not their upgrade target.
+
 ```bash
 sudo bpc-update
 ```
@@ -171,7 +174,7 @@ sudo bpc-update
 The updater:
 
 1. repairs command links for the currently active release;
-2. downloads and verifies the latest release bundle;
+2. downloads and verifies checksums, archive safety, full manifest and compatible stable version;
 3. exits without changing state when already current;
 4. backs up `/etc/bpc-connect` before switching versions;
 5. installs the new immutable release;
@@ -180,8 +183,11 @@ The updater:
 8. reconciles only BPC-owned/legacy-BPC runtime;
 9. validates enabled transports and health checks.
 
-If release validation fails, the existing updater restores the previous release
-pointer and BPC state backup and attempts to restore the prior BPC runtime.
+From 0.22.0, failed migration/health exits with an error while preserving the new
+release pointer and current live state. Automatic older-FSM or filesystem-state
+rollback could undo committed security changes. Stop the rollout and use the
+[compatible recovery procedure](unified-release-update.md). The private filesystem
+copy is not a consistent Raft restore point; also take the explicit Leader backup.
 
 Stage 4.5 does not intentionally remove external interfaces, routes, rules,
 WireGuard peers or firewall state during update.
@@ -236,3 +242,12 @@ Python wheel / source distribution
 
 BPC uses semantic versions. A release version change belongs in a tested pull
 request. After merge, successful main-branch CI publishes the matching release.
+
+## Mesh testing and candidate transition
+
+Use [pinned candidate builds](mesh-candidate.md) for mesh acceptance. A candidate
+uses explicit local bundles and preserves current state. Old candidate updaters
+refuse bare updates. The unified transition installs an updater that accepts only
+compatible stable releases; see [the procedure](unified-release-update.md).
+Publication of the unified code does not establish live A–H acceptance or deploy
+it to any Node. Operational acceptance and production rollout remain separate.

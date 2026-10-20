@@ -1,5 +1,94 @@
 # Status and evidence
 
+## Unified mesh/P2P release 0.22.0 (2026-10-20)
+
+Maintainer requested unification after the incompatible stable/mesh update was
+identified. Baselines: stable 2882dfcaafb977af6a8f842bc3da87e3af1c288f and
+mesh/P2P 4b08a16c6fa0f556b266135cfd6472d45d98c587. Previous candidate #98
+passed all 12 jobs in run 39384503627; its archive passed both current and
+original 8c1abba verifiers. That evidence does not cover the changes below.
+
+Task/plan: preserve both mesh recovery/topology and stable jitter/UI fixes;
+unify packaging and version 0.22.0; verify complete stable manifests, reject
+incompatible/downgrade downloads, preserve live state on failure; build a separate
+old-verifier-compatible transition artifact. Cover bridge -> bare stable update,
+repeated update, missing runtimes/profile, downgrade and failed-health state
+preservation in temporary root-owned fixtures. Retain every CI gate, test both
+packaged Windows versions and validate the real transition using the old verifier.
+
+Scope/invariants: updater, packaging/CI, version and docs; SEC-04/05/06,
+MESH-01/02 and P2P-01..07 remain mandatory. No Raft/store/checkpoint/schema
+rewrite, state rewind, Node/Device/key change or network ownership adoption.
+See ADR 0006 and [update/recovery procedure](unified-release-update.md).
+No live install, fault, restart or Windows service/network mutation is authorized
+or performed by this implementation. Merge/release is requested separately from
+production rollout. Final revision verification is pending below/at the PR.
+
+Local verification (Windows, Go 1.23.12/Python 3.12): 88 targeted Python tests
+passed; 13 POSIX-root updater/publication cases skipped with an explicit reason.
+Ruff passed; Agent, agentctl and wgshim tests passed, including the retained
+jitter/healthy-migration regressions. Linux-target go vet ./... passed. Bash
+syntax and git diff --check passed. Initial Agent source assertion expected the
+old idle-handshake cutoff; restored the already tested stable assertions alongside
+the stable UI fix. Git comparison confirms no change from #98 to routed,
+controlplane/controld, topology, Node enrollment or Access implementation.
+Full Linux/race/privileged/process and packaged-Windows checks remain CI gates;
+local socket tests required sandbox elevation but mutated no host network.
+
+## Mesh-compatible P2P candidate: task and plan (2026-10-20)
+
+Installed baseline: 8c1abbaf454261fc500f788370ffb54bb70f265e, reported by
+both live Controller diagnostics. The two-voter cluster is healthy, caught up,
+and serves real direct and indirect mesh paths. Stable 0.21.0 is not a compatible
+replacement: it lacks routed topology and the candidate Raft replay safeguards.
+Do not remove CANDIDATE.json or bypass the pinned-bundle updater.
+
+Task: transplant P2P/account UI from released 0.21.0 onto this exact mesh base,
+then build a pinned test candidate without modifying main/latest or live hosts.
+Preserve routed runtime, topology prefixes, revision/applied-index/floor handling,
+route ownership, existing Access enforcement, update guards and signed-update
+validation. Add only the P2P delivery prefix, endpoint runtime, APIs and UI.
+Existing mesh and all P2P/Windows/race/Access/process CI gates must pass together.
+Candidate Windows binaries must report the complete injected bundle version;
+existing candidate auto-update publication remains disabled.
+
+Plan: retain governance from stable; three-way apply only the P2P delta against
+its original stable baseline; resolve overlap in favor of preserving mesh
+contracts; add both routed and P2P packaging/verification; run focused checks,
+then full combined CI and artifact verification. Restore no live state and
+perform no remote installs/restarts. The two voters both count toward quorum;
+any one restart temporarily prevents writes. Operators need a consistent leader
+backup and the existing candidate upgrade/rollback procedure. Existing rollback
+must never rewind the Raft DB or security floors. Native Windows/real streaming
+and operational candidate acceptance remain pending, independently of CI.
+
+The stable-release history below is evidence for the source being transplanted,
+not a statement that these servers are on stable or that mesh was removed.
+
+Implementation: three-way P2P-only transplant from the original stable baseline,
+retaining both topology and P2P modules in primary/replica staging. Raft's Go/Python
+canonical prefix lists each gain only `control/p2p-delivery/`. Source comparison
+against 8c1abba confirms unchanged routed runtime, topology, Access, Controller
+replay/store/checkpoint/reconciliation, Node enrollment, gateway snapshots and
+candidate updater/Agent publication guard. Agent retains injected full bundle
+version and signed-update executable-version validation. Packaging includes both
+routed and P2P runtimes and conditionally requires P2P relay binaries while still
+accepting older complete mesh bundles for verification. CI retains both meshes'
+kernel/recovery and the stable P2P/race/Windows gates, plus packaged-Windows version.
+See [operator procedure](mesh-p2p-update.md).
+
+Local Windows / Go 1.23.12: Agent, agentctl and p2p tests passed. Python Agent
+checks: 50 passed; Ruff passed. Linux-target `go vet ./...` and Linux amd64
+controld/routed/P2P relay builds passed. Windows Agent builds with the candidate
+version injected and reports `0.21.0-mesh.local-check`; formatting/diff passed.
+The mesh controlplane tests fail on Windows directory fsync and filesystem
+projection behavior; implementation of those paths is byte-identical to the mesh
+baseline. Python authority/policy tests cannot collect locally because the mesh
+gateway snapshot imports Linux fcntl; mesh installer tests also use os.geteuid.
+These are recorded limits, not passes. Full combined Linux/Windows CI and pinned
+artifact verification remain required before supplying an update command.
+
+
 ## Release 0.21.0 preparation (2026-10-20)
 
 The maintainer explicitly requested a release. #95 merged as

@@ -22,7 +22,8 @@ Fail-closed multi-transport connectivity bridge for the first BPC milestone: **G
 - REALITY target compatibility preflight before fresh Xray provisioning.
 - Config generator with safety validation.
 - Fail-closed policy: no automatic DIRECT route from the work gateway.
-- Versioned deployment bundles, one-command install and safe updates with rollback.
+- Versioned deployment bundles and compatible updates that preserve live state on failure.
+- Unified routed mesh and optional Windows P2P pilot; [transition older candidates once](docs/unified-release-update.md), then use `bpc-update`.
 - Automatic DNS preflight/repair for Debian RU nodes when resolver configuration is broken.
 - GitHub Actions CI, tests and automatic GitHub Releases.
 

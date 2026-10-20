@@ -153,6 +153,54 @@ func TestValidateRuntimeConfigAdaptiveEndpointPool(t *testing.T) {
 	}
 }
 
+func TestPersistedRuntimeConfigValidatesSavedPeerAfterSync(t *testing.T) {
+	peer := base64.StdEncoding.EncodeToString(bytesOf(2))
+	state := State{
+		Version: StateVersion,
+		Config: RuntimeConfig{
+			WGShimServer: "127.0.0.1:24445",
+			WGShimListen: "127.0.0.1:24081",
+			WGShimTarget: "127.0.0.1:51821",
+			WGShimPSK:    base64.StdEncoding.EncodeToString(bytesOf(3)),
+			Paths:        []TransportPath{{Endpoint: "127.0.0.1:24445", PeerPublicKey: peer}},
+		},
+		WireGuard: WireGuardProfile{
+			PrivateKey:    base64.StdEncoding.EncodeToString(bytesOf(1)),
+			PeerPublicKey: peer, Address: "10.253.0.2/32", MTU: 1360,
+			AllowedIPs: []string{"10.253.0.1/32", "192.168.88.0/24"},
+		},
+	}
+	// This is the on-disk format produced by syncRuntimeState: Config has
+	// explicit peer-bound paths, while the tunnel profile lives in State.
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := SaveState(path, state); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadState(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := loaded.ValidateRuntimeConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Config.WireGuard != nil || loaded.WireGuard.PrivateKey != state.WireGuard.PrivateKey {
+		t.Fatal("validation changed the persisted layout or local private key")
+	}
+	// The fix must not weaken validation of fresh Controller responses.
+	if err := ValidateRuntimeConfig(loaded.Config); err == nil {
+		t.Fatal("unbound Controller paths were accepted")
+	}
+	loaded.Config.Paths[0].PeerPublicKey = base64.StdEncoding.EncodeToString(bytesOf(4))
+	if err := loaded.ValidateRuntimeConfig(); err == nil {
+		t.Fatal("path to a different saved peer was accepted")
+	}
+	loaded.Config.Paths[0].PeerPublicKey = peer
+	loaded.WireGuard = WireGuardProfile{}
+	if err := loaded.ValidateRuntimeConfig(); err == nil {
+		t.Fatal("path without a saved peer was accepted")
+	}
+}
+
 func TestDeviceProofSigningBytes(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
