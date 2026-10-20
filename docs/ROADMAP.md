@@ -1,5 +1,11 @@
 # Development roadmap
 
+Current candidate context: P2P is being transplanted onto the installed mesh
+commit 8c1abbaf454261fc500f788370ffb54bb70f265e, preserving routed topology and
+watermarked Raft recovery. See [candidate update](mesh-p2p-update.md) and STATUS.
+The stable-branch history below does not authorize replacing an active mesh
+server with a stable bundle or claim native operational acceptance.
+
 Baseline: main `c00f265` (2026-10-18 inspection). This is a process roadmap;
 existing feature branches are not claims of shipped main behavior.
 

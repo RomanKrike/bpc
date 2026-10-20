@@ -16,7 +16,7 @@ candidate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(candidate)
 
 
-def bundle(tmp_path, sha="a" * 40, health=0, extra=None):
+def bundle(tmp_path, sha="a" * 40, health=0, extra=None, *, p2p=False, missing=None):
     version = f"0.20.2-mesh.{sha}"
     files = {"VERSION": (version + "\n").encode(),
              "deploy/bpc-migrate.sh": b"#!/bin/sh\nexit 0\n",
@@ -27,6 +27,12 @@ def bundle(tmp_path, sha="a" * 40, health=0, extra=None):
     for name in ("bpc-agent-windows-amd64.exe", "bpc-wgshim-windows-amd64.exe",
                  "wintun-windows-amd64.dll"):
         files[f"bin/{name}"] = b"Windows fixture"
+    if p2p:
+        files["deploy/bpc_p2p.py"] = b"# synthetic authority fixture\n"
+        for arch in ("amd64", "arm64"):
+            files[f"bin/bpc-p2p-relay-linux-{arch}"] = b"relay fixture"
+    if missing:
+        files.pop(missing)
     manifest = {"schema": 1, "channel": "mesh-test", "source_sha": sha,
                 "version": version, "go_toolchain": "test", "live_acceptance": "pending",
                 "files": {name: hashlib.sha256(data).hexdigest()
@@ -52,6 +58,20 @@ def test_verified_extract_and_reject_wrong_checksum(tmp_path):
     assert not destination.exists()
     assert candidate.verify(path, sha, destination)["version"] == version
     assert (destination / "bin/bpc-controld-linux-arm64").stat().st_mode & 0o111
+
+
+@pytest.mark.parametrize("missing", [None, "bin/bpc-p2p-relay-linux-amd64",
+                                    "bin/bpc-p2p-relay-linux-arm64"])
+def test_p2p_candidate_requires_both_relay_runtimes(tmp_path, missing):
+    path, sha, _ = bundle(tmp_path, p2p=True, missing=missing)
+    destination = tmp_path / "verified"
+    if missing:
+        with pytest.raises(ValueError, match="Incomplete candidate runtime"):
+            candidate.verify(path, sha, destination)
+        assert not destination.exists()
+    else:
+        candidate.verify(path, sha, destination)
+        assert (destination / "bin/bpc-p2p-relay-linux-arm64").is_file()
 
 
 @pytest.mark.parametrize("name,kind", [("../outside", tarfile.REGTYPE),

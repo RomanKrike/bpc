@@ -60,6 +60,11 @@ def verify(bundle: Path, expected: str, destination: Path | None = None) -> dict
         required.update(("bin/bpc-agent-windows-amd64.exe",
                          "bin/bpc-wgshim-windows-amd64.exe",
                          "bin/wintun-windows-amd64.dll"))
+        # Older compatible mesh candidates remain valid rollback inputs. A
+        # candidate shipping the P2P authority must also ship its relay runtime.
+        if "deploy/bpc_p2p.py" in files:
+            required.update(f"bin/bpc-p2p-relay-linux-{arch}"
+                            for arch in ("amd64", "arm64"))
         if not required <= files.keys():
             raise ValueError("Incomplete candidate runtime")
         # Validate everything first; never partially extract a rejected archive.

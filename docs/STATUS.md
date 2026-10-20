@@ -30,6 +30,29 @@ and operational candidate acceptance remain pending, independently of CI.
 The stable-release history below is evidence for the source being transplanted,
 not a statement that these servers are on stable or that mesh was removed.
 
+Implementation: three-way P2P-only transplant from the original stable baseline,
+retaining both topology and P2P modules in primary/replica staging. Raft's Go/Python
+canonical prefix lists each gain only `control/p2p-delivery/`. Source comparison
+against 8c1abba confirms unchanged routed runtime, topology, Access, Controller
+replay/store/checkpoint/reconciliation, Node enrollment, gateway snapshots and
+candidate updater/Agent publication guard. Agent retains injected full bundle
+version and signed-update executable-version validation. Packaging includes both
+routed and P2P runtimes and conditionally requires P2P relay binaries while still
+accepting older complete mesh bundles for verification. CI retains both meshes'
+kernel/recovery and the stable P2P/race/Windows gates, plus packaged-Windows version.
+See [operator procedure](mesh-p2p-update.md).
+
+Local Windows / Go 1.23.12: Agent, agentctl and p2p tests passed. Python Agent
+checks: 50 passed; Ruff passed. Linux-target `go vet ./...` and Linux amd64
+controld/routed/P2P relay builds passed. Windows Agent builds with the candidate
+version injected and reports `0.21.0-mesh.local-check`; formatting/diff passed.
+The mesh controlplane tests fail on Windows directory fsync and filesystem
+projection behavior; implementation of those paths is byte-identical to the mesh
+baseline. Python authority/policy tests cannot collect locally because the mesh
+gateway snapshot imports Linux fcntl; mesh installer tests also use os.geteuid.
+These are recorded limits, not passes. Full combined Linux/Windows CI and pinned
+artifact verification remain required before supplying an update command.
+
 
 ## Release 0.21.0 preparation (2026-10-20)
 
