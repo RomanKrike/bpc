@@ -9,6 +9,16 @@ permissions:
   contents: read
 
 jobs:
+  windows-pilot-ui:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache: false
+      - run: go test ./cmd/bpc-agent ./internal/agentctl -count=1 -timeout=120s
+
   python:
     runs-on: ubuntu-latest
     strategy:

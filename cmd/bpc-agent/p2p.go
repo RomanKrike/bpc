@@ -191,7 +191,7 @@ func localP2PConfig(state *agentctl.State, profile agentctl.WireGuardProfile, re
 
 func p2pCommand(args []string) error {
 	if len(args) == 0 {
-		return errors.New("P2P pilot: init | consent --enabled=true|false | request --host DEVICE --out FILE | start --ticket FILE --relay HOST:PORT | stop")
+		return errors.New("P2P pilot: prepare | init | consent --enabled=true|false | request --host DEVICE --out FILE | start --ticket FILE --relay HOST:PORT | stop")
 	}
 	if !isAdministrator() {
 		return errors.New("P2P pilot requires an Administrator terminal")
@@ -205,6 +205,12 @@ func p2pCommand(args []string) error {
 		return err
 	}
 	dir := filepath.Join(root, "p2p")
+	if args[0] == "prepare" {
+		if len(args) != 1 {
+			return errors.New("unexpected P2P preparation arguments")
+		}
+		return prepareP2P(statePath, func() error { return p2pCommand([]string{"init"}) }, stopP2PService, startP2PService)
+	}
 	if args[0] != "init" {
 		if _, err = os.Lstat(dir); err != nil {
 			return errors.New("initialize the P2P pilot first")
@@ -269,6 +275,18 @@ func p2pCommand(args []string) error {
 		return err
 	}
 	switch args[0] {
+	case "peers-json":
+		peers, err := control.P2PPeers(ctx)
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(os.Stdout).Encode(peers)
+	case "connect":
+		if err := control.ConnectP2P(ctx, *host); err != nil {
+			return err
+		}
+		fmt.Println("P2P connection requested on both computers. Open Moonlight; the pilot expires within 60 seconds.")
+		return nil
 	case "consent":
 		info, err := control.FetchP2PInfo(ctx)
 		if err != nil {
@@ -394,6 +412,13 @@ func runP2PLoop(ctx context.Context, mux *p2p.MuxTUN, store *p2p.PolicyStore, tr
 	}
 	dir := filepath.Join(root, "p2p")
 	var worker runtimeWorker
+	inboxCtx, cancelInbox := context.WithCancel(ctx)
+	inboxDone := make(chan struct{})
+	go func() {
+		defer close(inboxDone)
+		runP2PInbox(inboxCtx, statePath, dir, trust)
+	}()
+	defer func() { cancelInbox(); <-inboxDone }()
 	defer func() {
 		_ = worker.stop()
 	}()

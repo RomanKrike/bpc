@@ -1,5 +1,44 @@
 # Status and evidence
 
+## Account P2P delivery and Windows window (2026-10-20)
+
+Candidate based on #95 head da3c7edc4d4b0769409afb144b4941d2c10c18fd;
+no merge, release dispatch or deployment. [ADR 0005](adr/0005-account-p2p-delivery.md)
+records the user-requested no-invitation flow and explicit canonical-prefix change.
+Reuses the existing prepared HTTPS executable/download and tray UI. Fresh account
+enrollment in explicitly configured account mode initializes trust and signs
+consent; repeated install/restart does not restore withdrawn consent. Existing
+Agents can explicitly prepare/restart from the window with service image/argument
+ownership checks. Controller provides authorized peer list, CAS-protected public
+delivery slots for both Devices and authenticated own-slot polling across replicas.
+Receiving Agents verify signed grant and local Device/WG/address bindings before
+creating an ordinary policy-enforced request. No file transfer or host invitation
+acceptance is needed. The UI reports requested, not established.
+
+Local Windows Go 1.23.12: `go test ./cmd/bpc-agent ./internal/agentctl -count=1
+-timeout=120s` passed, including PowerShell AST parsing (no UI execution),
+preparation without service mutation, missing-store refusal and foreign-service
+command-line rejection. `internal/controlplane` and `internal/p2p` passed in the
+focused suite; existing wgshim `TestAdaptiveTransportSelectsFasterTCP` failed its
+3s timing assertion on Windows, including one isolated retry. No transport code
+changed and the failure is recorded, not counted as a pass. Linux CI is required.
+Ruff passed. `pytest tests/test_p2p_delivery.py tests/test_p2p_authority.py
+tests/test_agent.py --basetemp=../p2p-account-final -ra`: 78 passed / 1 skipped
+(Go wire binary supplied by Linux CI). Linux-target `go vet ./...`, Windows
+Agent build and `gofmt -l cmd internal` passed. The initial restricted run failed
+on sandbox temp-file rename/loopback restrictions; local tests then ran with
+workspace temporary files and isolated loopback outside that sandbox.
+
+The existing full CI remains mandatory; an additional Windows Agent/client and
+embedded-window parser job is included. Real public HTTP and three-Controller
+Raft/mTLS tests now exercise account delivery and quorum loss. CI evidence will
+be linked from the PR. Native window interaction/UAC, Wintun/routes/ACL/service
+restart and Moonlight/Sunshine streaming remain PENDING. No test host was changed.
+The pilot still expires in <=60s, retains at most 16 peer deny reservations and
+rejects a new delivery while its slot is unexpired. Controller/relay provisioning
+and enabling account mode are operator steps; an existing old download link is
+not silently upgraded by this source change. Long-stream renewal is pending.
+
 ## Windows P2P pilot runtime (2026-10-20)
 
 Authorized merges: #93 -> d939bffb6aa4c4a04b36df22fe1eb40490dd1081;
