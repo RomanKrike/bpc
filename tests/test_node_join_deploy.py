@@ -102,6 +102,7 @@ def test_staged_control_runtime_imports_without_release_tree(tmp_path: Path) -> 
     shutil.copy(ROOT / "deploy" / "bpc_access.py", runtime / "bpc_access.py")
     shutil.copy(ROOT / "deploy" / "bpc_control_state.py", runtime / "bpc_control_state.py")
     shutil.copy(ROOT / "deploy" / "bpc_topology.py", runtime / "bpc_topology.py")
+    shutil.copy(ROOT / "deploy" / "bpc_p2p.py", runtime / "bpc_p2p.py")
     shutil.copy(
         ROOT / "deploy" / "bpc_controller_enrollment.py",
         runtime / "bpc_controller_enrollment.py",

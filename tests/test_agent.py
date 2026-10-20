@@ -34,6 +34,7 @@ WGSHIM_TCP = pathlib.Path("internal/wgshim/tcp.go").read_text(encoding="utf-8")
 WGSHIM_TRANSPORT = pathlib.Path("internal/wgshim/transport.go").read_text(encoding="utf-8")
 
 
+
 def test_release_builds_windows_agent() -> None:
     assert "bpc-agent-windows-amd64.exe" in BUILD
     assert "./cmd/bpc-agent" in BUILD
@@ -207,6 +208,9 @@ def test_agent_runtime_avoids_legacy_relay_collision_and_stages_control_runtime(
     assert 'release_access="${BPC_ROOT}/current/deploy/bpc_access.py"' in ENABLE_CONTROL
     access_copy = 'install -m 0600 "${release_access}" "${runtime_tmp}/bpc_access.py"'
     assert access_copy in ENABLE_CONTROL
+    for installer in (ENABLE_CONTROL, ENABLE_CONTROL_REPLICA):
+        assert 'release_p2p="${BPC_ROOT}/current/deploy/bpc_p2p.py"' in installer
+        assert 'install -m 0600 "${release_p2p}" "${runtime_tmp}/bpc_p2p.py"' in installer
     assert 'control_server="${CONTROL_DIR}/runtime/bpc-control-server.py"' in ENABLE_CONTROL
     assert "ExecStart=/usr/bin/python3 ${control_server}" in ENABLE_CONTROL
 

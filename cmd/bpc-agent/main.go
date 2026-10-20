@@ -67,6 +67,10 @@ func main() {
 		err = installAgent()
 	case "run":
 		err = runAgent()
+	case "p2p":
+		err = p2pCommand(os.Args[2:])
+	case "p2p-ui":
+		err = launchP2PUI()
 	case "run-service":
 		err = runWindowsService()
 	case "status":
@@ -137,6 +141,8 @@ func installAgent() error {
 		return fmt.Errorf("create install directory: %w", err)
 	}
 
+	_, stateErr := os.Stat(statePath)
+	newDevice := errors.Is(stateErr, os.ErrNotExist)
 	state, err := enrollOrLoadState(context.Background(), *bootstrap, statePath)
 	if err != nil {
 		return fmt.Errorf("device enrollment: %w", err)
@@ -171,6 +177,11 @@ func installAgent() error {
 	lockDownPath(dir)
 	lockDownPath(exePath)
 	lockDownPath(statePath)
+	if newDevice {
+		if err := initializeAccountP2P(state); err != nil {
+			return fmt.Errorf("prepare account P2P: %w", err)
+		}
+	}
 	if err := installWindowsUI(exePath, dir); err != nil {
 		return fmt.Errorf("install BPC Agent UI: %w", err)
 	}
@@ -1204,10 +1215,15 @@ func elevate(command string) error {
 	if err != nil {
 		return err
 	}
+	window := ""
+	if command == "p2p-ui" {
+		window = " -WindowStyle Hidden"
+	}
 	ps := fmt.Sprintf(
-		"$p=Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+		"$p=Start-Process -FilePath '%s' -ArgumentList '%s' -Verb RunAs -Wait -PassThru%s; exit $p.ExitCode",
 		psQuote(exe),
 		psQuote(command),
+		window,
 	)
 	cmd := exec.Command("powershell.exe", "-NoProfile", "-Command", ps)
 	cmd.Stdout = os.Stdout
@@ -1289,6 +1305,8 @@ func usage() {
 		"  bpc-agent.exe                 Enroll and install a prepared agent package\n" +
 		"  bpc-agent.exe install         Enroll/reinstall and start at boot\n" +
 		"  bpc-agent.exe run             Run the foreground agent loop (diagnostics)\n" +
+		"  bpc-agent.exe p2p             Explicit P2P pilot commands (Administrator)\n" +
+		"  bpc-agent.exe p2p-ui          Open the P2P pilot window\n" +
 		"  bpc-agent.exe status          Show local agent state\n" +
 		"  bpc-agent.exe connect         Enable the tunnel service\n" +
 		"  bpc-agent.exe disconnect      Disable the tunnel service\n" +

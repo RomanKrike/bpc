@@ -19,6 +19,7 @@ REPLICATED_PREFIXES = (
     "control/device-addresses/",
     "control/device-public-keys/",
     "control/access/",
+    "control/p2p-delivery/",
     "control/node-join/",
     "control/node-join-used/",
     "control/nodes/",
