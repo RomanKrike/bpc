@@ -38,8 +38,15 @@ passed with CGO_ENABLED=0, plus new pilot relay Linux amd64/arm64.
 `go test -c -o ../cross-build/p2p-stage3-windows.test.exe ./internal/p2p` and
 `BPC_P2P_TEST_BINARY=<that binary> pytest tests/test_p2p_authority.py
 --basetemp=../p2p-stage3-contract-temp -q` passed 18 tests including Python-issued
-wire compatibility with the new durable reservation state. Full Linux CI
-on the published PR head remains pending.
+wire compatibility with the new durable reservation state.
+
+Published head e602f6d66d67bed0faa0dfb52111825258add1f0 passed all nine Linux
+CI jobs: [39375921357](https://github.com/RomanKrike/bpc/actions/runs/39375921357).
+This includes Go tests/vet/cross-builds, race, Python 3.11/3.12/3.13,
+control-runtime, privileged Access/systemd rollback, ShellCheck and packaging
+with both new relay binaries. Python 3.11: 336 passed / 6 skipped; dedicated
+control-runtime executes the process/wire cases: 20 passed. This evidence-only
+record follows that successful runtime; native Windows acceptance remains pending.
 
 Actual userspace HTTPS policy/TLS relay/WireGuard TCP+UDP acceptance passes
 signed denial, Controller failure, idle expiry and expiry during blocked sync.
